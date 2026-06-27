@@ -10,7 +10,7 @@ This release is tested on Linux (Node 20, the CI matrix): lint, format, typechec
 
 MeTTa TS is fast, from pure TypeScript. A reproducible black-box benchmark runs the PeTTa example corpus through both engines as subprocesses and checks each program's embedded `(test ...)` assertions. On the Hyperon-faithful shared subset, MeTTa TS passes 95 programs and is faster than PeTTa on 92 of them, median 2.18x and up to 6.2x (`fib`), even though PeTTa runs on SWI-Prolog's GMP-backed integers.
 
-The speed comes from general engine work, not test-specific shortcuts:
+The speed comes from general engine work:
 
 - an O(1)-stack reduce-loop trampoline and worklist, so deep recursion does not grow the JS stack;
 - deferred rule-RHS freshening with a head-shape candidate pre-filter;
@@ -24,12 +24,12 @@ Every optimisation is verified byte-identical against the 270-assertion Hyperon 
 
 ## What is in this release
 
-- **`@metta-ts/core`** — the interpreter, parser, type system, pattern matching, and standard library, as a single ESM bundle (~23 KB gzipped). Passes all 270 assertions of Hyperon's oracle corpus: the full dependent-type tier, spaces and mutable state, nondeterminism, grounded operations, and documentation. Cross-checked against [LeaTTa](https://github.com/MesTTo/LeaTTa), the machine-checked (Lean 4) MeTTa semantics, pinned to the same commit.
-- **`@metta-ts/hyperon`** — a TypeScript class API modeled on Python's `hyperon`, plus a JavaScript interop layer (`js-atom`, `js-dot`, `js-list`, `js-dict`) that calls into the host runtime directly.
-- **`@metta-ts/edsl`** — a typed eDSL: term builders, special-form combinators, and a tagged-template surface.
-- **`@metta-ts/node`** — the `metta-ts` CLI, file `import!`, and the worker-thread parallel matcher.
-- **`@metta-ts/browser`** — a browser entry with an in-memory virtual file system for `import!`.
-- **`@metta-ts/das-client`** and **`@metta-ts/das-gateway`** — an optional client to SingularityNET's Distributed AtomSpace, run end to end against a live cluster, with the atom handles matching the AtomDB byte for byte.
+- `@metta-ts/core` is the interpreter, parser, type system, pattern matching, and standard library, as a single ESM bundle (~23 KB gzipped). It passes all 270 assertions of Hyperon's oracle corpus (the full dependent-type tier, spaces and mutable state, nondeterminism, grounded operations, and documentation), cross-checked against [LeaTTa](https://github.com/MesTTo/LeaTTa), the machine-checked (Lean 4) MeTTa semantics pinned to the same commit.
+- `@metta-ts/hyperon` is a TypeScript class API modeled on Python's `hyperon`, with a JavaScript interop layer (`js-atom`, `js-dot`, `js-list`, `js-dict`) that calls into the host runtime directly.
+- `@metta-ts/edsl` is a typed eDSL with term builders, special-form combinators, and a tagged-template surface.
+- `@metta-ts/node` has the `metta-ts` CLI, file `import!`, and the worker-thread parallel matcher.
+- `@metta-ts/browser` is a browser entry with an in-memory virtual file system for `import!`.
+- `@metta-ts/das-client` and `@metta-ts/das-gateway` are an optional client to SingularityNET's Distributed AtomSpace, run end to end against a live cluster, with atom handles matching the AtomDB byte for byte.
 
 ## Install
 

@@ -2,10 +2,6 @@
 
 A pure-TypeScript implementation of **MeTTa** (Meta Type Talk), the OpenCog Hyperon language. It runs anywhere TypeScript runs: the browser, Node, Deno, Bun, edge and serverless functions, and inside TypeScript-based AI agents. No native addons, no WASM, no Rust.
 
-## Why this exists
-
-Every other MeTTa implementation is tied to a runtime that cannot drop into a web page or a TypeScript agent without a native or WASM boundary: Rust (hyperon-experimental, MORK), Prolog (PeTTa, MeTTaLog), the JVM (JETTA), Python (the reference bindings). MeTTa TS fills the open lane. You import it and run, from a browser tab to a serverless handler to an agent loop. As more agent tooling is written in TypeScript, a MeTTa that lives natively in that ecosystem, with zero install steps and no build-time native step, is the point.
-
 ## Install
 
 ```bash
@@ -244,7 +240,7 @@ A representative slice (wall-clock, subprocess including startup; `speedup` = Pe
 
 The full per-program table is in [`RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md).
 
-That speed comes from general engine work, not test-specific shortcuts:
+That speed comes from general engine work:
 
 - an O(1)-stack reduce-loop trampoline;
 - a Set-based (O(n)) variable/binding path;
