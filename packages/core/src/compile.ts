@@ -883,7 +883,12 @@ interface ImpCompiled {
 // result (the cons) and run its elements only for their effects. It is forwarded to the result position
 // (if/let body, tuple elements, call result), never to a value the body still needs (a let value, an if
 // condition, call args). Defaults false, so omitting it leaves every node byte-identical to before.
-type ImpNode = (slots: readonly Atom[], st: St, ops: CompiledImpureOps, discard?: boolean) => ImpEval;
+type ImpNode = (
+  slots: readonly Atom[],
+  st: St,
+  ops: CompiledImpureOps,
+  discard?: boolean,
+) => ImpEval;
 type ImperativeFns = Map<string, ImperativeHolder>;
 
 const IMP_GROUNDED = new Set(["==", "<", ">", "<=", ">=", "+", "-", "*", "%"]);

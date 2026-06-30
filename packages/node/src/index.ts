@@ -18,7 +18,11 @@ import {
 import { makeParEvalImpl } from "./par-hyperpose";
 
 /** Pre-read every `import!` target referenced in `src`, resolving names against `baseDir`. */
-export function readImports(src: string, baseDir: string, importRoot = baseDir): Map<string, Atom[]> {
+export function readImports(
+  src: string,
+  baseDir: string,
+  importRoot = baseDir,
+): Map<string, Atom[]> {
   const m = new Map<string, Atom[]>();
   const base = resolve(baseDir);
   const root = resolve(importRoot);

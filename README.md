@@ -225,18 +225,18 @@ A reproducible benchmark ([`packages/node/bench/corpus-bench.mjs`](packages/node
 
 A representative slice (wall-clock, subprocess including startup; `speedup` = PeTTa / MeTTa TS):
 
-| Program                                          |   PeTTa | MeTTa TS |  Speedup |
-| ------------------------------------------------ | ------: | -------: | -------: |
-| `fib`                                            |  445 ms |    88 ms | **5.1×** |
-| `fibadd` (rule added at runtime, then tabled)    |  455 ms |    89 ms | **5.1×** |
-| `tilepuzzle` (indexed named-space search)        | 1573 ms |   388 ms | **4.1×** |
-| `he_minimalmetta`                                | 1784 ms |   481 ms |     3.7× |
-| `matespacefast` (faithful fast rewrite)          | 4280 ms |  1950 ms |     2.2× |
-| `factorial`                                      |  178 ms |    81 ms |     2.2× |
-| `permutations` (WCO-join collapse-count)         |  850 ms |   431 ms | **2.0×** |
-| `hyperpose_primes` (worker threads)              | 1117 ms |  1043 ms |     1.1× |
-| `peano`                                          | 1605 ms |  2483 ms |     0.6× |
-| `nilbc`                                          |  768 ms |  2125 ms |     0.4× |
+| Program            |   PeTTa | MeTTa TS |  Speedup |
+| ------------------ | ------: | -------: | -------: |
+| `fib`              |  461 ms |    79 ms | **5.9×** |
+| `fibadd`           |  450 ms |    86 ms | **5.2×** |
+| `tilepuzzle`       | 1615 ms |   417 ms | **3.9×** |
+| `he_minimalmetta`  | 1851 ms |   508 ms |     3.7× |
+| `factorial`        |  178 ms |    81 ms |     2.2× |
+| `matespacefast`    | 4269 ms |  2159 ms |     2.0× |
+| `permutations`     |  853 ms |   450 ms |     1.9× |
+| `hyperpose_primes` | 1144 ms |  1064 ms |     1.1× |
+| `peano`            | 1521 ms |  2697 ms |     0.6× |
+| `nilbc`            |  780 ms |  2173 ms |     0.4× |
 
 The full per-program table is in [`RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md).
 
@@ -253,9 +253,9 @@ That speed comes from general engine work:
 
 Every one of these is verified byte-identical against the 270-assertion Hyperon oracle.
 
-`hyperpose_primes` and `permutations` are now crossed. `permutations` is a 28-relation conjunctive `(length (collapse (match &self (, …) …)))`. MeTTa TS folds the worst-case-optimal join and counts each solution rather than materialising the ~360k answer atoms, which drops it from 3.6 s to 0.43 s, under PeTTa's 0.85 s. `hyperpose_primes` races `(once (hyperpose …))` across Node worker threads. Still slower than PeTTa are `nilbc` and `peano`. Both return the correct result but trail at the interpreter's per-reduction floor on their O(K²) proof-search and dedup-build loops, and crossing them needs streamed, structure-sharing result emit, the documented next step tracked in [`packages/node/bench/TODO-parity.md`](packages/node/bench/TODO-parity.md).
+`hyperpose_primes` and `permutations` are now crossed. `permutations` is a 28-relation conjunctive `(length (collapse (match &self (, …) …)))`. MeTTa TS folds the worst-case-optimal join and counts each solution rather than materialising the ~360k answer atoms, which drops it from 3.6 s to 0.45 s, under PeTTa's 0.85 s. `hyperpose_primes` races `(once (hyperpose …))` across Node worker threads. Still slower than PeTTa are `nilbc` and `peano`. Both return the correct result but trail at the interpreter's per-reduction floor on their O(K²) proof-search and dedup-build loops, and crossing them needs streamed, structure-sharing result emit, the documented next step tracked in [`packages/node/bench/TODO-parity.md`](packages/node/bench/TODO-parity.md).
 
-`matespace`/`matespace2` are **PeTTa-specific** and excluded from the faithful subset. Their expected counts, 1063919 and 1297533, are produced only by PeTTa's compilation to Prolog: native backtracking over a globally-persistent atomspace, with duplicate adds pruned by failure, which is not minimal-MeTTa semantics. Run through `hyperon-experimental` itself, `(collapse (mate-space-demo K))` is empty, and LeaTTa agrees. PeTTa, real Hyperon, and MeTTa TS each compute a different result for the same program, so no Hyperon-faithful engine reproduces PeTTa's number. The faithful rewrite of the same workload is `matespacefast`, which uses deterministic tuple recursion instead of a `case`-driven non-deterministic build. MeTTa TS runs it about 2.2× faster than PeTTa, byte-identical.
+`matespace`/`matespace2` are **PeTTa-specific** and excluded from the faithful subset. Their expected counts, 1063919 and 1297533, are produced only by PeTTa's compilation to Prolog: native backtracking over a globally-persistent atomspace, with duplicate adds pruned by failure, which is not minimal-MeTTa semantics. Run through `hyperon-experimental` itself, `(collapse (mate-space-demo K))` is empty, and LeaTTa agrees. PeTTa, real Hyperon, and MeTTa TS each compute a different result for the same program, so no Hyperon-faithful engine reproduces PeTTa's number. The faithful rewrite of the same workload is `matespacefast`, which uses deterministic tuple recursion instead of a `case`-driven non-deterministic build. MeTTa TS runs it about 2.0× faster than PeTTa, byte-identical.
 
 ## Provenance
 

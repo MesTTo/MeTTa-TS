@@ -19,6 +19,7 @@ function counts(src: string, optimized: boolean): string[][] {
       r.results.map(format),
     );
   } finally {
+    // eslint-disable-next-line no-restricted-syntax -- delete is the only way to truly unset an env var
     if (prev === undefined) delete process.env.METTA_CONJ_COUNT;
     else process.env.METTA_CONJ_COUNT = prev;
   }

@@ -38,6 +38,7 @@ function runAgg(src: string, on: boolean): string[][] {
   try {
     return run(src);
   } finally {
+    // eslint-disable-next-line no-restricted-syntax -- delete is the only way to truly unset an env var
     if (prev === undefined) delete process.env.METTA_COUNT_AGGREGATE;
     else process.env.METTA_COUNT_AGGREGATE = prev;
   }
@@ -107,7 +108,9 @@ describe("count-aggregate differential (fast-check)", () => {
   );
   const patG = fc
     .tuple(fc.constantFrom("foo", "bar", "baz", "qux"), fc.integer({ min: 0, max: 4 }))
-    .map(([h, k]) => (k === 0 ? `(${h})` : `(${h} ${Array.from({ length: k }, (_, i) => `$v${i}`).join(" ")})`));
+    .map(([h, k]) =>
+      k === 0 ? `(${h})` : `(${h} ${Array.from({ length: k }, (_, i) => `$v${i}`).join(" ")})`,
+    );
   const spaceG = fc.boolean();
 
   // The aggregate count must equal the count of the materialized collapse (an independent oracle that never
@@ -172,11 +175,17 @@ describe("compiled impure differential (fast-check)", () => {
   );
   it("impure single-clause function: compiled == interpreted up to alpha (result + side effects)", () => {
     fc.assert(
-      fc.property(baseG, stepG, recurG, fc.integer({ min: 0, max: 4 }), (base, step, recur, depth) => {
-        const body = `(if (== $n 0) ${base} ${step.replace("RECUR", recur)})`;
-        const src = `(= (f $p $n) ${body})\n!(f q ${depth})\n!(collapse (match &self (item $w) $w))\n!(collapse (match &self (a $w) $w))`;
-        return alphaEqOut(runMode(src, true).out, runMode(src, false).out);
-      }),
+      fc.property(
+        baseG,
+        stepG,
+        recurG,
+        fc.integer({ min: 0, max: 4 }),
+        (base, step, recur, depth) => {
+          const body = `(if (== $n 0) ${base} ${step.replace("RECUR", recur)})`;
+          const src = `(= (f $p $n) ${body})\n!(f q ${depth})\n!(collapse (match &self (item $w) $w))\n!(collapse (match &self (a $w) $w))`;
+          return alphaEqOut(runMode(src, true).out, runMode(src, false).out);
+        },
+      ),
       { numRuns: 600 },
     );
   });
@@ -204,6 +213,7 @@ function runVoid(src: string, on: boolean): string[][] {
   try {
     return run(src);
   } finally {
+    // eslint-disable-next-line no-restricted-syntax -- delete is the only way to truly unset an env var
     if (prev === undefined) delete process.env.METTA_VOID_BUILD;
     else process.env.METTA_VOID_BUILD = prev;
   }
@@ -228,18 +238,27 @@ describe("void-build differential (fast-check)", () => {
     "(let $x (add-atom &self (item $p)) RECUR)",
     "(let* (($x (add-atom &self (a $p))) ($y (add-atom &self (b $p)))) RECUR)",
   );
-  const recurG = fc.constantFrom("(f (s $p) (- $n 1))", "((f (a $p) (- $n 1)) (f (b $p) (- $n 1)))");
+  const recurG = fc.constantFrom(
+    "(f (s $p) (- $n 1))",
+    "((f (a $p) (- $n 1)) (f (b $p) (- $n 1)))",
+  );
   it("random build-then-count: void-on == void-off (count and counter)", () => {
     fc.assert(
-      fc.property(baseG, stepG, recurG, fc.integer({ min: 0, max: 5 }), (base, step, recur, depth) => {
-        const body = `(if (== $n 0) ${base} ${step.replace("RECUR", recur)})`;
-        const src = `(= (f $p $n) ${body})
+      fc.property(
+        baseG,
+        stepG,
+        recurG,
+        fc.integer({ min: 0, max: 5 }),
+        (base, step, recur, depth) => {
+          const body = `(if (== $n 0) ${base} ${step.replace("RECUR", recur)})`;
+          const src = `(= (f $p $n) ${body})
 (= (demo $K) (let* (($s (add-atom &self (item q))) ($g (f q $K))) (match &self (item $w) $w)))
 (= (gen) (pair $u $u))
 !(length (collapse (demo ${depth})))
 !(gen)`;
-        return JSON.stringify(runVoid(src, true)) === JSON.stringify(runVoid(src, false));
-      }),
+          return JSON.stringify(runVoid(src, true)) === JSON.stringify(runVoid(src, false));
+        },
+      ),
       { numRuns: 500 },
     );
   });
@@ -256,6 +275,7 @@ function runConjAtoms(src: string, on: boolean): Atom[][] {
   try {
     return runProgram(src, FUEL).map((q) => q.results);
   } finally {
+    // eslint-disable-next-line no-restricted-syntax -- delete is the only way to truly unset an env var
     if (prev === undefined) delete process.env.METTA_CONJ_COUNT;
     else process.env.METTA_CONJ_COUNT = prev;
   }

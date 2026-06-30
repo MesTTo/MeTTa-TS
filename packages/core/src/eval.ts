@@ -3300,10 +3300,12 @@ function splitVoidBuild(
 ): { readonly prefix: Atom; readonly op: string; readonly args: readonly Atom[] } | undefined {
   if (buildExpr.kind !== "expr") return undefined;
   const voidable = (rhs: Atom): { op: string; args: readonly Atom[] } | undefined => {
-    if (rhs.kind !== "expr" || rhs.items.length === 0 || rhs.items[0]!.kind !== "sym") return undefined;
+    if (rhs.kind !== "expr" || rhs.items.length === 0 || rhs.items[0]!.kind !== "sym")
+      return undefined;
     const op = rhs.items[0]!.name;
     const args = rhs.items.slice(1);
-    if (env.compiled?.get(op)?.kind !== "imperative" || args.some((a) => !a.ground)) return undefined;
+    if (env.compiled?.get(op)?.kind !== "imperative" || args.some((a) => !a.ground))
+      return undefined;
     return { op, args };
   };
   // Keep the binding in the prefix but replace its evaluated value with the sentinel, rather than dropping it:
@@ -3314,7 +3316,11 @@ function splitVoidBuild(
   if (head === "let" && buildExpr.items.length === 4 && atomEq(buildExpr.items[3]!, DONE_UNIT)) {
     const v = voidable(buildExpr.items[2]!);
     if (v === undefined) return undefined;
-    return { prefix: expr([buildExpr.items[0]!, buildExpr.items[1]!, DONE_UNIT, DONE_UNIT]), op: v.op, args: v.args };
+    return {
+      prefix: expr([buildExpr.items[0]!, buildExpr.items[1]!, DONE_UNIT, DONE_UNIT]),
+      op: v.op,
+      args: v.args,
+    };
   }
   if (
     head === "let*" &&
@@ -3324,11 +3330,16 @@ function splitVoidBuild(
   ) {
     const pairs = buildExpr.items[1]!.items;
     const lastPair = pairs[pairs.length - 1];
-    if (lastPair === undefined || lastPair.kind !== "expr" || lastPair.items.length !== 2) return undefined;
+    if (lastPair === undefined || lastPair.kind !== "expr" || lastPair.items.length !== 2)
+      return undefined;
     const v = voidable(lastPair.items[1]!);
     if (v === undefined) return undefined;
     const newPairs = [...pairs.slice(0, -1), expr([lastPair.items[0]!, DONE_UNIT])];
-    return { prefix: expr([buildExpr.items[0]!, expr(newPairs), DONE_UNIT]), op: v.op, args: v.args };
+    return {
+      prefix: expr([buildExpr.items[0]!, expr(newPairs), DONE_UNIT]),
+      op: v.op,
+      args: v.args,
+    };
   }
   return undefined;
 }
@@ -3452,7 +3463,8 @@ function tryCountAggregate(
   const { getCandidates, patterns } = matchSetup(env, st, match.items[1]!, match.items[2]!, bnd);
   if (patterns.length !== 1) return undefined;
   const pat = inst(env, bnd, patterns[0]!);
-  if (pat.kind !== "expr" || pat.items.length === 0 || pat.items[0]!.kind !== "sym") return undefined;
+  if (pat.kind !== "expr" || pat.items.length === 0 || pat.items[0]!.kind !== "sym")
+    return undefined;
   const seen = new Set<string>();
   for (let i = 1; i < pat.items.length; i++) {
     const a = pat.items[i]!;
@@ -3473,7 +3485,9 @@ function tryCountAggregate(
   // (grounded- or expr-headed) atoms.
   const unifies = (a: Atom): boolean =>
     a.kind === "var" ||
-    (a.kind === "expr" && a.items.length === arity && (headKey(a) === k || a.items[0]!.kind === "var"));
+    (a.kind === "expr" &&
+      a.items.length === arity &&
+      (headKey(a) === k || a.items[0]!.kind === "var"));
   const w = st.world;
   // Direct tally over the persistent &self log, skipping the `logToArray` materialisation of a ~1.5M-element
   // candidate array, when the candidate set IS exactly that log: a &self match with no state to resolve, no
