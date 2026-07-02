@@ -124,42 +124,31 @@ console.log((await metta.runAsync("!(race (aw 40) (aw 3))"))[0].map(String)); //
 
 ## Ergonomic typed eDSL
 
-For writing MeTTa in idiomatic TypeScript, [`@metta-ts/edsl`](packages/edsl) gives typed term builders, special-form combinators (`iff`, `caseOf`, `matchSelf`, arithmetic, ...), and a tagged-template surface. It builds ordinary atoms and runs on the same engine, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types. Any TypeScript value drops in as a grounded atom automatically.
+For writing MeTTa in idiomatic TypeScript, [`@metta-ts/edsl`](packages/edsl) mints symbols, functors, and logic variables from proxies (`names()`, `vars()`), builds the special forms with capitalized combinators (`If`, `Case`, `Match`, arithmetic, ...) or a tagged template, and bridges TypeScript functions in both directions. It builds ordinary atoms and runs on the same engine, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types. Any TypeScript value drops in as a grounded atom automatically.
 
 ```ts
-import {
-  mettaDB,
-  S,
-  v,
-  rel,
-  iff,
-  gt,
-  lt,
-  mul,
-  sub,
-  m,
-  ValueAtom,
-  type GroundedAtom,
-} from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, mul, sub, m } from "@metta-ts/edsl";
 
 const db = mettaDB();
 
-// Facts + a typed match query.
-db.add(rel("Likes")(S.Ada, S.Coffee), rel("Likes")(S.Ada, S.Chocolate));
-const thing = v<string>("thing");
-db.query(rel("Likes")(S.Ada, thing), { thing }); // [{ thing: "Coffee" }, { thing: "Chocolate" }]
+// `names()` mints symbols and functors, `vars()` mints logic variables. No name is written twice:
+// the JS binding IS the name. A bare name grounds to its symbol; a called name applies it.
+const { Likes, fact, Ada, Coffee, Chocolate } = names();
+const { thing, x } = vars();
+
+// Facts + a match query. With no explicit vars, the row keys are inferred from the pattern.
+db.add(Likes(Ada, Coffee), Likes(Ada, Chocolate));
+db.query(Likes(Ada, thing)); // [{ thing: "Coffee" }, { thing: "Chocolate" }]
 
 // Recursive rewrite rule + grounded arithmetic.
-const x = v<number>("x");
-db.rule(rel("fact")(x), iff(gt(x, 0), mul(x, rel("fact")(sub(x, 1))), 1));
-db.evalJs(rel("fact")(5)); // [120]
+db.rule(fact(x), If(gt(x, 0), mul(x, fact(sub(x, 1))), 1));
+db.evalJs(fact(5)); // [120]
 
-// Pass a TypeScript object straight into a query (auto-grounded).
-db.op("balance-of", (args) => [
-  ValueAtom((args[0] as GroundedAtom).jsValue<{ balance: number }>().balance),
-]);
-db.evalJs(rel("balance-of")({ owner: "Tom", balance: 100 })); // [100]
-db.evalJs(m`(balance-of ${{ owner: "Tom", balance: 100 }})`); // [100], via the template
+// Grounded functions, both directions: a plain typed function in, a MeTTa function out.
+db.fn("balance-of", (a: { balance: number }) => a.balance);
+db.evalJs(m`(balance-of ${{ owner: "Tom", balance: 100 }})`); // [100]
+db.call.fact(5); // [120]
+const factorial = db.import<[number], number>("fact"); // typed callable, factorial(6) === 720
 ```
 
 More runnable examples are in [`examples/`](examples/): [`quickstart.ts`](examples/quickstart.ts), [`grounded-ops.ts`](examples/grounded-ops.ts), [`async.ts`](examples/async.ts), [`edsl.ts`](examples/edsl.ts), plus `.metta` source files. Run one with `npx tsx examples/quickstart.ts`.

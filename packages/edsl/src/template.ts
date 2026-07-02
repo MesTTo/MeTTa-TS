@@ -50,3 +50,12 @@ export function m(strings: TemplateStringsArray, ...values: Term[]): Atom {
     );
   return atoms[0]!;
 }
+
+/** Parse one atom from a plain source string (no interpolation). Throws unless the source is exactly one
+ *  atom. Backs the typed source query {@link MettaDB.q}. */
+export function parseSource(src: string): Atom {
+  const atoms = new SExprParser(src).parseAll(tokenizer());
+  if (atoms.length !== 1)
+    throw new Error(`parseSource: expected exactly one atom, got ${atoms.length}: ${src}`);
+  return atoms[0]!;
+}
