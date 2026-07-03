@@ -25,6 +25,7 @@ export default defineConfig({
       { text: "Learn MeTTa", link: "/learn/evaluation/main-concepts" },
       { text: "TypeScript", link: "/typescript/running-metta" },
       { text: "eDSL", link: "/edsl/overview" },
+      { text: "Visual editor", link: "/tools/grapher" },
       { text: "Advanced", link: "/advanced/concurrency" },
       { text: "Reference", link: "/reference/packages" },
       { text: "Playground", link: "/playground" },
@@ -73,6 +74,11 @@ export default defineConfig({
         items: [{ text: "Overview", link: "/edsl/overview" }],
       },
       {
+        text: "Visual editor",
+        collapsed: false,
+        items: [{ text: "MeTTaGrapher", link: "/tools/grapher" }],
+      },
+      {
         text: "Advanced",
         collapsed: false,
         items: [
@@ -90,6 +96,7 @@ export default defineConfig({
           { text: "@metta-ts/hyperon", link: "/reference/hyperon" },
           { text: "@metta-ts/edsl", link: "/reference/edsl" },
           { text: "@metta-ts/node and browser", link: "/reference/node-browser" },
+          { text: "@metta-ts/grapher", link: "/reference/grapher" },
         ],
       },
     ],

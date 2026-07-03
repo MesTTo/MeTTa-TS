@@ -86,12 +86,13 @@ console.log(metta.run("!(greet World)")[0].map(String)); // [ '(Hello World)' ]
 If you would rather not write MeTTa as strings, `@metta-ts/edsl` builds the same atoms from typed TypeScript:
 
 ```ts
-import { mettaDB, rel, v, iff, gt, mul, sub } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, mul, sub } from "@metta-ts/edsl";
 
 const db = mettaDB();
-const n = v<number>("n");
-db.rule(rel("fact")(n), iff(gt(n, 0), mul(n, rel("fact")(sub(n, 1))), 1));
-db.evalJs(rel("fact")(5)); // [120]
+const { fact } = names();
+const { n } = vars();
+db.rule(fact(n), If(gt(n, 0), mul(n, fact(sub(n, 1))), 1));
+db.evalJs(fact(5)); // [120]
 ```
 
 See the **[typed eDSL](/edsl/overview)** for builders, the tagged template, and typed queries.

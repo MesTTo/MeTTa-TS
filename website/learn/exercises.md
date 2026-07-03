@@ -99,10 +99,11 @@ Two rules, a base case and a recursive case:
 Every exercise above can be written with the [typed eDSL](/edsl/overview) instead of source strings. Factorial, for example:
 
 ```ts
-import { mettaDB, v, rel, iff, gt, mul, sub } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, mul, sub } from "@metta-ts/edsl";
 
 const db = mettaDB();
-const x = v<number>("x");
-db.rule(rel("fact")(x), iff(gt(x, 0), mul(x, rel("fact")(sub(x, 1))), 1));
-db.evalJs(rel("fact")(5)); // [120]
+const { fact } = names();
+const { x } = vars();
+db.rule(fact(x), If(gt(x, 0), mul(x, fact(sub(x, 1))), 1));
+db.evalJs(fact(5)); // [120]
 ```

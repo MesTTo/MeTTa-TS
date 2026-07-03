@@ -14,6 +14,7 @@ MeTTa TS is a small set of packages under the `@metta-ts` scope. Install only wh
 | [`@metta-ts/edsl`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/edsl) | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template. |
 | [`@metta-ts/node`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/node) | The `metta-ts` CLI, file `import!`, and the `SharedArrayBuffer` worker-thread parallel matcher. |
 | [`@metta-ts/browser`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/browser) | Browser entry point with an in-memory virtual file system for `import!`. |
+| [`@metta-ts/grapher`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/grapher) | MeTTaGrapher: a pure-SVG visual editor that draws a program as a node graph or nested blocks and runs it on the core. |
 | [`@metta-ts/das-client`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/das-client) | Client for SingularityNET's Distributed AtomSpace. |
 | [`@metta-ts/das-gateway`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/das-gateway) | A transport-agnostic gateway bridging the browser to a Distributed AtomSpace. |
 
@@ -24,6 +25,8 @@ MeTTa TS is a small set of packages under the `@metta-ts` scope. Install only wh
 `@metta-ts/hyperon` and `@metta-ts/edsl` are two TypeScript-facing layers over the core. The hyperon package mirrors the Python API (a `MeTTa` runner, `S`/`V`/`E`/`G` atom constructors, grounded operations). The eDSL is the more idiomatic, typed way to build and run MeTTa from TypeScript.
 
 `@metta-ts/node` and `@metta-ts/browser` are platform entry points: the Node package adds the CLI, file imports, and the worker-thread matcher; the browser package adds an in-memory file system. Both re-export the core.
+
+`@metta-ts/grapher` is the visual editor, [MeTTaGrapher](/tools/grapher). It renders a program as a node graph or nested blocks and runs it on the core, so it is a view over atoms rather than a second engine; anything that produces atoms, including the eDSL, feeds it.
 
 `@metta-ts/das-client` and `@metta-ts/das-gateway` are optional, for querying a remote Distributed AtomSpace.
 

@@ -43,9 +43,9 @@ db.fn("balance-of", (a: { balance: number }) => a.balance);
 const account = { owner: "Tom", balance: 100 };
 console.log("balance (builder):", db.evalJs(m`(balance-of ${account})`)); // [ 100 ]
 
-// --- Host bridge: call MeTTa functions from TypeScript, quick or typed ---
+// --- Host bridge: call MeTTa functions from TypeScript ---
 console.log("call fact 5:", db.call.fact(5)); // [ 120 ]
-const factorial = db.import<[number], number>("fact");
+const factorial = db.import("fact"); // typed from a schema; permissive here (no schema)
 console.log("import fact 6:", factorial(6)); // 720
 
 // --- Async grounded op, awaited ---

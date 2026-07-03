@@ -14,33 +14,39 @@ npm install @metta-ts/edsl
 ## A first taste
 
 ```ts
-import { mettaDB, S, v, rel, iff, gt, lt, mul, sub } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, mul, sub } from "@metta-ts/edsl";
 
 const db = mettaDB();
-const x = v<number>("x");
+const { fact } = names();
+const { x } = vars();
 
 // a recursive rewrite rule, built from typed combinators
-db.rule(rel("fact")(x), iff(gt(x, 0), mul(x, rel("fact")(sub(x, 1))), 1));
+db.rule(fact(x), If(gt(x, 0), mul(x, fact(sub(x, 1))), 1));
 
-db.evalJs(rel("fact")(5)); // [120]
+db.evalJs(fact(5)); // [120]
 ```
 
-`rel("fact")(x)` builds the expression `(fact $x)`; `iff`, `gt`, `mul`, `sub` build the standard forms `if`, `>`, `*`, `-`. The result runs on the same interpreter as any MeTTa program.
+`names()` and `vars()` mint the functors, symbols, and variables you use, so no name is written twice: the JS binding is the name. `fact(x)` builds the expression `(fact $x)`; `If`, `gt`, `mul`, `sub` build the standard forms `if`, `>`, `*`, `-`. The result runs on the same interpreter as any MeTTa program.
 
-## Two surfaces
+## Names and variables
 
-There are two ways to construct atoms, and you mix them freely.
-
-**Typed builders** give you static types and autocompletion. `S` makes symbols (`S("Tom")` or `S.Tom`), `v<T>` a typed variable, `e` a raw tuple, and `rel` a functor. The special forms and grounded operations have combinators too: `rule`, `decl`, `arrow`, `iff`, `caseOf`, `lett`, `matchSelf`, `superpose`, `collapse`, `empty`, `unify`, the arithmetic and comparison ops, `and`/`or`/`not`, and the list ops. Builders compose, so nested patterns and repeated variables are just nested calls:
+`names()` returns a proxy that mints a symbol or functor per property, and `vars()` one that mints a fresh logic variable per property. A bare name grounds to its symbol; a called name applies it. Destructure what you use.
 
 ```ts
-import { rel, e, v, rule, S } from "@metta-ts/edsl";
-const [a, b] = [v("a"), v("b")];
-rule(rel("swap")(rel("Pair")(a, b)), rel("Pair")(b, a)); // (= (swap (Pair $a $b)) (Pair $b $a))
-rule(rel("check")(e(a, b, a)), e(a, b));                  // repeated variable in the pattern
+import { names, vars, rule, e } from "@metta-ts/edsl";
+
+const { swap, check, Pair } = names();
+const { a, b } = vars();
+
+rule(swap(Pair(a, b)), Pair(b, a)); // (= (swap (Pair $a $b)) (Pair $b $a))
+rule(check(e(a, b, a)), e(a, b)); //  repeated variable in the pattern
 ```
 
-**A tagged template** `m\`...\`` is the general escape hatch. It runs the real parser, so it expresses every MeTTa form, and `${value}` interpolations are auto-grounded:
+Type a variable's unwrapped value with `vars<{ x: number }>()`. The special forms are capitalized (they are forms, not data): `If`, `Case`, `Let`, `LetStar`, `Match`, `Superpose`, `Collapse`, `Empty`, `Unify`, `Sealed`, `Quote`. Grounded operations stay lowercase: arithmetic and comparison, `and`/`or`/`not`, the list ops, and the JSON ops below.
+
+## A tagged template
+
+`m\`...\`` is the general escape hatch. It runs the real parser, so it expresses every MeTTa form, and `${value}` interpolations are auto-grounded:
 
 ```ts
 import { mettaDB, m } from "@metta-ts/edsl";
@@ -50,40 +56,84 @@ db.add(m`(= (gp $x $z) (match &self (parent $x $y) (match &self (parent $y $z) $
 
 ## Passing TypeScript values straight in
 
-Any value that is not already an atom is grounded automatically, by every builder and by template interpolation. So a TypeScript object drops directly into a query:
+Any value that is not already an atom is grounded automatically, by every builder and by template interpolation. A grounded function bridges the other way with `db.fn`: arguments are auto-unwrapped to JS and the result auto-grounded, so a plain typed function is all you write.
 
 ```ts
-import { mettaDB, rel, m, ValueAtom, type GroundedAtom } from "@metta-ts/edsl";
+import { mettaDB, names, m } from "@metta-ts/edsl";
 
 const db = mettaDB();
-db.op("balance-of", (args) => [ValueAtom((args[0] as GroundedAtom).jsValue<{ balance: number }>().balance)]);
+db.fn("balance-of", (a: { balance: number }) => a.balance);
 
+const { "balance-of": balanceOf } = names();
 const account = { owner: "Tom", balance: 100 };
-db.evalJs(rel("balance-of")(account));   // [100] — via a builder
-db.evalJs(m`(balance-of ${account})`);   // [100] — via the template
+db.evalJs(balanceOf(account)); // [100]  via a builder
+db.evalJs(m`(balance-of ${account})`); // [100]  via the template
 ```
+
+Use `db.fns({ ... })` to register several at once, `db.asyncFn` for I/O, and the raw `db.op`/`db.asyncOp` when you need multiple results or full atom control.
 
 ## The runner
 
 `mettaDB()` keeps MeTTa's two query mechanisms distinct:
 
-- `query(pattern, vars)` does `match &self` over stored atoms and returns typed binding rows.
-- `eval(atom)` rewrites with the `=` rules and returns the (nondeterministic) result atoms. `evalJs` unwraps each result to a JavaScript value.
+- `query(pattern)` does `match &self` over stored atoms and returns binding rows (keys inferred from the pattern, or typed by an explicit `vars` map).
+- `eval(atom)` rewrites with the `=` rules and returns the (nondeterministic) result atoms. `evalJs` unwraps each to a JavaScript value.
 
 ```ts
-import { mettaDB, S, v, rel } from "@metta-ts/edsl";
+import { mettaDB, names, vars } from "@metta-ts/edsl";
 
 const db = mettaDB();
-db.add(rel("Likes")(S.Ada, S.Coffee), rel("Likes")(S.Ada, S.Chocolate));
-const thing = v<string>("thing");
-db.query(rel("Likes")(S.Ada, thing), { thing }); // [{ thing: "Coffee" }, { thing: "Chocolate" }]
+const { Likes, Ada, Coffee, Chocolate } = names();
+const { thing } = vars();
+db.add(Likes(Ada, Coffee), Likes(Ada, Chocolate));
+db.query(Likes(Ada, thing)); // [{ thing: "Coffee" }, { thing: "Chocolate" }]
 ```
 
-Register grounded operations with `op` (sync) and `asyncOp` (async), and await results with `evalAsync` / `evalJsAsync`:
+## Calling MeTTa from TypeScript
+
+`db.call.<name>(...)` evaluates `(<name> ...args)` and returns each result unwrapped to JS; bracket access handles hyphenated names. `db.import("name")` returns a callable.
 
 ```ts
-db.asyncOp("fetch-temp", async () => [ValueAtom(21)]);
-await db.evalJsAsync(rel("fetch-temp")()); // [21]
+db.call.fact(5); // [120]
+db.call["is-even"](4); // hyphenated names
+const factorial = db.import("fact"); // a callable
+```
+
+## Typing the host bridge
+
+Pass a schema to `mettaDB` and `call`, `import`, and `fn` become statically typed; with no schema they stay permissive. Both an `interface` and a `type` schema work.
+
+```ts
+interface Api {
+  fact: (n: number) => number;
+  isEven: (n: number) => boolean;
+}
+const db = mettaDB<Api>();
+db.call.fact(5); // number[]
+const factorial = db.import("fact"); // (n: number) => number | undefined
+db.fn("fact", (n: number) => n + 1); // checked against the schema
+```
+
+## Typed source queries
+
+`db.q("...")` runs `match &self` from a plain source string and types the result rows by the pattern's `$`-variables, extracted at compile time. The keys are known and autocompleted, and a key that is not a variable in the source is a compile error.
+
+```ts
+const rows = db.q("(Likes Ada $thing)"); // Array<{ thing: unknown }>
+rows[0]!.thing; // ok, autocompleted
+```
+
+This types the variable structure, not the result values (those come from runtime rewriting, which the type system cannot evaluate), so values are `unknown`. It works on a plain string, not the `m\`\`` tag: TypeScript widens a tagged template's text to `string`, which discards the literal the type-level parser needs.
+
+## JSON and dict-spaces
+
+`db.useJson()` enables the JSON module, then the `jsonEncode`/`jsonDecode`/`dictSpace`/`getKeys`/`getValue` builders bridge JSON and MeTTa spaces. `json-decode` turns a JSON object into a dict-space of `(key value)` pairs, so a fetched payload becomes a queryable space.
+
+```ts
+const db = mettaDB().useJson();
+db.evalJs(jsonEncode(42)); // ["42"]
+const doc = jsonDecode('{"name": "Ada", "age": 36}'); // a dict-space
+db.evalFirst(getValue(doc, "name")); // "Ada"  (JSON keys decode to strings)
 ```
 
 The eDSL is the most ergonomic way to drive MeTTa from TypeScript. When a script is easier to read as plain MeTTa, reach for `m\`...\`` or `db.run(source)`; the two always interoperate.

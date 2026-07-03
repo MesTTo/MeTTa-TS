@@ -77,6 +77,17 @@ Crucially, `if` does not evaluate both branches; only the taken one runs. That i
 
 </MettaRunner>
 
+You can watch this recursion happen. Load `factorial` below, press **Step** and walk it forward one reduction at a time: the rule fires with `$n` bound to `5`, the condition reduces, `if` takes a branch, and the multiplications fold up to the answer. Each step is one real reduction on the engine.
+
+<MeTTaGrapher hide-examples height="360px">
+
+```metta
+(= (factorial $n) (if (> $n 0) (* $n (factorial (- $n 1))) 1))
+(factorial 5)
+```
+
+</MeTTaGrapher>
+
 ## Pattern matching with case
 
 `case` matches an atom against a sequence of patterns, in order and mutually exclusively:

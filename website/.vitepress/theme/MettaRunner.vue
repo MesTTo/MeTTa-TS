@@ -18,6 +18,9 @@ const ran = ref(false);
 const busy = ref(false);
 const error = ref("");
 const groups = ref<{ query: string; results: string[] }[]>([]);
+// Whether the inline visual editor is open. Its grapher (and the engine) load only when it is first opened,
+// and it tracks the code you edit above while it is open (the grapher watches the code prop).
+const showViz = ref(false);
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let jar: any;
@@ -74,6 +77,9 @@ async function run(): Promise<void> {
     <div ref="editor" class="metta-editor" spellcheck="false"></div>
     <div class="metta-bar">
       <button class="metta-run" :disabled="busy" @click="run">{{ busy ? "Running…" : "Run" }}</button>
+      <button class="metta-viz-btn" @click="showViz = !showViz">
+        {{ showViz ? "Hide graph" : "Visualize" }}
+      </button>
     </div>
     <pre v-if="error" class="metta-error">{{ error }}</pre>
     <div v-else-if="ran" class="metta-output">
@@ -83,6 +89,9 @@ async function run(): Promise<void> {
         <span class="metta-arrow">⇒</span>
         <span class="metta-r">[{{ g.results.join(", ") }}]</span>
       </div>
+    </div>
+    <div v-if="showViz" class="metta-viz">
+      <MeTTaGrapher :code="src" hide-examples height="340px" />
     </div>
   </div>
 </template>
@@ -128,6 +137,25 @@ async function run(): Promise<void> {
 }
 .metta-run:disabled {
   opacity: 0.6;
+}
+.metta-viz-btn {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--vp-c-brand-1);
+  background: transparent;
+  border: 1px solid var(--vp-c-brand-1);
+  border-radius: 6px;
+  padding: 3px 14px;
+  transition:
+    background 0.2s,
+    color 0.2s;
+}
+.metta-viz-btn:hover {
+  color: var(--vp-c-bg);
+  background: var(--vp-c-brand-1);
+}
+.metta-viz {
+  border-top: 1px solid var(--vp-c-divider);
 }
 .metta-output,
 .metta-error {

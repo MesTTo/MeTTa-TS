@@ -26,6 +26,7 @@
   "dependencies": {
     "@metta-ts/core": "workspace:*",
     "@metta-ts/edsl": "workspace:*",
+    "@metta-ts/grapher": "workspace:*",
     "@metta-ts/hyperon": "workspace:*",
     "@metta-ts/node": "workspace:*"
   },

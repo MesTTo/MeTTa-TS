@@ -28,6 +28,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @metta-ts/core build
+      - run: pnpm --filter @metta-ts/hyperon build
+      - run: pnpm --filter @metta-ts/grapher build
       - run: pnpm --filter @metta-ts/website docs:build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

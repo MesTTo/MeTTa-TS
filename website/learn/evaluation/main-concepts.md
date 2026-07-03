@@ -21,6 +21,16 @@ A **Variable** is written with a leading `$`: `$x`, `$_`, `$thing`. Variables tu
 
 A **Grounded** atom wraps sub-symbolic data: a concrete value, a collection, or an operation. The numbers and arithmetic you use are grounded: in `(+ 1 2)`, the `+` is a grounded operation and `1` and `2` are grounded values. Grounded atoms are how MeTTa reaches into the host language, and in MeTTa TS that host is TypeScript, so a grounded atom can hold any TypeScript value.
 
+Here is that nesting made literal. This is one atom drawn as a tree: each node is a symbol, a variable, or a value, and the parentheses become the parent-child links. Drag to pan and use the zoom controls to fit; the full editor lives on the [visual editor](/tools/grapher) page.
+
+<MeTTaGrapher hide-examples height="240px">
+
+```metta
+(implies (human Socrates) (mortal Socrates))
+```
+
+</MeTTaGrapher>
+
 ## Facts versus evaluation
 
 A MeTTa script is read one atom at a time. An atom on its own is **added to the space**. An atom prefixed with `!` is **evaluated immediately**, and its result is printed rather than stored. Comments start with `;`.

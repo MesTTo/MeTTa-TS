@@ -85,6 +85,18 @@ But beware where the choice happens. Each occurrence is evaluated independently,
 
 </MettaRunner>
 
+Nondeterminism is visible in the graph too. Evaluate `coin` below: it has two rules, so the query has two results, shown together beneath the node.
+
+<MeTTaGrapher hide-examples height="240px">
+
+```metta
+(= (coin) Heads)
+(= (coin) Tails)
+(coin)
+```
+
+</MeTTaGrapher>
+
 ## Search by generate-and-test
 
 Recursion plus nondeterminism gives you search almost for free. A function that builds all binary lists of a given length:

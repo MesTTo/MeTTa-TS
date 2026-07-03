@@ -89,3 +89,20 @@ describe("stdlib include", () => {
     expect(r1(`!(include concurrency) !(transaction (add-atom &self (x 1)))`)).toBeDefined();
   });
 });
+
+describe("spaces: get-atoms returns atoms verbatim", () => {
+  // Regression: get-atoms had no return-type signature, so its results were re-reduced to normal form
+  // ((+ 2 3) -> 5), diverging from Hyperon and PeTTa, which both return the stored atom literally.
+  // The `(: get-atoms (-> SpaceType Atom))` declaration makes the Atom-typed result inert.
+  it("does not reduce a stored, reducible atom", () => {
+    expect(
+      r1("!(bind! &g (new-space)) !(add-atom &g (color (+ 2 3) red)) !(get-atoms &g)"),
+    ).toEqual(["(color (+ 2 3) red)"]);
+  });
+
+  it("add-atom itself already stores the argument unevaluated", () => {
+    expect(
+      r1("!(bind! &h (new-space)) !(add-atom &h (foo (+ 1 1))) !(match &h $x (quote $x))"),
+    ).toEqual(["(quote (foo (+ 1 1)))"]);
+  });
+});

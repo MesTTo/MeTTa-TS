@@ -58,12 +58,13 @@ import { type GroundingTable, type ReduceResult, callGrounded, pettaOpNames } fr
 import { tableKey, keyWellFormed, analyzePurity as analyzePurityRef, IMPURE_OPS } from "./tabling";
 import { runCompiled, compileEnv, type CompiledFns, type CompiledImpureOps } from "./compile";
 import { type IntVal, addInt, subInt } from "./number";
+import { readEnv } from "./env";
 
 // Constructor / normal-form short-circuit, on by default. `METTA_CTOR_SC=0` disables it for A/B measurement.
-const CTOR_SC = process.env.METTA_CTOR_SC !== "0";
+const CTOR_SC = readEnv("METTA_CTOR_SC") !== "0";
 // Internal A/B gate for the `(case (match ...) cases)` streaming path. Default on; `0` restores the
 // materializing stdlib expansion in one binary.
-const STREAM_CASE = process.env.METTA_STREAM_CASE !== "0";
+const STREAM_CASE = readEnv("METTA_STREAM_CASE") !== "0";
 
 // ---------- generator-based evaluation (sync core, optional async) ----------
 // The driver functions are generators that `yield` a pending Promise only at the one async boundary
@@ -3330,23 +3331,23 @@ function countOnlyMatch(z: Atom): Atom {
 const COLLAPSE_ROUTE_ENV = "METTA_COLLAPSE_ROUTE";
 const DONE_UNIT = sym("done");
 
-const collapseRouteEnabled = (): boolean => process.env[COLLAPSE_ROUTE_ENV] !== "0";
+const collapseRouteEnabled = (): boolean => readEnv(COLLAPSE_ROUTE_ENV) !== "0";
 // Disables the all-distinct-variable count-aggregate (the head/arity tally), falling back to the streaming
 // count. Off switch for A/B differentials only; the tally is byte-identical, so this stays on by default.
-const countAggregateEnabled = (): boolean => process.env.METTA_COUNT_AGGREGATE !== "0";
+const countAggregateEnabled = (): boolean => readEnv("METTA_COUNT_AGGREGATE") !== "0";
 // Void-context build: when a routed `(length (collapse (FN a)))` build ends in a dead binding to a compiled
 // impure function (matespace's `($g (rewriteK Z K))`, whose tree result is never read), run that call in
 // discard mode so its add-atom side effects happen without allocating the result tree (matespace K=19 drops
 // ~25%). The binding is kept and only its value is the sentinel, so the gensym counter is byte-identical, not
 // just alpha. Off switch (METTA_VOID_BUILD=0) for the differential.
-const voidBuildEnabled = (): boolean => process.env.METTA_VOID_BUILD !== "0";
+const voidBuildEnabled = (): boolean => readEnv("METTA_VOID_BUILD") !== "0";
 // Conjunctive collapse-count via the worst-case-optimal join fold (matchConjCount). A multi-goal
 // `(length/size-atom (collapse (match &self (, ...) tmpl)))` folds the same wcoJoin the default result path
 // (matchConjJoin) already runs, counting each solution instead of allocating its answer atom. The count is
 // order- and name-independent, so the fold is byte-identical to materializing-then-counting and needs no
 // experimental gate; it skips ~360k atom allocations on permutations (2.8s -> 0.48s). Off switch
 // (METTA_CONJ_COUNT=0) drops back to the materializing count for the differential.
-const conjCountEnabled = (): boolean => process.env.METTA_CONJ_COUNT !== "0";
+const conjCountEnabled = (): boolean => readEnv("METTA_CONJ_COUNT") !== "0";
 
 interface TailMatchBuild {
   readonly buildExpr: Atom;
