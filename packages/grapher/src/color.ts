@@ -173,3 +173,12 @@ export function lerpColor(a: string, b: string, t: number): string {
     ca[2] + (cb[2] - ca[2]) * t,
   ]);
 }
+
+/** A value in [0,1] to a green→yellow→red heat color (0 green, 0.5 yellow, 1 red), blended in OKLab. For
+ *  coloring a node by a normalized quantity, an energy, a count, a score, the way a heat map does. */
+export function heatColor(t: number): string {
+  const u = Math.max(0, Math.min(1, t));
+  return u < 0.5
+    ? lerpColor("#3fb950", "#f2cc60", u * 2)
+    : lerpColor("#f2cc60", "#f85149", (u - 0.5) * 2);
+}

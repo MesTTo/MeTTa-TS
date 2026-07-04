@@ -8,13 +8,12 @@
 import { parseArgs } from "node:util";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { format, type RunOptions } from "@metta-ts/core";
+import { format, setOutputSink, setRawSink, type RunOptions } from "@metta-ts/core";
 import { runFile } from "./index";
 
 // Deep effectful MeTTa recursion can exceed V8's default call stack. Re-exec once with a larger stack,
 // matching the reference interpreter's iterative driver. Set METTA_TS_STACK to skip (e.g. when embedding).
 function reexecWithLargerStack(): void {
-  if (process.env.METTA_TS_STACK !== undefined) return;
   const res = spawnSync(
     process.execPath,
     ["--stack-size=8000", fileURLToPath(import.meta.url), ...process.argv.slice(2)],
@@ -23,8 +22,24 @@ function reexecWithLargerStack(): void {
   process.exit(res.status ?? 1);
 }
 
+/** Run the file, buffering every byte it would print (query results plus eval-time `println!`/`print!`),
+ *  and return it as one string. Buffering lets the optimistic default-stack attempt be discarded and
+ *  retried under a bigger stack without a program that printed before overflowing double-printing. */
+function runToBuffer(file: string, fuel: number | undefined, opts: RunOptions | undefined): string {
+  const buf: string[] = [];
+  const prevOut = setOutputSink((line) => buf.push(line + "\n"));
+  const prevRaw = setRawSink((text) => buf.push(text));
+  try {
+    for (const r of runFile(file, fuel, opts))
+      buf.push("[" + r.results.map(format).join(", ") + "]\n");
+    return buf.join("");
+  } finally {
+    setOutputSink(prevOut);
+    setRawSink(prevRaw);
+  }
+}
+
 function main(): void {
-  reexecWithLargerStack();
   // CLI resource limits: `--max-steps` is the step ceiling, and `--max-stack-depth` seeds the interpreter
   // stack-depth bound a program can further tighten with `pragma!`.
   const { positionals, values } = parseArgs({
@@ -68,8 +83,19 @@ function main(): void {
             : {}),
         }
       : undefined;
-  for (const r of runFile(file, fuel, opts)) {
-    process.stdout.write("[" + r.results.map(format).join(", ") + "]\n");
+  // The child of a big-stack reexec (METTA_TS_STACK=1) already has the room, so it just runs. Otherwise
+  // try on V8's default stack first: most programs fit, and skipping the second node startup is worth ~80ms
+  // on a short run. Only a genuine stack overflow reexecs once with an 8 MB stack, re-running from the
+  // buffered start so nothing prints twice.
+  if (process.env.METTA_TS_STACK !== undefined) {
+    process.stdout.write(runToBuffer(file, fuel, opts));
+    return;
+  }
+  try {
+    process.stdout.write(runToBuffer(file, fuel, opts));
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e;
+    reexecWithLargerStack();
   }
 }
 

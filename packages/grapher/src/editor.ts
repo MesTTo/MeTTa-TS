@@ -6,7 +6,7 @@
 // and wires the renderer and the controller together. Construct it with a container element; drive it with
 // load/loadSource/save/toSource/evaluate/tidy, and subscribe with onChange.
 
-import { MeTTa, type Atom } from "@metta-ts/hyperon";
+import { MeTTa, ExpressionAtom, E, type Atom } from "@metta-ts/hyperon";
 import { Graph, type GraphNode } from "./model";
 import { Renderer, CANVAS_BG, type NodeLabel, type RenderState } from "./render";
 import { Controller, type ControllerHost } from "./controller";
@@ -22,19 +22,69 @@ import { BlockView } from "./block/view";
 import { type GifEncoderLib, type GifOptions } from "./block/gif";
 import { graphReductionGif } from "./sidebyside-gif";
 import { type BlockPalette } from "./block/settings";
-import { bindVizSpace, readViz, colorOf, textOf } from "./viz";
+import {
+  bindVizSpace,
+  readViz,
+  colorOf,
+  textOf,
+  normalizeRange,
+  numberOf,
+  VIZ_SPACE,
+  type VizMapper,
+} from "./viz";
+import { heatColor } from "./color";
+import { parseProgram } from "./parse";
 
 /** A per-node visual overlay set by MeTTa directives in the `&grapher` space. */
 export interface VizOverlay {
   color?: string;
   highlight?: boolean;
   label?: string;
+  sizeScale?: number;
 }
 
 const NO_VIZ: ReadonlyMap<string, VizOverlay> = new Map();
 
 const NO_SELECTION: ReadonlySet<string> = new Set();
 const NO_LABELS: ReadonlyMap<string, NodeLabel> = new Map();
+
+/** Whether an atom drives the `&grapher` view: it references the `&grapher` space (e.g. `(add-atom &grapher
+ *  (shade ...))`), so it is a config directive for the picture rather than program content to draw. Such
+ *  atoms are run for their effect and kept out of the graph, the way a REPL config file configures the
+ *  prompt without printing itself. */
+function referencesGrapher(a: Atom): boolean {
+  if (a.toString() === VIZ_SPACE) return true;
+  return a instanceof ExpressionAtom && a.children().some(referencesGrapher);
+}
+
+/** The directives inside a top-level `(style D1 D2 ...)` stylesheet block, or null if `a` is not one. Only a
+ *  top-level `style` form is the stylesheet, so a `style` nested inside the user's own program is left
+ *  untouched and the block never interferes with the program's atoms. */
+function styleBlockDirectives(a: Atom): Atom[] | null {
+  if (!(a instanceof ExpressionAtom)) return null;
+  const items = a.children();
+  return items[0]?.toString() === "style" ? items.slice(1) : null;
+}
+
+/** The bare directive an atom contributes to `&grapher`: the added atom `X` for `(add-atom &grapher X)`, or
+ *  the atom itself otherwise (a style-block child is already bare). */
+function bareDirective(a: Atom): Atom {
+  if (a instanceof ExpressionAtom) {
+    const items = a.children();
+    if (items.length === 3 && items[0]?.toString() === "add-atom" && items[1]?.toString() === VIZ_SPACE)
+      return items[2]!;
+  }
+  return a;
+}
+
+/** The first result of an evaluation that denotes a finite number, or null if none do. */
+function firstNumber(results: readonly Atom[]): number | null {
+  for (const r of results) {
+    const n = numberOf(r);
+    if (n !== null) return n;
+  }
+  return null;
+}
 
 /** Options for {@link MeTTaGrapher}: bring your own engine (to share a space) and an initial program. */
 export interface GrapherOptions {
@@ -55,6 +105,9 @@ export class MeTTaGrapher implements ControllerHost {
   readonly viz = new Map<string, VizOverlay>();
   private readonly vizFocus = new Set<string>();
   private vizBound = false;
+  /** The `&grapher` directives from the last loaded source, kept so `toSource` can round-trip them under a
+   *  comment even though they are not drawn as nodes. */
+  private vizDirectives: Atom[] = [];
 
   private readonly renderer: Renderer;
   private readonly controller: Controller;
@@ -181,7 +234,9 @@ export class MeTTaGrapher implements ControllerHost {
     this.viz.clear();
     this.vizFocus.clear();
     const skip = this.directiveNodeIds();
-    const { directives, background } = readViz(space);
+    const { directives, mappers, background } = readViz(space);
+    const sizeVals: Array<[string, number]> = [];
+    const shadeVals: Array<[string, number]> = [];
     for (const d of directives) {
       for (const id of this.matchNodes(d.target, skip)) {
         if (d.kind === "color" && d.arg !== undefined) this.mergeViz(id, { color: colorOf(d.arg) });
@@ -189,13 +244,48 @@ export class MeTTaGrapher implements ControllerHost {
         else if (d.kind === "label" && d.arg !== undefined)
           this.mergeViz(id, { label: textOf(d.arg) });
         else if (d.kind === "focus") this.vizFocus.add(id);
+        else if (d.kind === "size" && d.value !== undefined) sizeVals.push([id, d.value]);
+        else if (d.kind === "shade" && d.value !== undefined) shadeVals.push([id, d.value]);
       }
     }
+    // Data-driven mappers: `(shade-by FUNC)` / `(size-by FUNC)` value every node by evaluating `(FUNC node)`,
+    // so one rule colours or sizes the whole graph from a function the program already defines. Explicit
+    // per-node `size`/`shade` below win over a mapper on the same node, the way a specific CSS rule wins.
+    for (const m of mappers) this.applyMapper(space, m);
+    // `size` and `shade` carry raw numbers (an energy, a count); normalize each across the space so the
+    // smallest maps to the low end and the largest to the high end, then scale the node or heat-color it.
+    for (const [id, s] of normalizeRange(sizeVals, 0.8, 2)) this.mergeViz(id, { sizeScale: s });
+    for (const [id, t] of normalizeRange(shadeVals, 0, 1)) this.mergeViz(id, { color: heatColor(t) });
+    // Resized nodes need room: re-run the layout reserving each node's scaled width (from a `size` directive
+    // or a `size-by` mapper), so the bigger boxes push their neighbors apart instead of overlapping them.
+    if ([...this.viz.values()].some((o) => o.sizeScale !== undefined))
+      layout(this.graph, { scaleOf: (node) => this.viz.get(node.id)?.sizeScale ?? 1 });
     this.renderer.setBackground(background ?? CANVAS_BG);
   }
 
   private mergeViz(id: string, patch: VizOverlay): void {
     this.viz.set(id, { ...this.viz.get(id), ...patch });
+  }
+
+  /** Apply one `(shade-by FUNC)` / `(size-by FUNC)` mapper: value each node by evaluating `(FUNC node)`, then
+   *  normalize the values across the graph and colour or size the nodes that produced a number. */
+  private applyMapper(space: MeTTa, m: VizMapper): void {
+    const vals: Array<[string, number]> = [];
+    for (const node of this.graph.nodes.values()) {
+      const atom = composeAtom(this.graph, node.id);
+      if (atom === null) continue;
+      let results: Atom[];
+      try {
+        results = space.evaluateAtom(E(m.func, atom));
+      } catch {
+        continue; // a node whose (FUNC node) errors simply gets no value
+      }
+      const v = firstNumber(results);
+      if (v !== null) vals.push([node.id, v]);
+    }
+    if (m.property === "shade")
+      for (const [id, t] of normalizeRange(vals, 0, 1)) this.mergeViz(id, { color: heatColor(t) });
+    else for (const [id, s] of normalizeRange(vals, 0.8, 2)) this.mergeViz(id, { sizeScale: s });
   }
 
   /** The nodes a directive target names: by node name, else by the atom the node composes to. Nodes that
@@ -273,10 +363,34 @@ export class MeTTaGrapher implements ControllerHost {
     this.afterLoad();
   }
 
-  /** Load a graph by parsing MeTTa source. */
+  /** Load a graph by parsing MeTTa source. A top-level `(style ...)` block, and any explicit `(add-atom
+   *  &grapher ...)`, are the stylesheet, not content: their directives are run into the isolated `&grapher`
+   *  space, kept out of the drawn graph, and their overlays painted onto the content. */
   loadSource(src: string): void {
-    this.graph = fromSource(src);
+    const directives: Atom[] = [];
+    const content: Atom[] = [];
+    for (const a of parseProgram(src)) {
+      const styled = styleBlockDirectives(a);
+      if (styled !== null) directives.push(...styled);
+      else if (referencesGrapher(a)) directives.push(a);
+      else content.push(a);
+    }
+    this.graph = atomToGraph(content);
     this.afterLoad();
+    if (directives.length === 0) return;
+    // Keep each directive's bare form so toSource can round-trip them in a `(style ...)` block.
+    this.vizDirectives = directives.map(bareDirective);
+    // Feed each directive into the isolated `&grapher` space (never `&self`, so the stylesheet cannot touch the
+    // program), then paint the overlays onto the content the way `evaluate` does after reducing a head.
+    const space = this.evalSpace();
+    for (const d of directives) {
+      const bare = bareDirective(d);
+      if (bare === d && referencesGrapher(d)) space.run(`!${d.toString()}`);
+      else space.run(`!(add-atom ${VIZ_SPACE} ${bare.toString()})`);
+    }
+    this.applyViz(space);
+    this.render();
+    this.focusViz();
   }
 
   /** Load a program from atoms (for example built with the eDSL), laid out as tidy trees. */
@@ -297,7 +411,12 @@ export class MeTTaGrapher implements ControllerHost {
 
   /** Render the graph as MeTTa source. */
   toSource(): string {
-    return toSource(this.graph);
+    const program = toSource(this.graph);
+    if (this.vizDirectives.length === 0) return program;
+    // Round-trip the view directives as a `(style ...)` block: visible and editable in the source, separate
+    // from the program, and never drawn as nodes.
+    const lines = this.vizDirectives.map((d) => `  ${d.toString()}`).join("\n");
+    return `${program}\n\n(style\n${lines})`;
   }
 
   /** Compose the graph's heads into atoms. */
@@ -588,6 +707,7 @@ export class MeTTaGrapher implements ControllerHost {
     this.labels.clear();
     this.viz.clear();
     this.vizFocus.clear();
+    this.vizDirectives = [];
     this.primaryId = null;
     this.programDirty = true;
     if (this.viewMode === "block") this.block.setAtoms(graphToAtoms(this.graph));

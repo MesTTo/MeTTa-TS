@@ -19,12 +19,16 @@ import {
   gbool,
   sym,
   variable,
+  atomVars,
   emptyExpr,
 } from "./atom";
+import { type CellVar, mkCell, derefCell, occursCell, unifyCellOccurs } from "./trail";
+import { type JitGroup, type Slim, compileJitGroup, jitRuntime } from "./nondet-jit";
 import { type Bindings, emptyBindings, prependValRaw, hasLoop, lookupVal } from "./bindings";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { instantiate } from "./instantiate";
 import { IMPURE_OPS } from "./tabling";
+import { readEnv } from "./env";
 import { type IntVal, addInt, subInt, mulInt, intDiv, intMod, isZero, cmpIntVal } from "./number";
 import { callGrounded } from "./builtins";
 import { type MinEnv, type St } from "./eval";
@@ -130,6 +134,7 @@ interface NondetHolder {
     partAtoms: readonly Atom[],
     st: St,
     ops: CompiledImpureOps,
+    fuel?: number,
   ) => CompiledRunResult | undefined;
 }
 export type CompiledHolder =
@@ -933,7 +938,7 @@ function compileSymbolic(env: MinEnv, functor: string): SymbolicHolder | undefin
 const NONDET_CALL_CAP = 4_000_000;
 
 type NondetCall =
-  | { readonly tag: "self"; readonly args: readonly Atom[] }
+  | { readonly tag: "call"; readonly fn: string; readonly args: readonly Atom[] }
   | {
       readonly tag: "match";
       readonly space: Atom;
@@ -946,12 +951,27 @@ interface NondetGoal {
   readonly call: NondetCall;
 }
 
-type NondetTail = { readonly tag: "tpl"; readonly atom: Atom } | NondetCall;
+// A terminal: a template to emit, `empty` (an `(if ...)` branch that yields no solutions), or a tail call.
+type NondetTail =
+  | { readonly tag: "tpl"; readonly atom: Atom }
+  | { readonly tag: "empty" }
+  | NondetCall;
+
+// A clause body, compiled to a tree so a size/depth guard `(if (< k $s) <search> (empty))` selects a
+// sub-body at runtime. A `seq` is a let*/let goal chain ending in a tail; an `if` picks a branch by a
+// ground comparison guard evaluated over the bound arguments.
+type NondetBody =
+  | { readonly tag: "seq"; readonly goals: readonly NondetGoal[]; readonly tail: NondetTail }
+  | {
+      readonly tag: "if";
+      readonly cond: Atom;
+      readonly then: NondetBody;
+      readonly els: NondetBody;
+    };
 
 interface NondetClause {
   readonly lhs: Atom;
-  readonly goals: readonly NondetGoal[];
-  readonly tail: NondetTail;
+  readonly body: NondetBody;
 }
 
 /** Data under evaluation: contains no rule-defined or grounded-op head anywhere, so the type-directed
@@ -968,7 +988,50 @@ function nondetIsData(env: MinEnv, a: Atom): boolean {
   return a.items.every((x) => nondetIsData(env, x));
 }
 
-function nondetCall(env: MinEnv, functor: string, val: Atom): NondetCall | undefined {
+// Binary integer operators the search folds once both operands bind to concrete ints, and the
+// comparison operators an `(if ...)` guard may test. Both evaluate at runtime through the interpreter's
+// own grounded ops (callGrounded), so the compiled result is byte-identical to the interpreted one.
+const ARITH_FOLD = new Set(["+", "-", "*"]);
+const NONDET_COMPARE = new Set(["<", "<=", ">", ">=", "=="]);
+
+/** A call argument or result template the search can build and resolve: interpreter data, but also
+ *  binary arithmetic (`(- $s 2)`, `(+ (+ $fs $xs) 1)`) anywhere inside, folded to an int once its
+ *  operands bind. Like `nondetIsData` but with `+`/`-`/`*` permitted; any other grounded op, rule call,
+ *  or higher-order head is outside the subset. */
+function nondetArgOk(env: MinEnv, a: Atom): boolean {
+  if (a.kind !== "expr" || a.items.length === 0) return true;
+  const h = a.items[0]!;
+  if (h.kind === "expr" && h.items.length > 0) return false;
+  if (h.kind === "sym") {
+    if (ARITH_FOLD.has(h.name)) {
+      if (a.items.length !== 3) return false;
+    } else if (env.ruleIndex.has(h.name) || env.gt.has(h.name) || IMPURE_OPS.has(h.name))
+      return false;
+  }
+  return a.items.every((x) => nondetArgOk(env, x));
+}
+
+/** A comparison guard `(cmp x y)` over search arguments: the condition an `(if ...)` node tests. */
+function nondetGuardOk(env: MinEnv, cond: Atom): boolean {
+  return (
+    cond.kind === "expr" &&
+    cond.items.length === 3 &&
+    cond.items[0]!.kind === "sym" &&
+    NONDET_COMPARE.has((cond.items[0] as SymAtom).name) &&
+    nondetArgOk(env, cond.items[1]!) &&
+    nondetArgOk(env, cond.items[2]!)
+  );
+}
+
+const isEmptyCall = (a: Atom): boolean =>
+  a.kind === "expr" &&
+  a.items.length === 1 &&
+  a.items[0]!.kind === "sym" &&
+  (a.items[0] as SymAtom).name === "empty";
+
+// A call targets any functor in the compiled group (so mutually-recursive chainers like obc/obc-gtz
+// dispatch across each other), a `(match ...)` space query, or bails.
+function nondetCall(env: MinEnv, group: ReadonlySet<string>, val: Atom): NondetCall | undefined {
   if (val.kind !== "expr" || val.items.length === 0 || val.items[0]!.kind !== "sym")
     return undefined;
   const op = (val.items[0] as SymAtom).name;
@@ -981,20 +1044,30 @@ function nondetCall(env: MinEnv, functor: string, val: Atom): NondetCall | undef
       template: val.items[3]!,
     };
   }
-  if (op === functor) {
+  if (group.has(op)) {
     const args = val.items.slice(1);
-    if (!args.every((x) => nondetIsData(env, x))) return undefined;
-    return { tag: "self", args };
+    if (!args.every((x) => nondetArgOk(env, x))) return undefined;
+    return { tag: "call", fn: op, args };
   }
   return undefined;
 }
 
-/** Unwrap a clause RHS into let/let* goals and a tail (a plain template or a terminal call). */
-function nondetUnwrap(
-  env: MinEnv,
-  functor: string,
-  rhs: Atom,
-): { goals: NondetGoal[]; tail: NondetTail } | undefined {
+/** Unwrap a clause RHS into a body tree: an `(if guard then else)` node, or a let/let* goal chain
+ *  ending in a tail (a template, a terminal call, or `(empty)` for no solutions). An `(if ...)` nested
+ *  after goals is outside the subset and bails. */
+function nondetUnwrap(env: MinEnv, group: ReadonlySet<string>, rhs: Atom): NondetBody | undefined {
+  if (
+    rhs.kind === "expr" &&
+    rhs.items.length === 4 &&
+    rhs.items[0]!.kind === "sym" &&
+    (rhs.items[0] as SymAtom).name === "if"
+  ) {
+    if (!nondetGuardOk(env, rhs.items[1]!)) return undefined;
+    const then = nondetUnwrap(env, group, rhs.items[2]!);
+    const els = nondetUnwrap(env, group, rhs.items[3]!);
+    if (then === undefined || els === undefined) return undefined;
+    return { tag: "if", cond: rhs.items[1]!, then, els };
+  }
   const goals: NondetGoal[] = [];
   let cur = rhs;
   for (;;) {
@@ -1004,7 +1077,7 @@ function nondetUnwrap(
       for (const pv of cur.items[1]!.items) {
         if (pv.kind !== "expr" || pv.items.length !== 2) return undefined;
         if (!nondetIsData(env, pv.items[0]!)) return undefined;
-        const call = nondetCall(env, functor, pv.items[1]!);
+        const call = nondetCall(env, group, pv.items[1]!);
         if (call === undefined) return undefined;
         goals.push({ pat: pv.items[0]!, call });
       }
@@ -1013,7 +1086,7 @@ function nondetUnwrap(
     }
     if (op === "let" && cur.items.length === 4) {
       if (!nondetIsData(env, cur.items[1]!)) return undefined;
-      const call = nondetCall(env, functor, cur.items[2]!);
+      const call = nondetCall(env, group, cur.items[2]!);
       if (call === undefined) return undefined;
       goals.push({ pat: cur.items[1]!, call });
       cur = cur.items[3]!;
@@ -1021,165 +1094,759 @@ function nondetUnwrap(
     }
     break;
   }
-  const tailCall = nondetCall(env, functor, cur);
-  if (tailCall !== undefined) return { goals, tail: tailCall };
-  if (!nondetIsData(env, cur)) return undefined;
-  return { goals, tail: { tag: "tpl", atom: cur } };
+  if (isEmptyCall(cur)) return { tag: "seq", goals, tail: { tag: "empty" } };
+  const tailCall = nondetCall(env, group, cur);
+  if (tailCall !== undefined) return { tag: "seq", goals, tail: tailCall };
+  // A result template may embed arithmetic (`(MkSized (+ (+ $fs $xs) 1) ...)`), folded when emitted.
+  if (!nondetArgOk(env, cur)) return undefined;
+  return { tag: "seq", goals, tail: { tag: "tpl", atom: cur } };
+}
+
+/** Whether a body issues any call (vs emitting templates only); a group with no calls anywhere is
+ *  compileSymbolic's job, not this searching holder's. */
+function nondetBodyHasCalls(body: NondetBody): boolean {
+  if (body.tag === "if") return nondetBodyHasCalls(body.then) || nondetBodyHasCalls(body.els);
+  return body.goals.length > 0 || body.tail.tag === "call" || body.tail.tag === "match";
+}
+
+/** Whether a body queries a space via `(match ...)`. A group whose search is pure rule recursion (no
+ *  match) runs on the zero-allocation Trail (`makeTrailRun`); one that queries spaces stays on the
+ *  immutable matcher, which the injected `matchSolutions` returns bindings for. */
+function nondetBodyUsesMatch(body: NondetBody): boolean {
+  if (body.tag === "if") return nondetBodyUsesMatch(body.then) || nondetBodyUsesMatch(body.els);
+  if (body.tail.tag === "match") return true;
+  return body.goals.some((g) => g.call.tag === "match");
+}
+
+// ---------- clause skeletons (the trail run's compiled clause form) ----------
+// A clause atom precompiled for the cell search, so a dispatch never copies clause text: `t: 0` is a
+// constant subtree (variable-free, shared as-is), `t: 1` is a clause-variable slot in the dispatch's
+// frame array, `t: 2` is a structured node with variables beneath (`arith` set when it is a foldable
+// binary integer node). Head and pattern skeletons unify directly against terms (WAM read mode; a subtree
+// materializes only when it binds into a variable — write mode), and body arguments/templates instantiate
+// through the frame. This is what makes a failed clause attempt nearly free: it fails at the first
+// mismatch having allocated nothing but the frame.
+export type Skel =
+  | { readonly t: 0; readonly a: Atom }
+  | { readonly t: 1; readonly i: number }
+  | { readonly t: 2; readonly items: readonly Skel[]; readonly arith: string | undefined };
+
+export interface SkelGoal {
+  readonly pat: Skel;
+  readonly fn: string;
+  readonly args: readonly Skel[];
+}
+
+export type SkelTail =
+  | { readonly tag: "tpl"; readonly tpl: Skel }
+  | { readonly tag: "empty" }
+  | { readonly tag: "call"; readonly fn: string; readonly args: readonly Skel[] };
+
+export type SkelBody =
+  | { readonly tag: "seq"; readonly goals: readonly SkelGoal[]; readonly tail: SkelTail }
+  | {
+      readonly tag: "if";
+      readonly op: string;
+      readonly x: Skel;
+      readonly y: Skel;
+      readonly then: SkelBody;
+      readonly els: SkelBody;
+    };
+
+export interface SkelClause {
+  /** Number of clause-variable slots (the dispatch frame's length). */
+  readonly n: number;
+  /** Head argument skeletons (the head symbol is implied by the dispatch table). */
+  readonly lhsArgs: readonly Skel[];
+  readonly body: SkelBody;
+}
+
+function skelOf(a: Atom, idx: Map<string, number>): Skel {
+  if (a.kind === "var") {
+    let i = idx.get(a.name);
+    if (i === undefined) {
+      i = idx.size;
+      idx.set(a.name, i);
+    }
+    return { t: 1, i };
+  }
+  if (a.kind === "expr") {
+    const h = a.items[0];
+    const arith =
+      a.items.length === 3 && h !== undefined && h.kind === "sym" && ARITH_FOLD.has(h.name)
+        ? h.name
+        : undefined;
+    // A ground non-arith subtree is a shared constant; a ground arith node still folds at instantiation.
+    if (a.ground && arith === undefined) return { t: 0, a };
+    return { t: 2, items: a.items.map((x) => skelOf(x, idx)), arith };
+  }
+  return { t: 0, a };
+}
+
+function skelBodyOf(b: NondetBody, idx: Map<string, number>): SkelBody | undefined {
+  if (b.tag === "if") {
+    const c = b.cond;
+    if (c.kind !== "expr" || c.items.length !== 3 || c.items[0]!.kind !== "sym") return undefined;
+    const x = skelOf(c.items[1]!, idx);
+    const y = skelOf(c.items[2]!, idx);
+    const then = skelBodyOf(b.then, idx);
+    if (then === undefined) return undefined;
+    const els = skelBodyOf(b.els, idx);
+    if (els === undefined) return undefined;
+    return { tag: "if", op: (c.items[0] as SymAtom).name, x, y, then, els };
+  }
+  const goals: SkelGoal[] = [];
+  for (const g of b.goals) {
+    if (g.call.tag !== "call") return undefined; // a match goal is the immutable run's job
+    goals.push({
+      pat: skelOf(g.pat, idx),
+      fn: g.call.fn,
+      args: g.call.args.map((x) => skelOf(x, idx)),
+    });
+  }
+  const tl = b.tail;
+  if (tl.tag === "match") return undefined;
+  const tail: SkelTail =
+    tl.tag === "tpl"
+      ? { tag: "tpl", tpl: skelOf(tl.atom, idx) }
+      : tl.tag === "empty"
+        ? { tag: "empty" }
+        : { tag: "call", fn: tl.fn, args: tl.args.map((x) => skelOf(x, idx)) };
+  return { tag: "seq", goals, tail };
+}
+
+/** Compile every clause of a (match-free) group to skeletons, or `undefined` when any clause falls
+ *  outside the skeleton form (the group then runs on the immutable holder). */
+function compileSkels(
+  clausesByFn: ReadonlyMap<string, NondetClause[]>,
+): Map<string, SkelClause[]> | undefined {
+  const out = new Map<string, SkelClause[]>();
+  for (const [fn, cls] of clausesByFn) {
+    const scls: SkelClause[] = [];
+    for (const c of cls) {
+      if (c.lhs.kind !== "expr" || c.lhs.items.length === 0 || c.lhs.items[0]!.kind !== "sym")
+        return undefined;
+      const idx = new Map<string, number>();
+      const lhsArgs = c.lhs.items.slice(1).map((x) => skelOf(x, idx));
+      const body = skelBodyOf(c.body, idx);
+      if (body === undefined) return undefined;
+      scls.push({ n: idx.size, lhsArgs, body });
+    }
+    out.set(fn, scls);
+  }
+  return out;
 }
 
 /** Compile a functor whose every clause is a let/let* chain of self-calls and space matches over a
  *  data template. Sound only when `candidatesW` for the call equals exactly the static clauses (the
  *  eval call site declines when runtime rules can affect the operator; variable-headed catch-alls
  *  disable compilation entirely). */
-function compileNondet(env: MinEnv, functor: string): NondetHolder | undefined {
-  if (env.varRulesVar.length !== 0) return undefined;
-  const eqs = env.ruleIndex.get(functor);
-  if (eqs === undefined || eqs.length === 0) return undefined;
-  const clauses: NondetClause[] = [];
-  let arity: number | undefined;
-  let hasCalls = false;
-  for (const [lhs, rhs] of eqs) {
-    if (lhs.kind !== "expr" || lhs.items.length === 0) return undefined;
-    const h = lhs.items[0]!;
-    if (h.kind !== "sym" || h.name !== functor) return undefined;
-    const a = lhs.items.length - 1;
-    if (arity === undefined) arity = a;
-    else if (a !== arity) return undefined;
-    if (!lhs.items.slice(1).every((x) => nondetIsData(env, x))) return undefined;
-    const un = nondetUnwrap(env, functor, rhs);
-    if (un === undefined) return undefined;
-    if (un.goals.length > 0 || un.tail.tag !== "tpl") hasCalls = true;
-    clauses.push({ lhs, goals: un.goals, tail: un.tail });
-  }
-  // A functor with template-only clauses is compileSymbolic's job; this holder earns its keep only
-  // when bodies actually search.
-  if (arity === undefined || !hasCalls) return undefined;
-  const clauseCount = clauses.length;
+const isIntAtom = (a: Atom): boolean => a.kind === "gnd" && (a.value as { g: string }).g === "int";
 
-  const run = (
-    envR: MinEnv,
-    partAtoms: readonly Atom[],
-    st: St,
-    ops: CompiledImpureOps,
-  ): CompiledRunResult | undefined => {
-    const matchSolutions = ops.matchSolutions;
-    if (matchSolutions === undefined) return undefined;
-    const ctr = { c: st.counter };
-    let dispatches = 0;
-    const world = st.world;
+// Special forms the search handles inline (guard nodes, goal chains, arithmetic folding, `runMatch`),
+// never as a dispatched group subgoal. `if` in particular is rule-defined in the stdlib, so it would
+// otherwise be pulled into the group as a callee. Excluded from group discovery; their arguments are
+// still scanned for the real recursive callees.
+const NONDET_INLINE = new Set([
+  "if",
+  "let",
+  "let*",
+  "match",
+  "empty",
+  ...ARITH_FOLD,
+  ...NONDET_COMPARE,
+]);
 
-    // Deep resolution through the accumulated bindings (miniKanren's walk*): a goal can bind a
-    // variable that an earlier goal already stored INSIDE a bound value, so a shallow instantiate
-    // would emit the stale intermediate variable. The interpreter never sees such chains because its
-    // `chain` plumbing substitutes each concrete value structurally; here the bindings thread instead,
-    // so emitted terms and goal inputs resolve through value chains to their final form.
-    const walk = (b: Bindings, a: Atom): Atom => {
-      let v = a;
-      let hops = 0;
-      while (v.kind === "var") {
-        const next = lookupVal(b, v.name);
-        if (next === undefined) return v;
-        v = next;
-        if (++hops > 10_000) throw BAIL; // a cyclic chain escaped the loop checks: not our subset
-      }
-      return v;
-    };
-    const walkStar = (b: Bindings, a: Atom): Atom => {
-      const v = walk(b, a);
-      if (v.ground || v.kind !== "expr") return v;
-      const its = v.items;
-      let items: Atom[] | null = null;
-      for (let i = 0; i < its.length; i++) {
-        const it = its[i]!;
-        const r = walkStar(b, it);
-        if (items !== null) items.push(r);
-        else if (r !== it) {
-          items = its.slice(0, i);
-          items.push(r);
+/** Rule-defined functors dispatched anywhere in `a` (an expr head in `env.ruleIndex`, excluding the
+ *  inline special forms). A `nondetIsData` template never contains a rule functor, so for an eligible
+ *  clause "mentioned" equals "called". */
+function collectCalledFunctors(env: MinEnv, a: Atom, into: Set<string>): void {
+  if (a.kind !== "expr" || a.items.length === 0) return;
+  const h = a.items[0]!;
+  if (h.kind === "sym" && !NONDET_INLINE.has(h.name) && env.ruleIndex.has(h.name)) into.add(h.name);
+  for (const it of a.items) collectCalledFunctors(env, it, into);
+}
+
+/** The mutually-recursive group reachable from `root`: its call-graph closure over rule functors, so
+ *  obc/obc-gtz (each calls the other) compile together and dispatch across each other at runtime. */
+function discoverNondetGroup(env: MinEnv, root: string): Set<string> {
+  const group = new Set<string>([root]);
+  const queue = [root];
+  while (queue.length > 0) {
+    const fn = queue.pop()!;
+    for (const [, rhs] of env.ruleIndex.get(fn) ?? []) {
+      const called = new Set<string>();
+      collectCalledFunctors(env, rhs, called);
+      for (const g of called)
+        if (!group.has(g)) {
+          group.add(g);
+          queue.push(g);
         }
-      }
-      return items === null ? v : expr(items);
-    };
-    const resolve = (b: Bindings, a: Atom, suffix: string): Atom =>
-      walkStar(b, instantiate(b, a, suffix));
+    }
+  }
+  return group;
+}
 
-    const runMatch = (
-      b: Bindings,
-      suffix: string,
-      call: { space: Atom; pattern: Atom; template: Atom },
-    ): ReadonlyArray<readonly [Atom, Bindings]> => {
-      const m = matchSolutions(
-        envR,
-        { counter: ctr.c, world },
-        resolve(b, call.space, suffix),
-        resolve(b, call.pattern, suffix),
-        resolve(b, call.template, suffix),
-      );
-      if (m === undefined) throw BAIL;
-      ctr.c += m.counterDelta;
-      return m.pairs;
-    };
+// Compile a mutually-recursive group of searching functors (the closure from `root`) into one holder
+// per functor, all sharing the group's clause map so a call dispatches across functors. Handles the
+// `(if guard then else)` size guards and the integer arithmetic (`(- $s 2)`, `(+ (+ $fs $xs) 1)`) of the
+// proof-size-bounded chainers, evaluated through the interpreter's own grounded ops for byte-identity.
+// Returns undefined (bail to the interpreter) if any group functor is outside the subset.
+function compileNondetGroup(env: MinEnv, root: string): Map<string, NondetHolder> | undefined {
+  if (env.varRulesVar.length !== 0) return undefined;
+  if ((env.ruleIndex.get(root)?.length ?? 0) === 0) return undefined;
+  const group = discoverNondetGroup(env, root);
+  const clausesByFn = new Map<string, NondetClause[]>();
+  const arityByFn = new Map<string, number>();
+  let anyCalls = false;
+  for (const fn of group) {
+    const eqs = env.ruleIndex.get(fn);
+    if (eqs === undefined || eqs.length === 0) return undefined;
+    const clauses: NondetClause[] = [];
+    let arity: number | undefined;
+    for (const [lhs, rhs] of eqs) {
+      if (lhs.kind !== "expr" || lhs.items.length === 0) return undefined;
+      const h = lhs.items[0]!;
+      if (h.kind !== "sym" || h.name !== fn) return undefined;
+      const a = lhs.items.length - 1;
+      if (arity === undefined) arity = a;
+      else if (a !== arity) return undefined;
+      if (!lhs.items.slice(1).every((x) => nondetIsData(env, x))) return undefined;
+      const body = nondetUnwrap(env, group, rhs);
+      if (body === undefined) return undefined;
+      if (nondetBodyHasCalls(body)) anyCalls = true;
+      clauses.push({ lhs, body });
+    }
+    if (arity === undefined) return undefined;
+    clausesByFn.set(fn, clauses);
+    arityByFn.set(fn, arity);
+  }
+  // A group with template-only clauses is compileSymbolic's job; this holder earns its keep only when
+  // bodies actually search.
+  if (!anyCalls) return undefined;
 
-    const solve = (
-      clause: NondetClause,
-      gi: number,
-      b: Bindings,
-      suffix: string,
-      out: Array<readonly [Atom, Bindings]>,
-    ): void => {
-      if (gi === clause.goals.length) {
-        if (clause.tail.tag === "tpl") {
-          out.push([resolve(b, clause.tail.atom, suffix), b]);
+  const makeRun =
+    (entry: string) =>
+    (
+      envR: MinEnv,
+      partAtoms: readonly Atom[],
+      st: St,
+      ops: CompiledImpureOps,
+      fuel?: number,
+    ): CompiledRunResult | undefined => {
+      // The dispatch cap mirrors the caller's fuel when that is the larger bound (a benchmark's generous
+      // step budget must not be cut down to the fixed hedge), and stays at the hedge otherwise, so a
+      // fuel-bounded divergence still cannot hang in compiled code.
+      const cap = fuel === undefined || fuel < NONDET_CALL_CAP ? NONDET_CALL_CAP : fuel;
+      const matchSolutions = ops.matchSolutions;
+      if (matchSolutions === undefined) return undefined;
+      const ctr = { c: st.counter };
+      let dispatches = 0;
+      const world = st.world;
+
+      // Deep resolution through the accumulated bindings (miniKanren's walk*): a goal can bind a
+      // variable that an earlier goal already stored INSIDE a bound value, so a shallow instantiate
+      // would emit the stale intermediate variable. The interpreter never sees such chains because its
+      // `chain` plumbing substitutes each concrete value structurally; here the bindings thread instead,
+      // so emitted terms and goal inputs resolve through value chains to their final form. A binary
+      // arithmetic node whose operands have resolved to concrete ints folds through the grounded op,
+      // matching how the interpreter evaluates a `(- $s 2)` argument or a `(+ ...)` result size.
+      const walk = (b: Bindings, a: Atom): Atom => {
+        let v = a;
+        let hops = 0;
+        while (v.kind === "var") {
+          const next = lookupVal(b, v.name);
+          if (next === undefined) return v;
+          v = next;
+          if (++hops > 10_000) throw BAIL; // a cyclic chain escaped the loop checks: not our subset
+        }
+        return v;
+      };
+      const foldArith = (op: string, x: Atom, y: Atom): Atom => {
+        if (!isIntAtom(x) || !isIntAtom(y)) throw BAIL; // arithmetic on non-ints: outside the subset
+        const r = callGrounded(envR.gt, op, [x, y]);
+        if (r.tag !== "ok" || r.results.length !== 1) throw BAIL;
+        return r.results[0]!;
+      };
+      const walkStar = (b: Bindings, a: Atom): Atom => {
+        const v = walk(b, a);
+        if (v.kind !== "expr") return v;
+        const its = v.items;
+        const h = its[0];
+        const isArith =
+          its.length === 3 && h !== undefined && h.kind === "sym" && ARITH_FOLD.has(h.name);
+        if (v.ground && !isArith) return v;
+        let items: Atom[] | null = null;
+        for (let i = 0; i < its.length; i++) {
+          const it = its[i]!;
+          const r = walkStar(b, it);
+          if (items !== null) items.push(r);
+          else if (r !== it) {
+            items = its.slice(0, i);
+            items.push(r);
+          }
+        }
+        if (isArith) {
+          const xs = items ?? its;
+          return foldArith((h as SymAtom).name, xs[1]!, xs[2]!);
+        }
+        return items === null ? v : expr(items);
+      };
+      const resolve = (b: Bindings, a: Atom, suffix: string): Atom =>
+        walkStar(b, instantiate(b, a, suffix));
+
+      // A `(cmp x y)` guard: resolve both operands (folding any arithmetic) and evaluate the comparison
+      // through the grounded op, exactly as the interpreter reduces the `(if ...)` condition.
+      const evalGuard = (b: Bindings, cond: Atom, suffix: string): boolean => {
+        if (cond.kind !== "expr" || cond.items[0]!.kind !== "sym") throw BAIL;
+        const op = cond.items[0]!.name;
+        const r = callGrounded(envR.gt, op, [
+          resolve(b, cond.items[1]!, suffix),
+          resolve(b, cond.items[2]!, suffix),
+        ]);
+        if (r.tag !== "ok" || r.results.length !== 1) throw BAIL;
+        const res = r.results[0]!;
+        if (res.kind !== "gnd" || (res.value as { g: string }).g !== "bool") throw BAIL;
+        return (res.value as { g: string; b: boolean }).b;
+      };
+
+      const runMatch = (
+        b: Bindings,
+        suffix: string,
+        call: { space: Atom; pattern: Atom; template: Atom },
+      ): ReadonlyArray<readonly [Atom, Bindings]> => {
+        const m = matchSolutions(
+          envR,
+          { counter: ctr.c, world },
+          resolve(b, call.space, suffix),
+          resolve(b, call.pattern, suffix),
+          resolve(b, call.template, suffix),
+        );
+        if (m === undefined) throw BAIL;
+        ctr.c += m.counterDelta;
+        return m.pairs;
+      };
+
+      const solveSeq = (
+        goals: readonly NondetGoal[],
+        tail: NondetTail,
+        gi: number,
+        b: Bindings,
+        suffix: string,
+        out: Array<readonly [Atom, Bindings]>,
+      ): void => {
+        if (gi === goals.length) {
+          if (tail.tag === "empty") return;
+          if (tail.tag === "tpl") {
+            out.push([resolve(b, tail.atom, suffix), b]);
+            return;
+          }
+          const pairs =
+            tail.tag === "match"
+              ? runMatch(b, suffix, tail)
+              : runCall(
+                  tail.fn,
+                  tail.args.map((x) => resolve(b, x, suffix)),
+                );
+          for (const [atom, vb] of pairs)
+            for (const mm of merge(b, vb)) if (!hasLoop(mm)) out.push([atom, mm]);
           return;
         }
+        const goal = goals[gi]!;
+        const pat = resolve(b, goal.pat, suffix);
         const pairs =
-          clause.tail.tag === "match"
-            ? runMatch(b, suffix, clause.tail)
-            : runCall(clause.tail.args.map((x) => resolve(b, x, suffix)));
+          goal.call.tag === "match"
+            ? runMatch(b, suffix, goal.call)
+            : runCall(
+                goal.call.fn,
+                goal.call.args.map((x) => resolve(b, x, suffix)),
+              );
         for (const [atom, vb] of pairs)
-          for (const mm of merge(b, vb)) if (!hasLoop(mm)) out.push([atom, mm]);
-        return;
-      }
-      const goal = clause.goals[gi]!;
-      const pat = resolve(b, goal.pat, suffix);
-      const pairs =
-        goal.call.tag === "match"
-          ? runMatch(b, suffix, goal.call)
-          : runCall(goal.call.args.map((x) => resolve(b, x, suffix)));
-      for (const [atom, vb] of pairs)
-        for (const withVal of merge(b, vb)) {
-          if (hasLoop(withVal)) continue;
-          for (const pm of matchAtoms(pat, atom))
-            for (const mm of merge(withVal, pm))
-              if (!hasLoop(mm)) solve(clause, gi + 1, mm, suffix, out);
+          for (const withVal of merge(b, vb)) {
+            if (hasLoop(withVal)) continue;
+            for (const pm of matchAtoms(pat, atom))
+              for (const mm of merge(withVal, pm))
+                if (!hasLoop(mm)) solveSeq(goals, tail, gi + 1, mm, suffix, out);
+          }
+      };
+
+      const execBody = (
+        body: NondetBody,
+        b: Bindings,
+        suffix: string,
+        out: Array<readonly [Atom, Bindings]>,
+      ): void => {
+        if (body.tag === "if") {
+          execBody(evalGuard(b, body.cond, suffix) ? body.then : body.els, b, suffix, out);
+          return;
         }
-    };
+        solveSeq(body.goals, body.tail, 0, b, suffix, out);
+      };
 
-    const runCall = (args: readonly Atom[]): Array<readonly [Atom, Bindings]> => {
-      if (++dispatches > NONDET_CALL_CAP) throw BAIL;
-      const app = expr([sym(functor), ...args]);
-      const out: Array<readonly [Atom, Bindings]> = [];
-      for (const clause of clauses) {
-        const suffix = "#" + ctr.c;
-        ctr.c += 1;
-        for (const b0 of matchAtomsScoped(clause.lhs, app, suffix))
-          if (!hasLoop(b0)) solve(clause, 0, b0, suffix, out);
+      function runCall(fn: string, args: readonly Atom[]): Array<readonly [Atom, Bindings]> {
+        if (++dispatches > cap) throw BAIL;
+        const cls = clausesByFn.get(fn);
+        if (cls === undefined) throw BAIL;
+        const app = expr([sym(fn), ...args]);
+        const out: Array<readonly [Atom, Bindings]> = [];
+        for (const clause of cls) {
+          const suffix = "#" + ctr.c;
+          ctr.c += 1;
+          for (const b0 of matchAtomsScoped(clause.lhs, app, suffix))
+            if (!hasLoop(b0)) execBody(clause.body, b0, suffix, out);
+        }
+        return out;
       }
-      return out;
+
+      try {
+        const top = runCall(entry, partAtoms);
+        const results: CompiledAtomResult[] = top.map(([atom, bnd]) => ({ atom, bnd }));
+        return { results, counterDelta: ctr.c - st.counter };
+      } catch (e) {
+        // BAIL: outside the proven subset (or over budget); RangeError: native stack exhaustion. The
+        // search mutated nothing, so re-running interpreted is sound.
+        if (e === BAIL || e instanceof RangeError) return undefined;
+        throw e;
+      }
     };
 
-    try {
-      const top = runCall(partAtoms);
-      const results: CompiledAtomResult[] = top.map(([atom, bnd]) => ({ atom, bnd }));
-      return { results, counterDelta: ctr.c - st.counter };
-    } catch (e) {
-      // BAIL: outside the proven subset (or over budget); RangeError: native stack exhaustion. The
-      // search mutated nothing, so re-running interpreted is sound.
-      if (e === BAIL || e instanceof RangeError) return undefined;
-      throw e;
-    }
-  };
-  return { kind: "nondet", arity, clauseCount, run };
+  // A pure rule-recursion group (no space `match`) runs on the zero-allocation Trail: bindings are made
+  // in place and undone on backtrack, unification carries the occurs check that the immutable path spends
+  // a separate O(binding-set) `hasLoop` scan on, and only a kept result materializes. On the proof-size
+  // chainers this is ~25x the immutable holder and byte-identical (differential-gated). CPS: `k` fires at
+  // each solution with the resolved result while the trail still holds its bindings.
+  const makeSkelRun =
+    (entry: string, skelsByFn: Map<string, SkelClause[]>) =>
+    (
+      _envR: MinEnv,
+      partAtoms: readonly Atom[],
+      st: St,
+      _ops?: CompiledImpureOps,
+      fuel?: number,
+    ): CompiledRunResult | undefined => {
+      // The dispatch cap mirrors the caller's fuel when that is the larger bound (see makeRun).
+      const cap = fuel === undefined || fuel < NONDET_CALL_CAP ? NONDET_CALL_CAP : fuel;
+      // The trail: bound cells in bind order; undoing to a mark pops and clears each cell's slot.
+      const cellTrail: CellVar[] = [];
+      const ctr = { c: st.counter };
+      // Names for cells that survive unbound into a materialized answer, assigned lazily on first
+      // materialization. A separate counter from `ctr` so `counterDelta` (which the interpreter's gensym
+      // lockstep depends on, per-dispatch only) is untouched by how many answer variables get named.
+      let cellNameC = 0;
+      let dispatches = 0;
+      const results: CompiledAtomResult[] = [];
+      const queryVars = atomVars(expr(partAtoms as Atom[]));
+
+      // Inline integer +/-/* (dispatching through `callGrounded` per node is the search's dominant cost —
+      // obc folds several sizes per mp step). Byte-identical: `callGrounded` routes +/-/* to these same
+      // `addInt`/`subInt`/`mulInt`. A non-int operand BAILs to the interpreter, unchanged.
+      const foldArith = (op: string, x: Atom, y: Atom): Atom => {
+        if (
+          x.kind !== "gnd" ||
+          (x.value as { g: string }).g !== "int" ||
+          y.kind !== "gnd" ||
+          (y.value as { g: string }).g !== "int"
+        )
+          throw BAIL;
+        const xn = (x.value as { n: IntVal }).n;
+        const yn = (y.value as { n: IntVal }).n;
+        return gint(op === "+" ? addInt(xn, yn) : op === "-" ? subInt(xn, yn) : mulInt(xn, yn));
+      };
+      // Instantiate a skeleton against a dispatch frame. `fold` folds arith nodes (call arguments,
+      // templates, guard operands — matching the copying run, which folded exactly there); write-mode
+      // head/pattern subtrees instantiate unfolded. A bound cell inlines its value: every use of the
+      // instantiated term happens while the binding is still live (bindings undo LIFO, strictly after the
+      // continuations that consumed the term return), and inlining tightens `ground` flags so occurs
+      // checks and later dereferences short-circuit. Only a kept solution materializes fully, at the entry.
+      const instSkel = (sk: Skel, frame: (CellVar | undefined)[], fold: boolean): Atom => {
+        if (sk.t === 0) return sk.a;
+        if (sk.t === 1) {
+          let c = frame[sk.i];
+          if (c === undefined) {
+            c = mkCell();
+            frame[sk.i] = c;
+          }
+          return derefCell(c);
+        }
+        const its = sk.items;
+        const out: Atom[] = new Array(its.length);
+        for (let i = 0; i < its.length; i++) out[i] = instSkel(its[i]!, frame, fold);
+        if (fold && sk.arith !== undefined)
+          return foldArith(sk.arith, derefCell(out[1]!), derefCell(out[2]!));
+        return expr(out);
+      };
+      // Unify a head/pattern skeleton directly against a term: read mode walks the term with no
+      // allocation (a failed clause attempt costs the frame and nothing else); a skeleton subtree
+      // materializes only when it binds into a term variable (write mode), occurs-checked like every
+      // other bind.
+      const unifySkel = (sk: Skel, frame: (CellVar | undefined)[], t0: Atom): boolean => {
+        if (sk.t === 0) return unifyCellOccurs(cellTrail, sk.a, t0);
+        if (sk.t === 1) {
+          let c = frame[sk.i];
+          if (c === undefined) {
+            // First occurrence of this clause variable: the cell was just created, so it cannot occur in
+            // `t0` — bind directly, skipping the provably-redundant occurs walk (what unifyCellOccurs
+            // would do after occursCell returned false, including binding to the dereferenced value).
+            c = mkCell();
+            frame[sk.i] = c;
+            c.b = derefCell(t0);
+            cellTrail.push(c);
+            return true;
+          }
+          return unifyCellOccurs(cellTrail, c, t0);
+        }
+        const t = derefCell(t0);
+        if (t.kind === "var") {
+          const s = instSkel(sk, frame, false);
+          if (occursCell(t, s)) return false;
+          (t as CellVar).b = s;
+          cellTrail.push(t as CellVar);
+          return true;
+        }
+        const its = sk.items;
+        if (t.kind !== "expr" || t.items.length !== its.length) return false;
+        for (let i = 0; i < its.length; i++)
+          if (!unifySkel(its[i]!, frame, t.items[i]!)) return false;
+        return true;
+      };
+      // Deep resolution through the cells (miniKanren walk*), folding a binary arithmetic node once its
+      // operands are concrete ints, exactly as the immutable run's walkStar/foldArith. Used only to
+      // materialize a kept solution (and its query-variable bindings) at the entry, once per answer; the
+      // search itself passes lazy terms. An unbound cell gets its lazy name here and comes out as a plain
+      // variable atom, so no mutable cell escapes the search.
+      const resolveDeep = (a0: Atom): Atom => {
+        const a = derefCell(a0);
+        if (a.kind === "var") {
+          const c = a as CellVar;
+          if (c.name === "") {
+            c.name = "_c#" + String(cellNameC);
+            cellNameC += 1;
+          }
+          return variable(c.name);
+        }
+        if (a.kind !== "expr") return a;
+        const its = a.items;
+        const h = its[0];
+        const isArith =
+          its.length === 3 && h !== undefined && h.kind === "sym" && ARITH_FOLD.has(h.name);
+        if (a.ground && !isArith) return a;
+        let items: Atom[] | null = null;
+        for (let i = 0; i < its.length; i++) {
+          const r = resolveDeep(its[i]!);
+          if (items !== null) items.push(r);
+          else if (r !== its[i]) {
+            items = its.slice(0, i);
+            items.push(r);
+          }
+        }
+        if (isArith) {
+          const xs = items ?? its;
+          return foldArith((h as SymAtom).name, xs[1]!, xs[2]!);
+        }
+        return items === null ? a : expr(items);
+      };
+      // Inline the integer comparison guard (obc's `(< 2 $s)` / `(< 0 $s)`); a non-int comparison BAILs.
+      const evalGuard = (
+        op: string,
+        x0: Skel,
+        y0: Skel,
+        frame: (CellVar | undefined)[],
+      ): boolean => {
+        const x = derefCell(instSkel(x0, frame, true));
+        const y = derefCell(instSkel(y0, frame, true));
+        if (
+          x.kind !== "gnd" ||
+          (x.value as { g: string }).g !== "int" ||
+          y.kind !== "gnd" ||
+          (y.value as { g: string }).g !== "int"
+        )
+          throw BAIL;
+        const c = cmpIntVal((x.value as { n: IntVal }).n, (y.value as { n: IntVal }).n);
+        switch (op) {
+          case "<":
+            return c < 0;
+          case "<=":
+            return c <= 0;
+          case ">":
+            return c > 0;
+          case ">=":
+            return c >= 0;
+          case "==":
+            return c === 0;
+          default:
+            throw BAIL;
+        }
+      };
+
+      const solveSeq = (
+        goals: readonly SkelGoal[],
+        tail: SkelTail,
+        gi: number,
+        frame: (CellVar | undefined)[],
+        k: (r: Atom) => void,
+      ): void => {
+        if (gi === goals.length) {
+          if (tail.tag === "empty") return;
+          if (tail.tag === "tpl") {
+            // Lazy: the caller's pattern-unify (or the entry's materialize) dereferences through the cells,
+            // whose bindings are live for the whole continuation.
+            k(instSkel(tail.tpl, frame, true));
+            return;
+          }
+          const targs: Atom[] = new Array(tail.args.length);
+          for (let i = 0; i < targs.length; i++) targs[i] = instSkel(tail.args[i]!, frame, true);
+          runCall(tail.fn, targs, k);
+          return;
+        }
+        const goal = goals[gi]!;
+        const gargs: Atom[] = new Array(goal.args.length);
+        for (let i = 0; i < gargs.length; i++) gargs[i] = instSkel(goal.args[i]!, frame, true);
+        runCall(goal.fn, gargs, (res) => {
+          const m = cellTrail.length;
+          if (unifySkel(goal.pat, frame, res)) solveSeq(goals, tail, gi + 1, frame, k);
+          while (cellTrail.length > m) cellTrail.pop()!.b = undefined;
+        });
+      };
+
+      const execBody = (
+        body: SkelBody,
+        frame: (CellVar | undefined)[],
+        k: (r: Atom) => void,
+      ): void => {
+        if (body.tag === "if") {
+          execBody(evalGuard(body.op, body.x, body.y, frame) ? body.then : body.els, frame, k);
+          return;
+        }
+        solveSeq(body.goals, body.tail, 0, frame, k);
+      };
+
+      function runCall(fn: string, args: readonly Atom[], k: (r: Atom) => void): void {
+        if (++dispatches > cap) throw BAIL;
+        const cls = skelsByFn.get(fn);
+        if (cls === undefined) throw BAIL;
+        for (const clause of cls) {
+          ctr.c += 1; // per-dispatch advance, exactly as the copying run did: counterDelta unchanged
+          const la = clause.lhsArgs;
+          if (la.length !== args.length) continue;
+          const frame: (CellVar | undefined)[] = new Array(clause.n).fill(undefined);
+          const m = cellTrail.length;
+          let ok = true;
+          for (let i = 0; i < la.length; i++)
+            if (!unifySkel(la[i]!, frame, args[i]!)) {
+              ok = false;
+              break;
+            }
+          if (ok) execBody(clause.body, frame, k);
+          while (cellTrail.length > m) cellTrail.pop()!.b = undefined;
+        }
+      }
+
+      try {
+        // Freshen the entry call's own variables into cells too, so binding them never mutates an
+        // engine-owned atom; `entryFrame` maps each query variable to its cell for answer extraction.
+        const entryFrame = new Map<string, CellVar>();
+        const freshenEntry = (a: Atom): Atom => {
+          if (a.ground) return a;
+          if (a.kind === "var") {
+            let c = entryFrame.get(a.name);
+            if (c === undefined) {
+              c = mkCell();
+              entryFrame.set(a.name, c);
+            }
+            return c;
+          }
+          if (a.kind === "expr") return expr(a.items.map(freshenEntry));
+          return a;
+        };
+        const entryArgs = partAtoms.map(freshenEntry);
+        runCall(entry, entryArgs, (resultAtom) => {
+          let bnd = emptyBindings;
+          for (const v of queryVars) {
+            const cell = entryFrame.get(v);
+            if (cell === undefined) continue;
+            const d = derefCell(cell);
+            if (d === cell) continue; // unbound: no binding for v, as in the eager run
+            bnd = prependValRaw(bnd, v, resolveDeep(d));
+          }
+          results.push({ atom: resolveDeep(resultAtom), bnd });
+        });
+        return { results, counterDelta: ctr.c - st.counter };
+      } catch (e) {
+        if (e === BAIL || e instanceof RangeError) return undefined;
+        throw e;
+      }
+    };
+
+  const matchFree = ![...clausesByFn.values()].some((cls) =>
+    cls.some((c) => nondetBodyUsesMatch(c.body)),
+  );
+  // A match-free group's clauses compile to skeletons once, here, and every run dispatches over them.
+  const skelsByFn = matchFree ? compileSkels(clausesByFn) : undefined;
+  // Specialized clause code for the group (nondet-jit): the same search as the skeleton interpreter with
+  // the per-node dispatch compiled away. Unavailable under a CSP without 'unsafe-eval' (new Function
+  // throws), or with METTA_TS_NOJIT=1 for A/B measurement; the skeleton interpreter then runs unchanged.
+  const jitGroup =
+    skelsByFn !== undefined && readEnv("METTA_TS_NOJIT") !== "1"
+      ? compileJitGroup(skelsByFn, arityByFn, BAIL)
+      : undefined;
+
+  // The boundary wrapper for a JIT'd group: entry arguments convert to slim terms once, each answer
+  // materializes once (with the query-variable bindings extracted from the entry cells), and the
+  // counter/dispatch box threads the per-clause-attempt discipline through the generated code.
+  const makeJitRun =
+    (entry: string, jg: JitGroup) =>
+    (
+      _envR: MinEnv,
+      partAtoms: readonly Atom[],
+      st: St,
+      _ops?: CompiledImpureOps,
+      fuel?: number,
+    ): CompiledRunResult | undefined => {
+      const cap = fuel === undefined || fuel < NONDET_CALL_CAP ? NONDET_CALL_CAP : fuel;
+      const stBox = { c: st.counter, d: 0, cap };
+      const results: CompiledAtomResult[] = [];
+      const queryVars = atomVars(expr(partAtoms as Atom[]));
+      const entryCells = new Map<string, Slim>();
+      const args = partAtoms.map((a) => jitRuntime.slimOfAtom(a, entryCells));
+      const namer = { c: 0 };
+      try {
+        jg.call(
+          entry,
+          args,
+          (r) => {
+            let bnd = emptyBindings;
+            for (const v of queryVars) {
+              const cell = entryCells.get(v);
+              if (cell === undefined) continue;
+              const d = jitRuntime.derefS(cell);
+              if (d === cell) continue; // unbound: no binding for v
+              bnd = prependValRaw(bnd, v, jitRuntime.atomOfSlim(d, namer));
+            }
+            results.push({ atom: jitRuntime.atomOfSlim(r, namer), bnd });
+          },
+          stBox,
+        );
+        return { results, counterDelta: stBox.c - st.counter };
+      } catch (e) {
+        if (e === BAIL || e instanceof RangeError) return undefined;
+        throw e;
+      }
+    };
+
+  const holders = new Map<string, NondetHolder>();
+  for (const fn of group)
+    holders.set(fn, {
+      kind: "nondet",
+      arity: arityByFn.get(fn)!,
+      clauseCount: clausesByFn.get(fn)!.length,
+      run:
+        jitGroup !== undefined
+          ? makeJitRun(fn, jitGroup)
+          : skelsByFn !== undefined
+            ? makeSkelRun(fn, skelsByFn)
+            : makeRun(fn),
+    });
+  return holders;
 }
 
 // ---------- deterministic impure body compiler ----------
@@ -1886,11 +2553,13 @@ export function compileEnv(env: MinEnv): CompiledFns {
         if (symbolic !== undefined) compiled.set(f, symbolic);
       }
       compileImperative(env, compiled);
-      // Nondeterministic let*-chain functors (impure via `match`, so outside the pure set).
+      // Nondeterministic searching functors: let*-chain match functors and the mutually-recursive
+      // proof-size-bounded chainers. A functor pulls its call-graph closure into one group holder, so
+      // register every functor the group compiled.
       for (const f of env.ruleIndex.keys()) {
         if (compiled.has(f)) continue;
-        const nondet = compileNondet(env, f);
-        if (nondet !== undefined) compiled.set(f, nondet);
+        const group = compileNondetGroup(env, f);
+        if (group !== undefined) for (const [g, h] of group) compiled.set(g, h);
       }
       return compiled;
     }
@@ -1906,6 +2575,7 @@ export function runCompiled(
   st: St,
   ops?: CompiledImpureOps,
   discard?: boolean,
+  fuel?: number,
 ): CompiledRunResult | undefined {
   const h = env.compiled?.get(op);
   if (h === undefined || partAtoms.length !== h.arity) return undefined;
@@ -1913,7 +2583,7 @@ export function runCompiled(
   if (h.kind === "symbolic") return h.run(partAtoms, st.counter);
   if (h.kind === "nondet") {
     if (ops === undefined) return undefined;
-    return h.run(env, partAtoms, st, ops);
+    return h.run(env, partAtoms, st, ops, fuel);
   }
   if (h.kind === "imperative") {
     if (ops === undefined) return undefined;

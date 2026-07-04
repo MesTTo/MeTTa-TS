@@ -10,7 +10,7 @@
 import type { Atom } from "@metta-ts/hyperon";
 import { boxesToPrims, interpolate, ease, type Prim } from "./block/animate";
 import { placeProgram } from "./block/layout";
-import type { BlockSettings } from "./block/settings";
+import { makeSettings, type BlockSettings } from "./block/settings";
 import {
   frameSvg,
   boundsOf,
@@ -284,4 +284,44 @@ export async function graphReductionGif(
   }
   gif.finish();
   return new Blob([gif.bytes() as BlobPart], { type: "image/gif" });
+}
+
+/** The nested-block view of a reduction as a sequence of SVG frames over a fixed view box (the union of every
+ *  state's bounds). Pure (no DOM), the block-view companion to {@link graphReductionSvgs}: place the two next
+ *  to each other to show a reduction both ways. Rasterize with a canvas ({@link reductionGif}) or an external
+ *  tool. Uses default block settings (site palette, monospace unit width); pass `background` to override the
+ *  canvas color. */
+export function blockReductionSvgs(
+  states: readonly Atom[][],
+  opts: GifOptions = {},
+): { frames: GraphFrame[]; width: number; height: number } {
+  if (states.length < 2) throw new Error("need at least two reduction states for a block GIF");
+  const s = makeSettings(17, 10);
+  const bg = opts.background ?? s.canvas;
+  const holdMs = opts.holdMs ?? 260;
+  const stepMs = opts.stepMs ?? 40;
+  const width = opts.width ?? 880;
+  const height = Math.round(width * 0.5);
+
+  const prims = states.map((f) => boxesToPrims(placeProgram(f, s), s, null));
+  let vb = boundsOf(placeProgram(states[0]!, s), s);
+  for (const f of states) vb = union(vb, boundsOf(placeProgram(f, s), s));
+
+  const out: GraphFrame[] = [];
+  const push = (bp: readonly Prim[], delay: number): void => {
+    out.push({ svg: frameSvg(bp, vb, width, height, bg), delay });
+  };
+  const n = states.length;
+  const perStep = Math.max(
+    1,
+    Math.min(opts.framesPerStep ?? 6, Math.floor((opts.maxFrames ?? 180) / Math.max(1, n - 1))),
+  );
+  push(prims[0]!, holdMs);
+  for (let i = 1; i < n; i++) {
+    for (let k = 1; k <= perStep; k++) {
+      const t = ease(k / perStep);
+      push(interpolate(prims[i - 1]!, prims[i]!, t), k === perStep ? holdMs : stepMs);
+    }
+  }
+  return { frames: out, width, height };
 }

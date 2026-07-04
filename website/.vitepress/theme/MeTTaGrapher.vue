@@ -72,10 +72,20 @@ const EXAMPLES: { label: string; code: string; run?: boolean }[] = [
     label: "Visualize",
     code:
       "(= (fact $n) (if (> $n 0) (* $n (fact (- $n 1))) 1))\n(fact 5)\n" +
-      "(add-atom &grapher (color (fact 5) red))\n" +
-      "(add-atom &grapher (highlight if))\n" +
-      '(add-atom &grapher (label (fact 5) "answer"))',
+      "(style\n" +
+      "  (color (fact 5) red)\n" +
+      "  (highlight if)\n" +
+      '  (label (fact 5) "answer"))',
     run: true,
+  },
+  {
+    label: "Heat map",
+    code:
+      "(= (val $x) $x)\n" +
+      "(nums 12 45 7 88 33 60)\n" +
+      "(style\n" +
+      "  (shade-by val)\n" +
+      "  (size-by val))",
   },
 ];
 
@@ -271,8 +281,9 @@ function blockBack(): void {
   grapher?.blockBack();
 }
 
-// Export the current reduction as an animated GIF. The encoder is loaded on demand, so it costs nothing
-// until used and can be dropped by removing this button and the gifenc dependency.
+// Export the current reduction as an animated GIF of whichever view is showing: the node graph in the graph
+// view, the nested blocks in the block view. The encoder is loaded on demand, so it costs nothing until used
+// and can be dropped by removing this button and the gifenc dependency.
 async function exportGif(): Promise<void> {
   if (!grapher || exporting.value) return;
   exporting.value = true;
@@ -280,12 +291,16 @@ async function exportGif(): Promise<void> {
     const enc = await import("gifenc");
     // Hold each step for the on-screen playback delay (less the ~240ms morph), so the GIF plays at the
     // speed set on the slider.
-    const blob = await grapher.exportReductionGif(enc, { holdMs: Math.max(60, delayMs() - 240) });
+    const opts = { holdMs: Math.max(60, delayMs() - 240) };
+    const graph = viewMode.value === "graph";
+    const blob = graph
+      ? await grapher.exportGraphReductionGif(enc, opts)
+      : await grapher.exportReductionGif(enc, opts);
     if (blob) {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "reduction.gif";
+      link.download = graph ? "reduction-graph.gif" : "reduction-blocks.gif";
       link.click();
       URL.revokeObjectURL(url);
     }

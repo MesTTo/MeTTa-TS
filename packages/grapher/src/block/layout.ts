@@ -181,6 +181,30 @@ function build(
   }
 
   const items = atom.children();
+  if (items.length === 0) {
+    // An empty expression () is a value (the empty list), not a container. Lay it out as a labeled pill
+    // sized to its "()" glyph so it reads inline like any other leaf, instead of the zero-height backing
+    // (w = u, h = 0) that a childless row produces and that surfaces as a stray dot.
+    const { fill, outline } = blockColors(depth, s);
+    const w = 3 * u; // "()" is two glyphs, with a half unit of breathing room each side, like a hole
+    const h = s.unitHeight;
+    return {
+      kind: "expr",
+      path,
+      x: 0,
+      y: 0,
+      w,
+      h,
+      depth,
+      orient: "h",
+      fill,
+      outline,
+      headerException: false,
+      children: [],
+      rightProfile: [{ x: w, h }],
+      leftProfile: [{ x: 0, h }],
+    };
+  }
   const headed = isHeaded(atom);
   const children: BlockBox[] = items.map((child, k) => {
     const childIsHead = headed && k === 0;

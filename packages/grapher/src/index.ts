@@ -59,6 +59,7 @@ export {
   sideBySideReductionGif,
   graphReductionGif,
   graphReductionSvgs,
+  blockReductionSvgs,
   type GraphFrame,
 } from "./sidebyside-gif";
 export {

@@ -405,23 +405,48 @@ export function atomVars(a: Atom, out: string[] = []): string[] {
   return out;
 }
 
+const noVars: readonly string[] = [];
+
+/** Which distinct variable names occur in an expression, first-seen order, cached by object identity.
+ *  Sound forever (not just for one call), unlike a per-call memo: an atom is immutable, so "which vars
+ *  occur in me" cannot change after construction — the same reasoning that already justifies the
+ *  precomputed `ground` flag. `instantiate` shares unchanged subterms by reference, so a rewrite-heavy
+ *  search walks a DAG, not a tree: the same expression object recurs as a stack/continuation is threaded
+ *  through many interpreter steps (scopeVars/chainLiveVars below). Without this cache, `collectVars` re-walks
+ *  a shared node once per occurrence instead of once ever, the same exponential-paths-vs-linear-nodes
+ *  blowup as the (now-fixed) unmemoized `occursThrough` and `instantiate` — this was the dominant cost left
+ *  after fixing those two (77% of CPU on a backward-chaining search that should run in well under a second). */
+const exprVarsCache = new WeakMap<ExprAtom, readonly string[]>();
+
+function atomVarsOf(a: Atom): readonly string[] {
+  if (a.ground) return noVars;
+  if (a.kind === "var") return [a.name];
+  if (a.kind !== "expr") return noVars;
+  const cached = exprVarsCache.get(a);
+  if (cached !== undefined) return cached;
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const it of a.items) {
+    for (const v of atomVarsOf(it)) {
+      if (!seen.has(v)) {
+        seen.add(v);
+        out.push(v);
+      }
+    }
+  }
+  exprVarsCache.set(a, out);
+  return out;
+}
+
 /** Collect an atom's variable names into `out`, deduping via the shared `seen` set (O(1) membership instead
  *  of a linear `out.includes`). Hot accumulation loops (scopeVars/frameVars) reuse one `seen` across many
  *  atoms so the whole walk stays linear; `atomVars` is the one-shot wrapper that seeds `seen` from `out`. */
 export function collectVars(a: Atom, out: string[], seen: Set<string>): void {
-  if (a.ground) return; // closed term: no variables (ground short-circuit)
-  switch (a.kind) {
-    case "var":
-      if (!seen.has(a.name)) {
-        seen.add(a.name);
-        out.push(a.name);
-      }
-      break;
-    case "expr":
-      for (const it of a.items) collectVars(it, out, seen);
-      break;
-    default:
-      break;
+  for (const v of atomVarsOf(a)) {
+    if (!seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
   }
 }
 
@@ -443,6 +468,17 @@ export const isVar = (a: Atom): a is VarAtom => a.kind === "var";
 export const isSym = (a: Atom): a is SymAtom => a.kind === "sym";
 export const isGnd = (a: Atom): a is GndAtom => a.kind === "gnd";
 
+// Cached by the pair's object identity, permanently: `atomEq` is a pure structural comparison of two
+// immutable atoms with no external context, so the answer for a given (a, b) pair can never change once
+// computed — the same reasoning that already justifies the precomputed `ground` flag and `exprVarsCache`
+// above. Without this, comparing two large expressions built independently (so `a === b` never
+// short-circuits the top-level call, e.g. `addVarBinding`'s `atomEq(prev, v)` on a rebind) walks the full
+// pair every single time they're compared, anywhere in the program. A rewrite-heavy search that keeps
+// re-deriving structurally-similar terms (backward chaining over recursive rules) calls `atomEq` on
+// overlapping large pairs repeatedly; this was 92-95% of CPU on such a search after the DAG-sharing fixes
+// above stopped it from also exhausting memory.
+const eqCache = new WeakMap<Atom, WeakMap<Atom, boolean>>();
+
 /** Structural equality. Interned symbols short-circuit to reference identity. */
 export function atomEq(a: Atom, b: Atom): boolean {
   if (a === b) return true;
@@ -457,12 +493,21 @@ export function atomEq(a: Atom, b: Atom): boolean {
     case "expr": {
       const bi = (b as ExprAtom).items;
       if (a.items.length !== bi.length) return false;
+      const inner = eqCache.get(a);
+      const cached = inner?.get(b);
+      if (cached !== undefined) return cached;
+      let result = true;
       for (let i = 0; i < a.items.length; i++) {
         const ai = a.items[i] as Atom;
         const bii = bi[i] as Atom;
-        if (!atomEq(ai, bii)) return false;
+        if (!atomEq(ai, bii)) {
+          result = false;
+          break;
+        }
       }
-      return true;
+      if (inner === undefined) eqCache.set(a, new WeakMap([[b, result]]));
+      else inner.set(b, result);
+      return result;
     }
   }
 }

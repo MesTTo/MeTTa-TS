@@ -55,7 +55,15 @@ import {
 import { FlatAtomSpace } from "./flat-atomspace";
 import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 import { type GroundingTable, type ReduceResult, callGrounded, pettaOpNames } from "./builtins";
-import { tableKey, keyWellFormed, analyzePurity as analyzePurityRef, IMPURE_OPS } from "./tabling";
+import {
+  tableKey,
+  keyWellFormed,
+  analyzePurity as analyzePurityRef,
+  IMPURE_OPS,
+  MODED_IMPURE_OPS,
+  type ModedTableEntry,
+} from "./tabling";
+import { canonicalize } from "./alpha";
 import { runCompiled, compileEnv, type CompiledFns, type CompiledImpureOps } from "./compile";
 import { type IntVal, addInt, subInt } from "./number";
 import { readEnv } from "./env";
@@ -414,8 +422,22 @@ export interface MinEnv {
   /** Automatic-tabling memo: a ground pure call's printed form maps to its ordered result bag.
    *  `undefined` when tabling is disabled. */
   table?: Map<string, Atom[]>;
+  /** Automatic-tabling memo for pure calls that carry free variables (backward-chaining search's own
+   *  output/existential variables), keyed by the call's alpha-canonical form. See `ModedTableEntry`.
+   *  `undefined` when tabling is disabled. */
+  modedTable?: Map<string, ModedTableEntry>;
+  /** Canonical keys of moded calls currently being computed (on the active evaluation stack). A call
+   *  matching one of these is never cached: it may be part of a recursive cycle whose answer set is not
+   *  yet complete, and replaying an incomplete cache would be unsound. This is the only guard moded
+   *  tabling needs for safety — a cyclic call just never gets memoized, falling back to today's
+   *  (already-correct) uncached behavior, rather than risking a wrong answer. */
+  modedInProgress?: Set<string>;
   /** Functor names proven tabling-safe by `analyzePurity`; recomputed when equations change. */
   pureFunctors?: Set<string>;
+  /** Functor names proven safe for MODED tabling by `analyzePurity(env, MODED_IMPURE_OPS)` — a superset of
+   *  `pureFunctors` (only `empty`, which is genuinely pure, is treated more permissively); recomputed
+   *  alongside it. */
+  modedPureFunctors?: Set<string>;
   /** Memo for `getTypes` of ground atoms: a ground atom's type is a pure function of the env's type tables,
    *  which only change via `addAtomToEnv` (where this is reset). Keyed by atom identity, so the recursion
    *  reuses the type of every shared subterm (a growing Peano/list term is the worst case otherwise). */
@@ -502,7 +524,10 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
 function invalidateTabling(env: MinEnv): void {
   if (env.table !== undefined) {
     env.table.clear();
+    env.modedTable?.clear();
     env.pureFunctors = analyzePurityRef(env);
+    if (env.modedTable !== undefined)
+      env.modedPureFunctors = analyzePurityRef(env, MODED_IMPURE_OPS);
     env.compileDirty = true;
   }
 }
@@ -650,7 +675,9 @@ function disableTabling(env: MinEnv): void {
   env.compileDirty = undefined;
   if (env.table !== undefined) {
     env.table.clear();
+    env.modedTable?.clear();
     env.pureFunctors = new Set();
+    if (env.modedTable !== undefined) env.modedPureFunctors = new Set();
   }
 }
 
@@ -957,28 +984,81 @@ function resolveStates(w: World, a: Atom): Atom {
   }
   return a;
 }
+function subTokensExpr(
+  w: World,
+  a: ExprAtom,
+  intern: InternTable | undefined,
+  memo: Map<Atom, Atom>,
+): Atom {
+  const cached = memo.get(a);
+  if (cached !== undefined) return cached;
+  const its = a.items;
+  let items: Atom[] | null = null;
+  for (let i = 0; i < its.length; i++) {
+    const it = its[i]!;
+    const r =
+      it.kind === "sym"
+        ? (w.tokens.get(it.name) ?? it)
+        : it.kind === "expr"
+          ? subTokensExpr(w, it, intern, memo)
+          : it;
+    if (items !== null) items.push(r);
+    else if (r !== it) {
+      items = its.slice(0, i);
+      items.push(r);
+    }
+  }
+  const result =
+    items === null ? a : intern === undefined ? expr(items) : internBuiltExpr(intern, expr(items));
+  memo.set(a, result);
+  return result;
+}
+// A rewrite-heavy program (backward chaining over recursive rules) makes `instantiate` return the same
+// subterm object at many embedding positions (structural sharing, not a copy), so this walks a DAG, not a
+// tree. Rebuilding unconditionally via `.map()` on every visit (as before) both allocated a fresh copy of
+// every unchanged subtree AND re-walked a shared node once per incoming path — the same
+// exponential-paths-vs-linear-nodes blowup as the (fixed) unmemoized `occursThrough`/`instantiate`/
+// `collectVars`. `memo` (fresh per top-level call, since it's fixed given the same `w`/`intern`) plus
+// returning `a` unchanged when no child substituted restores both the sharing and the single-visit cost.
 function subTokens(w: World, a: Atom, intern?: InternTable): Atom {
   if (w.tokens.size === 0) return a; // no bind! tokens: identity, skip the tree clone (hot path)
   if (a.kind === "sym") return w.tokens.get(a.name) ?? a;
-  if (a.kind === "expr") {
-    const out = expr(a.items.map((x) => subTokens(w, x, intern)));
-    return intern === undefined ? out : internBuiltExpr(intern, out);
-  }
-  return a;
+  if (a.kind !== "expr") return a;
+  return subTokensExpr(w, a, intern, new Map());
 }
+function wrapStatesExpr(w: World, a: ExprAtom, memo: Map<Atom, Atom>): Atom {
+  const cached = memo.get(a);
+  if (cached !== undefined) return cached;
+  if (opOf(a) === "State" && a.items.length === 2) {
+    const g = a.items[1]!;
+    if (g.kind === "gnd" && g.value.g === "int") {
+      const v = w.store.get(Number(g.value.n));
+      const result = v !== undefined ? expr([sym("StateValue"), v]) : a;
+      memo.set(a, result);
+      return result;
+    }
+  }
+  const its = a.items;
+  let items: Atom[] | null = null;
+  for (let i = 0; i < its.length; i++) {
+    const it = its[i]!;
+    const r = it.kind === "expr" ? wrapStatesExpr(w, it, memo) : it;
+    if (items !== null) items.push(r);
+    else if (r !== it) {
+      items = its.slice(0, i);
+      items.push(r);
+    }
+  }
+  const result = items === null ? a : expr(items);
+  memo.set(a, result);
+  return result;
+}
+// Same DAG-sharing fix as `subTokens` above, for the same reason (both walk atoms coming out of
+// `instantiate`, which shares unchanged subtrees by reference).
 function wrapStates(w: World, a: Atom): Atom {
   if (w.store.size === 0) return a; // no state cells: identity, skip the tree clone (hot path)
-  if (a.kind === "expr") {
-    if (opOf(a) === "State" && a.items.length === 2) {
-      const g = a.items[1]!;
-      if (g.kind === "gnd" && g.value.g === "int") {
-        const v = w.store.get(Number(g.value.n));
-        return v !== undefined ? expr([sym("StateValue"), v]) : a;
-      }
-    }
-    return expr(a.items.map((x) => wrapStates(w, x)));
-  }
-  return a;
+  if (a.kind !== "expr") return a;
+  return wrapStatesExpr(w, a, new Map());
 }
 const typePrep = (env: MinEnv, w: World, a: Atom): Atom =>
   wrapStates(w, subTokens(w, a, env.intern));
@@ -1180,21 +1260,85 @@ function exhaustedPair(env: MinEnv, it: Item): [Atom, Bindings] {
     : [makeExpr(env, [sym("Error"), inst(env, it.bnd, f.head.atom), sym("StackOverflow")]), it.bnd];
 }
 
-function resolveBoundVarFix(env: MinEnv, b: Bindings, n: number, x: string): Atom | undefined {
-  let cur = lookupVal(b, x);
-  if (cur === undefined || cur.ground) return cur;
-  for (let i = 1; i < n; i++) {
-    const next = inst(env, b, cur);
-    if (atomEq(next, cur)) return cur;
-    cur = next;
+// Resolve an atom to its transitive value under `b`, following variable→value chains but stopping at
+// cycles: a variable already on the current resolution path (`visiting`) is left unexpanded. The return
+// is `[resolved, clean]` — `clean` is false when an active-cycle variable was truncated somewhere inside,
+// which marks the result as depending on the current path and so unsafe to memoise.
+//
+// On any ACYCLIC binding set this returns exactly what a fixpoint of single-pass `instantiate` returned
+// (both reach the same fixed point, since with no cycle nothing is ever truncated), so it is
+// behaviour-identical to the previous loop wherever that loop terminated. The only behavioural change is
+// the cyclic case. A direct match can bind `$x ↦ (… $x …)` with no occurs check — `matchAtomsWith` has
+// none, faithfully: LeaTTa's occurs check lives only in reconcile (`Unify.unifyTop` in `addVarBinding`),
+// not in first-bind matching (`Core/Matching.lean`) — and LeaTTa's `instantiate` is single-pass
+// (`Subst.apply`: "the substituted value is not itself re-substituted"), so it never expands such a
+// binding. The old fixpoint loop instead unrolled the cycle one level per iteration up to `size(b)+1`,
+// building a term that many levels deep and overflowing the native stack in `atomEq` — Nil Geisweiller's
+// `bfc-xp.metta` obc/obc-gtz proof search, which sets `occurs_check True` so its Prolog reference prunes
+// exactly these branches, overflowed here at size >= 7. Truncating at the cycle matches LeaTTa's
+// single-pass result and terminates.
+//
+// `memo` caches only clean (fully-resolved, no truncation inside) expression nodes by object identity, so
+// a DAG-shared subterm (`instantiate` shares unchanged subterms by reference; a reconciled type term has
+// far more paths than nodes) is resolved once per `restrictBnd` call, not once per path — the same
+// DAG-vs-tree reasoning as `instantiate`/`occursThrough`/`atomEq`. An unclean node is never cached: its
+// truncated form is valid only while its cycle variable is on the path.
+function resolveTermDeep(
+  env: MinEnv,
+  b: Bindings,
+  a: Atom,
+  visiting: Set<string>,
+  memo: Map<Atom, Atom>,
+): [Atom, boolean] {
+  if (a.ground) return [a, true];
+  if (a.kind === "var") {
+    if (visiting.has(a.name)) return [a, false];
+    const v = lookupVal(b, a.name);
+    if (v === undefined) return [a, true];
+    visiting.add(a.name);
+    const r = resolveTermDeep(env, b, v, visiting, memo);
+    visiting.delete(a.name);
+    return r;
   }
-  return cur;
+  if (a.kind === "expr") {
+    const cached = memo.get(a);
+    if (cached !== undefined) return [cached, true];
+    const its = a.items;
+    let items: Atom[] | null = null;
+    let clean = true;
+    for (let i = 0; i < its.length; i++) {
+      const [r, rc] = resolveTermDeep(env, b, its[i]!, visiting, memo);
+      if (!rc) clean = false;
+      if (items !== null) items.push(r);
+      else if (r !== its[i]) {
+        items = its.slice(0, i);
+        items.push(r);
+      }
+    }
+    const result = items === null ? a : makeExpr(env, items);
+    if (clean) memo.set(a, result);
+    return [result, clean];
+  }
+  return [a, true];
+}
+function resolveBoundVarFix(
+  env: MinEnv,
+  b: Bindings,
+  x: string,
+  memo: Map<Atom, Atom>,
+): Atom | undefined {
+  const cur = lookupVal(b, x);
+  if (cur === undefined || cur.ground) return cur;
+  return resolveTermDeep(env, b, cur, new Set([x]), memo)[0];
 }
 function restrictBnd(env: MinEnv, vars: readonly string[], b: Bindings): Bindings {
   if (vars.length === 0) return emptyBindings;
   const solved: BindingRel[] = [];
+  // Shared across every `x` below: they resolve against the same immutable `b`, so a clean subterm's
+  // resolved form is identical whichever query variable reached it.
+  const memo = new Map<Atom, Atom>();
   for (const x of vars) {
-    const v = resolveBoundVarFix(env, b, size(b) + 1, x);
+    const v = resolveBoundVarFix(env, b, x, memo);
     if (v !== undefined && !(v.kind === "var" && v.name === x)) solved.push(makeValRel(x, v));
   }
   // The eq filter only matters when `b` actually carries an alias; most bindings are pure `val`, so skip
@@ -3287,15 +3431,25 @@ function collectHeadSyms(a: Atom, out: Set<string>): void {
 // A functor with runtime rules is tabling-safe iff its rules (static + this world's runtime) reference only
 // pure ops, transitively. Mirrors analyzePurity but over the combined rule set; cached by functor + version
 // so it is computed once per rule-set, not per call. A self/mutual-recursion cycle is treated as pure (the
-// fixpoint), since a cycle adds no impure op.
+// fixpoint), since a cycle adds no impure op. `impureOps`/`cache` are passed so ground tabling (`IMPURE_OPS`)
+// and moded tabling (`MODED_IMPURE_OPS`, which treats `empty` as pure) each classify against their own set
+// with their OWN cache — the two must not share a map, since a call to one must never read a cached answer
+// the other computed for the same functor/version.
 const runtimePureCache = new Map<string, boolean>();
-function runtimeFunctorPure(env: MinEnv, w: World, op: string): boolean {
+const runtimeModedPureCache = new Map<string, boolean>();
+function runtimeFunctorPureWith(
+  env: MinEnv,
+  w: World,
+  op: string,
+  impureOps: ReadonlySet<string>,
+  cache: Map<string, boolean>,
+): boolean {
   // A variable-headed rule (e.g. the `|->` lambda applicator) can rewrite ANY call, so its mere presence
   // makes tabling unsound. analyzePurity disables all static tabling for the same reason. Mirror that.
   if (env.varRules.some(([lhs]) => isVariableHeaded(lhs)) || w.selfVarRules.length > 0)
     return false;
   const ck = op + "@" + rulesVersion(w.selfRules.get(op));
-  const cached = runtimePureCache.get(ck);
+  const cached = cache.get(ck);
   if (cached !== undefined) return cached;
   const visit = (f: string, seen: Set<string>): boolean => {
     if (seen.has(f)) return true;
@@ -3305,15 +3459,49 @@ function runtimeFunctorPure(env: MinEnv, w: World, op: string): boolean {
       const heads = new Set<string>();
       collectHeadSyms(rhs, heads);
       for (const h of heads) {
-        if (IMPURE_OPS.has(h)) return false;
+        if (impureOps.has(h)) return false;
         if ((env.ruleIndex.has(h) || w.selfRules.has(h)) && !visit(h, seen)) return false;
       }
     }
     return true;
   };
   const pure = visit(op, new Set());
-  runtimePureCache.set(ck, pure);
+  cache.set(ck, pure);
   return pure;
+}
+const runtimeFunctorPure = (env: MinEnv, w: World, op: string): boolean =>
+  runtimeFunctorPureWith(env, w, op, IMPURE_OPS, runtimePureCache);
+const runtimeFunctorPureModed = (env: MinEnv, w: World, op: string): boolean =>
+  runtimeFunctorPureWith(env, w, op, MODED_IMPURE_OPS, runtimeModedPureCache);
+
+/** Freshen one cached moded-tabling answer (`ModedTableEntry`) for this call instance: substitute the
+ *  call's own canonical placeholders (`%0`..`%(numCallVars-1)`) with `callVarNames` (this call's actual
+ *  variable names, found the same way the cache key was — by canonicalizing it), and substitute every
+ *  other placeholder (one the cached computation introduced itself, never part of the call) with a
+ *  brand-new, globally-fresh variable, via the same counter every other fresh-variable path in this file
+ *  uses (`freshenSub`'s `name + "#" + counter` pattern). Reuses `instantiate` (already DAG-sharing-safe)
+ *  to do the substitution, so a cached answer with heavy internal sharing stays cheap to replay. */
+function freshenModedResult(
+  st: St,
+  cachedResult: Atom,
+  callVarNames: readonly string[],
+  numCallVars: number,
+): [Atom, St] {
+  const rels: BindingRel[] = [];
+  for (let i = 0; i < numCallVars; i++) rels.push(makeValRel("%" + i, variable(callVarNames[i]!)));
+  const extraVars: string[] = [];
+  collectVars(cachedResult, extraVars, new Set());
+  let counter = st.counter;
+  for (const v of extraVars) {
+    if (!v.startsWith("%")) continue;
+    const n = Number(v.slice(1));
+    if (Number.isInteger(n) && n >= numCallVars) {
+      rels.push(makeValRel(v, variable("_tab#" + counter)));
+      counter++;
+    }
+  }
+  const freshened = instantiate(fromRelations(rels), cachedResult);
+  return [freshened, { counter, world: st.world }];
 }
 
 // Counting `(length (collapse (match $space $pat $template)))` cares only about how many solutions the
@@ -4034,7 +4222,7 @@ function* mettaEvalG(
           !cur2.world.selfRules.has(op) &&
           cur2.world.selfVarRules.length === 0
         ) {
-          const cr = runCompiled(env, op, partAtoms, cur2, COMPILED_IMPURE_OPS);
+          const cr = runCompiled(env, op, partAtoms, cur2, COMPILED_IMPURE_OPS, undefined, fuel);
           if (cr !== undefined) {
             // A compiled holder returns the one-step rule-application results (the instantiated RHSs) plus
             // the counter advance the candidate scan would have cost. Reduce each result to normal form
@@ -4095,51 +4283,131 @@ function* mettaEvalG(
             }
           }
         }
-        const before = out.length;
-        const [pairs, st3] = yield* interpretLoopG(env, fuel, cur2, [
-          { stack: atomToStack(makeExpr(env, [sym("eval"), wApp]), null), bnd: lbnd },
-        ]);
-        cur2 = st3;
-        // Tail call: one ground call reducing to a single operator-headed continuation, with no branching
-        // (one partial, one pair) and no bindings to thread (queryVars empty). Loop on the continuation via
-        // reduceTrampoline instead of recursing into mettaEvalG, so the native stack stays flat down a deep
-        // tail-recursive chain. Defer this call's tabling key to pendingKeys: it shares the chain's normal
-        // form, so flushReturn caches it (and every key above it) once the chain terminates.
-        if (partials.length === 1 && queryVars.length === 0 && pairs.length === 1) {
-          const p = pairs[0]!;
-          const isData = atomEq(p[0], notReducibleA) || atomEq(p[0], wApp);
-          if (!isData && !(opReturnsAtom && !isEmbeddedOp(p[0])) && opOf(p[0]) !== undefined) {
-            const pb = mergeRestrict(env, queryVars, partB, p[1]);
-            if (eligible) pendingKeys.push(key);
-            la = p[0];
-            lbnd = pb;
-            lst = cur2;
-            // p[0] is operator-headed (opOf check) and instantiate preserves the head, so this stays an
-            // expression headed by a symbol, exactly what the loop top reads as `lw.items[0]`.
-            lw = inst(env, lbnd, la) as ExprAtom;
-            continue reduceTrampoline;
+        // moded tabling: memoise a PURE call that itself carries free variables (a backward-chaining
+        // search's own output/existential variables, e.g. the proof term `$x` in `(obc $s (: $x $a))`),
+        // keyed by the call's alpha-canonical form (every free variable renamed to `%N` in first-occurrence
+        // order — see `ModedTableEntry`). Entirely separate from ground tabling just above: applies only
+        // when `wApp` is NOT ground (ground tabling already covers that case), independent of `queryVars`/
+        // `tabling` (which require there be no query variables at all — the opposite of what this needs).
+        // A call whose canonical key is already in `env.modedInProgress` is left uneligible: it may be part
+        // of a recursive cycle whose answer set is not yet complete, so it falls back to plain, always-
+        // correct evaluation for this one call rather than risking a replay of an incomplete cache.
+        let modedEligible = false;
+        let modedKey = "";
+        let modedMap: Map<string, string> | undefined;
+        let modedNumCallVars = 0;
+        if (env.modedTable !== undefined && !wApp.ground && keyWellFormed(wApp)) {
+          let modedPure = false;
+          let modedVersionSuffix = "";
+          if (cur2.world.selfRules.has(op)) {
+            if (runtimeFunctorPureModed(env, cur2.world, op)) {
+              modedPure = true;
+              modedVersionSuffix = "@v" + rulesVersion(cur2.world.selfRules.get(op));
+            }
+          } else if (env.modedPureFunctors?.has(op) ?? false) {
+            modedPure = true;
           }
-        }
-        for (const p of pairs) {
-          const pb = mergeRestrict(env, queryVars, partB, p[1]);
-          if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
-            // wApp did not reduce (a constructor application / data term). Cache a ground one so the next
-            // visit short-circuits instead of re-walking it.
-            if (wApp.ground) env.evaluatedAtoms.add(wApp);
-            out.push([wApp, partB]);
-          } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
-            out.push([p[0], pb]);
-          } else {
-            const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur2, pb, p[0]);
-            cur2 = st4;
-            for (const m of more) {
-              out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
+          if (modedPure) {
+            const map = new Map<string, string>();
+            const canonicalCall = canonicalize(wApp, map);
+            const candidateKey = tableKey(canonicalCall) + modedVersionSuffix;
+            if (!env.modedInProgress!.has(candidateKey)) {
+              modedEligible = true;
+              modedKey = candidateKey;
+              modedMap = map;
+              modedNumCallVars = map.size;
+              const modedHit = env.modedTable.get(modedKey);
+              if (modedHit !== undefined) {
+                const callVarNames = [...map.keys()];
+                for (const cachedResult of modedHit.results) {
+                  const [freshened, stF] = freshenModedResult(
+                    cur2,
+                    cachedResult,
+                    callVarNames,
+                    modedHit.numCallVars,
+                  );
+                  cur2 = stF;
+                  out.push([freshened, partB]);
+                }
+                continue;
+              }
+              env.modedInProgress!.add(modedKey);
             }
           }
         }
-        if (eligible) {
-          const produced = out.slice(before).map((p) => p[0]);
-          if (produced.every((a) => a.ground)) env.table!.set(key, produced);
+        const before = out.length;
+        try {
+          const [pairs, st3] = yield* interpretLoopG(env, fuel, cur2, [
+            { stack: atomToStack(makeExpr(env, [sym("eval"), wApp]), null), bnd: lbnd },
+          ]);
+          cur2 = st3;
+          // Tail call: one ground call reducing to a single operator-headed continuation, with no branching
+          // (one partial, one pair) and no bindings to thread (queryVars empty). Loop on the continuation via
+          // reduceTrampoline instead of recursing into mettaEvalG, so the native stack stays flat down a deep
+          // tail-recursive chain. Defer this call's tabling key to pendingKeys: it shares the chain's normal
+          // form, so flushReturn caches it (and every key above it) once the chain terminates. Excluded when
+          // modedEligible: a moded answer is stored below (in this same try), not deferred, so it must not
+          // skip past that store via this early continue.
+          if (
+            partials.length === 1 &&
+            queryVars.length === 0 &&
+            pairs.length === 1 &&
+            !modedEligible
+          ) {
+            const p = pairs[0]!;
+            const isData = atomEq(p[0], notReducibleA) || atomEq(p[0], wApp);
+            if (!isData && !(opReturnsAtom && !isEmbeddedOp(p[0])) && opOf(p[0]) !== undefined) {
+              const pb = mergeRestrict(env, queryVars, partB, p[1]);
+              if (eligible) pendingKeys.push(key);
+              la = p[0];
+              lbnd = pb;
+              lst = cur2;
+              // p[0] is operator-headed (opOf check) and instantiate preserves the head, so this stays an
+              // expression headed by a symbol, exactly what the loop top reads as `lw.items[0]`.
+              lw = inst(env, lbnd, la) as ExprAtom;
+              continue reduceTrampoline;
+            }
+          }
+          for (const p of pairs) {
+            const pb = mergeRestrict(env, queryVars, partB, p[1]);
+            if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
+              // wApp did not reduce (a constructor application / data term). Cache a ground one so the next
+              // visit short-circuits instead of re-walking it.
+              if (wApp.ground) env.evaluatedAtoms.add(wApp);
+              out.push([wApp, partB]);
+            } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
+              out.push([p[0], pb]);
+            } else {
+              const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur2, pb, p[0]);
+              cur2 = st4;
+              for (const m of more) {
+                out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
+              }
+            }
+          }
+          if (eligible) {
+            const produced = out.slice(before).map((p) => p[0]);
+            if (produced.every((a) => a.ground)) env.table!.set(key, produced);
+          }
+          if (modedEligible) {
+            // Store the call's whole answer bag canonically (continuing `modedMap` past the call's own
+            // variables, so an auxiliary metavariable the search introduced gets a `%N` with N >=
+            // numCallVars). A replay freshens those extra placeholders to new globals; the call's own
+            // `%0..%(numCallVars-1)` map back to the replaying call's actual variable names.
+            const produced = out.slice(before).map((p) => p[0]);
+            const map = modedMap!;
+            const canonicalResults = produced.map((r) => canonicalize(r, map));
+            env.modedTable!.set(modedKey, {
+              numCallVars: modedNumCallVars,
+              results: canonicalResults,
+            });
+          }
+        } finally {
+          // Cleared on every exit (success, an uncaught grounded-op error, or a native stack overflow
+          // unwinding through here) so a call that fails partway never leaves its canonical key stuck in
+          // "in progress" — which would silently disable caching for that whole alpha-equivalence class of
+          // call for the rest of the run. Only ever removes a key this same iteration added.
+          if (modedEligible) env.modedInProgress!.delete(modedKey);
         }
       }
       return flushReturn(out, cur2);

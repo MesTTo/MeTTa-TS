@@ -19,7 +19,7 @@ import {
   mettaEvalAsync,
 } from "./eval";
 import { stdTable } from "./builtins";
-import { analyzePurity } from "./tabling";
+import { analyzePurity, MODED_IMPURE_OPS } from "./tabling";
 import { PRELUDE_SRC } from "./prelude";
 import { withBuiltinModules } from "./extensions";
 import { stdlibAtoms } from "./stdlib";
@@ -75,7 +75,10 @@ function buildDefaultEnv(
   if (experimental?.flatAtomspace === true) env.useFlatAtomspace = true;
   if (tabling) {
     env.table = new Map();
+    env.modedTable = new Map();
+    env.modedInProgress = new Set();
     env.pureFunctors = analyzePurity(env);
+    env.modedPureFunctors = analyzePurity(env, MODED_IMPURE_OPS);
     env.compiled = new Map();
     env.compileDirty = true;
   }

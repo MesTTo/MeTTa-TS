@@ -44,13 +44,27 @@ export type GroundMatcher = (left: Atom, right: Atom) => Bindings[];
 
 /** Does `target` occur in `a` once variables are resolved through the binding relations `rels`/`b`? The
  *  occurs check LeaTTa's `Unify.unifyTop` runs when reconciling a rebind. `seen` guards against following an
- *  existing benign alias forever. */
+ *  existing benign alias forever; it is never popped on backtrack, which is sound (not just a loop guard)
+ *  because `rels`/`b` are immutable for the whole call, so "target occurs in this variable's value" is a
+ *  fact fixed for the entire traversal, safe to skip re-deriving anywhere else in the call tree.
+ *
+ *  `memo` extends the same reasoning to expression nodes, keyed by object identity. `instantiate` shares
+ *  unchanged subterms by reference rather than copying them, so a rewrite-heavy search (backward chaining
+ *  over recursive rules) builds a DAG, not a tree: the same expression object is reachable through many
+ *  parent paths. Recursing without this memo re-walks a shared node once per incoming path, so the total
+ *  work is the DAG's path count, which is exponential in depth, rather than its node count. That mismatch
+ *  is exactly what turned a size-9 backward-chaining query (Nil Geisweiller's `bfc-xp.metta`, obc/obc-gtz)
+ *  into a multi-gigabyte OOM: the reconciled type term had ~3,400 distinct nodes but 20,000+ paths to them
+ *  at the point occursThrough overflowed the native stack. Memoizing by node identity is sound for the same
+ *  reason `seen` is: the answer for a given object cannot change mid-traversal, so the first answer computed
+ *  for it is reusable everywhere. */
 function occursThrough(
   target: string,
   a: Atom,
   rels: Bindings,
   b: Bindings,
   seen: Set<string>,
+  memo: Map<Atom, boolean>,
 ): boolean {
   if (a.ground) return false;
   if (a.kind === "var") {
@@ -58,9 +72,15 @@ function occursThrough(
     if (seen.has(a.name)) return false;
     seen.add(a.name);
     const nv = lookupVal(rels, a.name) ?? lookupVal(b, a.name);
-    return nv !== undefined && occursThrough(target, nv, rels, b, seen);
+    return nv !== undefined && occursThrough(target, nv, rels, b, seen, memo);
   }
-  if (a.kind === "expr") return a.items.some((it) => occursThrough(target, it, rels, b, seen));
+  if (a.kind === "expr") {
+    const cached = memo.get(a);
+    if (cached !== undefined) return cached;
+    const found = a.items.some((it) => occursThrough(target, it, rels, b, seen, memo));
+    memo.set(a, found);
+    return found;
+  }
   return false;
 }
 
@@ -75,7 +95,7 @@ function occursThrough(
 function reconcile(b: Bindings, l: Atom, r: Atom): Bindings[] {
   const out: Bindings[] = [];
   for (const mb of matchAtoms(l, r)) {
-    if (someVal(mb, (x, a) => occursThrough(x, a, mb, b, new Set()))) continue;
+    if (someVal(mb, (x, a) => occursThrough(x, a, mb, b, new Set(), new Map()))) continue;
     for (const m of merge(b, mb)) out.push(m);
   }
   return out;
@@ -119,6 +139,16 @@ export function merge(a: Bindings, b: Bindings): Bindings[] {
   return acc;
 }
 
+// Cached by the pair's object identity, permanently — but only for the common `matchAtoms(l, r)` path
+// (no custom grounded matcher, no left suffix). `matchAtomsWith` takes no bindings/environment parameter,
+// so for that path it is a pure function of (l, r): the answer for a given pair can never change, the same
+// reasoning as the `atomEq` cache above. A rewrite-heavy search (backward chaining over recursive rules)
+// repeatedly matches structurally-similar terms built by `instantiate`'s subterm sharing, so this was the
+// next dominant cost (matchAll/mergeOne, ~19%+GC) once `atomEq` stopped being it. `matchAtomsScoped`'s
+// suffixed path is deliberately excluded: it freshens with a new suffix on nearly every call, so caching it
+// would grow this table forever for an ~always-miss rate.
+const matchExprCache = new WeakMap<Atom, WeakMap<Atom, Bindings[]>>();
+
 /** Match atoms in the official left/right style (LeaTTa `matchAtomsWith`). `leftSuffix` (default empty)
  *  scopes the LEFT atom's variables: a left variable `$x` is treated as `$x<suffix>`, so a rule LHS can be
  *  matched without first cloning it with freshened variables. */
@@ -139,8 +169,23 @@ export function matchAtomsWith(
     return [
       prependValRaw(emptyBindings, r.name, leftSuffix === "" ? l : suffixVars(l, leftSuffix)),
     ];
-  if (l.kind === "expr" && r.kind === "expr")
-    return matchAll(custom, [emptyBindings], l.items, r.items, leftSuffix);
+  if (l.kind === "expr" && r.kind === "expr") {
+    const cacheable = custom === undefined && leftSuffix === "";
+    if (cacheable) {
+      const cached = matchExprCache.get(l)?.get(r);
+      if (cached !== undefined) return cached;
+    }
+    const result = matchAll(custom, [emptyBindings], l.items, r.items, leftSuffix);
+    if (cacheable) {
+      let inner = matchExprCache.get(l);
+      if (inner === undefined) {
+        inner = new WeakMap();
+        matchExprCache.set(l, inner);
+      }
+      inner.set(r, result);
+    }
+    return result;
+  }
   if (l.kind === "gnd") return matchGrounded(custom, l, r);
   if (r.kind === "gnd") return matchGrounded(custom, r, l);
   return atomEq(l, r) ? [emptyBindings] : [];

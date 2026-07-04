@@ -83,6 +83,20 @@ export function boxesToPrims(
         op: 1,
         dataPath: pk,
       });
+      if (box.children.length === 0)
+        // An empty expression () has no children to draw, so label its backing with the brackets;
+        // without this it renders as a blank pill (historically a stray dot floating in the corner).
+        out.push({
+          t: "text",
+          key: `t:${pk}`,
+          x: box.x + box.w / 2,
+          y: box.y + box.h / 2,
+          text: "()",
+          fill: s.identifierColor,
+          size: s.fontSize,
+          weight: false,
+          op: 1,
+        });
       for (const c of box.children) draw(c);
       return;
     }

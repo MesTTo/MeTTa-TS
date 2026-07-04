@@ -10,7 +10,7 @@
 // yet), which keeps the visual order equal to the atom's argument order after import. Shared nodes in a
 // DAG are placed once, under the first parent that reaches them.
 
-import type { Graph } from "./model";
+import type { Graph, GraphNode } from "./model";
 import { nodeWidth, NODE_H } from "./measure";
 
 const ROW = NODE_H + 26; // vertical distance between depths
@@ -18,9 +18,13 @@ const GAP = 14; // horizontal gap between adjacent leaves
 const HEAD_GAP = 3 * NODE_H; // wider gap between separate trees (heads), so nondeterministic results read apart
 
 /** Assign `x` and `y` to every node so the graph reads as tidy top-down trees. Mutates the graph. */
-export function layout(graph: Graph, opts?: { originX?: number; originY?: number }): void {
+export function layout(
+  graph: Graph,
+  opts?: { originX?: number; originY?: number; scaleOf?: (node: GraphNode) => number },
+): void {
   const originX = opts?.originX ?? 0;
   const originY = opts?.originY ?? 0;
+  const scaleOf = opts?.scaleOf ?? (() => 1);
   const visited = new Set<string>();
   let cursorX = originX; // left edge of the next leaf
 
@@ -32,7 +36,9 @@ export function layout(graph: Graph, opts?: { originX?: number; originY?: number
     node.y = originY + depth * ROW;
     const kids = graph.childrenOf(id);
     if (kids.length === 0) {
-      const w = nodeWidth(node);
+      // Reserve the node's on-screen width scaled by any `(size ...)` overlay, so a resized box packs its own
+      // slot and does not overlap its neighbors.
+      const w = nodeWidth(node) * scaleOf(node);
       node.x = cursorX + w / 2;
       cursorX += w + GAP;
       return node.x;

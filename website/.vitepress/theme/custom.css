@@ -20,3 +20,16 @@
   background: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><rect width='256' height='256' rx='34' fill='%233178c6'/><text x='133' y='192' font-family='Inter,system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif' font-weight='800' font-size='150' text-anchor='middle' fill='%23ffffff'>TS</text></svg>")
     center / contain no-repeat;
 }
+
+/* The hero illustration is the visual editor playing a generate-and-test search. Show it a little larger
+ * than the theme default, rounded, and drop the default gradient blob behind it since the GIF is its own
+ * picture. */
+.VPHero .image-src {
+  max-width: 540px;
+  max-height: none;
+  border-radius: 12px;
+  border: 1px solid var(--vp-c-divider);
+}
+.VPHero .image-bg {
+  display: none;
+}

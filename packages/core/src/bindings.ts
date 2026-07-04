@@ -4,7 +4,7 @@
 
 // Binding sets, a faithful port of LeaTTa `Core/Bindings.lean`.
 // A binding set is a list of relations: `val x a` is `$x ← a`; `eq x y` is `$x = $y`.
-import { type Atom, atomEq } from "./atom";
+import { type Atom, atomEq, atomVars } from "./atom";
 
 export interface ValRel {
   readonly tag: "val";
@@ -65,11 +65,68 @@ export function removeVal(b: Bindings, x: string): Bindings {
   return copyWithoutVal(b, x, first);
 }
 
-/** True if the set contains a trivial self-loop (`$x ← $x` or `$x = $x`). */
+const noSucc: readonly string[] = [];
+
+/** True if the binding set carries a variable loop: some variable is reachable from itself by following
+ *  value bindings (`$x ← (.. $y ..)`, `$y ← (.. $x ..)`), so the set has no finite instantiation. Deep and
+ *  transitive, mirroring Hyperon `Bindings::has_loops` (a DFS over variable→value edges) and CeTTa
+ *  `bindings_atom_has_loop`. Every matcher call site drops a looping set (`if (!hasLoop(m))`), the same
+ *  boundary at which Hyperon's `match_atoms` filters `!binding.has_loops()`, so a cyclic unification that a
+ *  direct match admits (`matchAtomsWith` has no occurs check, faithfully — LeaTTa's occurs check lives only
+ *  in reconcile) never reaches the evaluator.
+ *
+ *  Was shallow, catching only the one-hop self relations `$x ← $x` / `$x = $x`, which let an indirect cycle
+ *  like `$x ← (→ $x A)` through. That is a first-bind cycle (each variable bound once); the occurs check in
+ *  `reconcile`/`addVarBinding` only fires on a SECOND bind of a variable, so it never sees such a cycle, and
+ *  the fixpoint resolver then unrolled it to depth `size(b)` and overflowed the native stack — Nil
+ *  Geisweiller's bfc-xp `obc` proof search at size ≥ 7. Deep detection is exactly the guard that makes
+ *  resolution terminate (Alloy model MT1: a binding graph is loop-free iff every variable resolves to a
+ *  finite normal form; a first-bind-only cycle is reachable, so the check must run here at the match
+ *  boundary, not only on reconcile). A variable bound directly to itself (`$x ← $x`) is an identity, not a
+ *  loop, matching Hyperon's short-circuit; it is caught above and treated as a loop only in that trivial
+ *  self form to preserve the previous behaviour exactly.
+ *
+ *  The DFS is iterative (an explicit stack, never native recursion) so detecting a loop can never itself
+ *  overflow, and 3-colours each variable so it is visited once: O(vars + total value size), like Hyperon's
+ *  bitset walk. `atomVars` is cached by object identity, so a DAG-shared value is scanned once. */
 export function hasLoop(b: Bindings): boolean {
+  let anyVal = false;
   for (const r of b) {
-    if (r.tag === "val" && r.a.kind === "var" && r.a.name === r.x) return true;
-    if (r.tag === "eq" && r.x === r.y) return true;
+    if (r.tag === "eq") {
+      if (r.x === r.y) return true;
+    } else {
+      anyVal = true;
+      if (r.a.kind === "var" && r.a.name === r.x) return true;
+    }
+  }
+  if (!anyVal) return false;
+  // 3-colour iterative DFS over the variable graph. A variable's successors are the distinct variables in
+  // its bound value; a grey (on the current path) revisit is a back-edge, i.e. a cycle. color: 1 = grey
+  // (on path), 2 = black (done); absent = white (unvisited).
+  const color = new Map<string, 1 | 2>();
+  const succ = (x: string): readonly string[] => {
+    const v = lookupVal(b, x);
+    return v === undefined || v.ground ? noSucc : atomVars(v);
+  };
+  const stack: Array<{ v: string; kids: readonly string[]; i: number }> = [];
+  for (const r of b) {
+    if (r.tag !== "val" || color.get(r.x) === 2) continue;
+    color.set(r.x, 1);
+    stack.push({ v: r.x, kids: succ(r.x), i: 0 });
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1]!;
+      if (top.i >= top.kids.length) {
+        color.set(top.v, 2);
+        stack.pop();
+        continue;
+      }
+      const y = top.kids[top.i++]!;
+      const c = color.get(y);
+      if (c === 1) return true;
+      if (c === 2) continue;
+      color.set(y, 1);
+      stack.push({ v: y, kids: succ(y), i: 0 });
+    }
   }
   return false;
 }

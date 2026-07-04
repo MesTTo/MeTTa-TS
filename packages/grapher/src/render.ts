@@ -29,11 +29,13 @@ export interface NodeLabel {
   error: boolean;
 }
 
-/** A per-node overlay from a MeTTa `&grapher` directive: a fill color, a highlight ring, and a label. */
+/** A per-node overlay from a MeTTa `&grapher` directive: a fill color, a highlight ring, a label, and a size
+ *  scale (1 = default). */
 export interface NodeViz {
   color?: string;
   highlight?: boolean;
   label?: string;
+  sizeScale?: number;
 }
 
 /** Everything the renderer needs for one frame. */
@@ -385,10 +387,15 @@ export class Renderer {
       const w = nodeWidth(node);
       const color = colorFor(node);
       const vz = viz.get(node.id);
+      // A `(size ...)` directive scales the whole node group about its center, so shape, text, and rings grow
+      // together; edges are drawn to the center and so stay put.
       const g = svgEl("g", {
         class: "mg-node",
         "data-id": node.id,
-        transform: `translate(${node.x} ${node.y})`,
+        transform:
+          vz?.sizeScale !== undefined
+            ? `translate(${node.x} ${node.y}) scale(${vz.sizeScale.toFixed(3)})`
+            : `translate(${node.x} ${node.y})`,
       });
 
       if (selection.has(node.id)) {

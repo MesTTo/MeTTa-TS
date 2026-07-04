@@ -99,3 +99,89 @@ export function unifyTrail(tr: Trail, l0: Atom, r0: Atom): boolean {
     if (!unifyTrail(tr, l.items[i]!, r.items[i]!)) return false;
   return true;
 }
+
+// ---------- cell-variable kernel ----------
+// The compiled chainer's variables, with the binding ON the variable: `b` is a mutable slot, deref chases
+// pointers, and the trail is an array of bound cells. This removes the string-keyed Map from the search's
+// three hottest operations (deref, bind, undo) — no string hashing, no name concatenation. A cell is
+// structurally a `VarAtom` (same eight fields, one extra slot), so it flows through `expr` and unification
+// unchanged; `name` starts empty and is assigned only if the cell survives unbound into a materialized
+// answer. Cells are search-private: every variable entering the search (clause text and the entry call's
+// arguments alike) is freshened into a cell first, so binding never mutates an engine-owned atom.
+
+export interface CellVar {
+  readonly kind: "var";
+  name: string;
+  readonly items: undefined;
+  readonly value: undefined;
+  readonly typ: undefined;
+  readonly exec: undefined;
+  readonly match: undefined;
+  readonly ground: false;
+  b: Atom | undefined;
+}
+
+export function mkCell(): CellVar {
+  return {
+    kind: "var",
+    name: "",
+    items: undefined,
+    value: undefined,
+    typ: undefined,
+    exec: undefined,
+    match: undefined,
+    ground: false,
+    b: undefined,
+  };
+}
+
+/** Follow cell bindings to the representative: a non-variable, or an unbound cell. */
+export function derefCell(a: Atom): Atom {
+  let cur = a;
+  while (cur.kind === "var") {
+    const b = (cur as CellVar).b;
+    if (b === undefined) return cur;
+    cur = b;
+  }
+  return cur;
+}
+
+/** Does the unbound cell `v` occur in `t` (through the cell bindings)? */
+export function occursCell(v: Atom, t0: Atom): boolean {
+  const t = derefCell(t0);
+  if (t === v) return true;
+  if (t.kind !== "expr" || t.ground) return false;
+  for (const it of t.items) if (occursCell(v, it)) return true;
+  return false;
+}
+
+/** Unify with a per-bind occurs check: binding a cell to a term containing it (through the bindings)
+ *  fails instead of forming a cycle, exactly as the immutable matcher's `hasLoop` rejects one and as
+ *  SWI-Prolog does under `occurs_check True` — the discipline the proof-size-bounded chainers rely on to
+ *  terminate and stay sound. Per-bind rejection accepts exactly the sets `hasLoop` accepts in every bind
+ *  order (spec/loop_reject.als model MT2, representation-independent). Variable sameness is pointer
+ *  identity; each bind pushes onto `trail`. On failure the trail may hold partial bindings; callers undo
+ *  to a mark by popping to it and clearing each popped cell's `b`. */
+export function unifyCellOccurs(trail: CellVar[], l0: Atom, r0: Atom): boolean {
+  const l = derefCell(l0);
+  const r = derefCell(r0);
+  if (l === r) return true;
+  if (l.kind === "var") {
+    if (occursCell(l, r)) return false;
+    (l as CellVar).b = r;
+    trail.push(l as CellVar);
+    return true;
+  }
+  if (r.kind === "var") {
+    if (occursCell(r, l)) return false;
+    (r as CellVar).b = l;
+    trail.push(r as CellVar);
+    return true;
+  }
+  if (l.kind === "sym") return r.kind === "sym" && l.name === r.name;
+  if (l.kind === "gnd") return r.kind === "gnd" && atomEq(l, r);
+  if (r.kind !== "expr" || l.items.length !== r.items.length) return false;
+  for (let i = 0; i < l.items.length; i++)
+    if (!unifyCellOccurs(trail, l.items[i]!, r.items[i]!)) return false;
+  return true;
+}
