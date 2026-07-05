@@ -71,7 +71,11 @@ function styleBlockDirectives(a: Atom): Atom[] | null {
 function bareDirective(a: Atom): Atom {
   if (a instanceof ExpressionAtom) {
     const items = a.children();
-    if (items.length === 3 && items[0]?.toString() === "add-atom" && items[1]?.toString() === VIZ_SPACE)
+    if (
+      items.length === 3 &&
+      items[0]?.toString() === "add-atom" &&
+      items[1]?.toString() === VIZ_SPACE
+    )
       return items[2]!;
   }
   return a;
@@ -255,7 +259,8 @@ export class MeTTaGrapher implements ControllerHost {
     // `size` and `shade` carry raw numbers (an energy, a count); normalize each across the space so the
     // smallest maps to the low end and the largest to the high end, then scale the node or heat-color it.
     for (const [id, s] of normalizeRange(sizeVals, 0.8, 2)) this.mergeViz(id, { sizeScale: s });
-    for (const [id, t] of normalizeRange(shadeVals, 0, 1)) this.mergeViz(id, { color: heatColor(t) });
+    for (const [id, t] of normalizeRange(shadeVals, 0, 1))
+      this.mergeViz(id, { color: heatColor(t) });
     // Resized nodes need room: re-run the layout reserving each node's scaled width (from a `size` directive
     // or a `size-by` mapper), so the bigger boxes push their neighbors apart instead of overlapping them.
     if ([...this.viz.values()].some((o) => o.sizeScale !== undefined))

@@ -180,5 +180,8 @@ export function normalizeRange(
     if (v > max) max = v;
   }
   const span = max - min;
-  return vals.map(([id, v]) => [id, span === 0 ? (lo + hi) / 2 : lo + ((v - min) / span) * (hi - lo)]);
+  return vals.map(([id, v]) => [
+    id,
+    span === 0 ? (lo + hi) / 2 : lo + ((v - min) / span) * (hi - lo),
+  ]);
 }

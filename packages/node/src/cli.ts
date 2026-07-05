@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { format, setOutputSink, setRawSink, type RunOptions } from "@metta-ts/core";
 import { runFile } from "./index";
+import { checkFile } from "./check";
 
 // Deep effectful MeTTa recursion can exceed V8's default call stack. Re-exec once with a larger stack,
 // matching the reference interpreter's iterative driver. Set METTA_TS_STACK to skip (e.g. when embedding).
@@ -49,14 +50,30 @@ function main(): void {
       "max-stack-depth": { type: "string" },
       "hash-cons": { type: "boolean" },
       "flat-atomspace": { type: "boolean" },
+      check: { type: "boolean" },
+      json: { type: "boolean" },
+      "undefined-symbols": { type: "boolean" },
     },
   });
   const file = positionals[0];
   if (file === undefined) {
     process.stderr.write(
-      "usage: metta-ts [--max-steps=N] [--max-stack-depth=N] [--hash-cons] [--flat-atomspace] <file.metta>\n",
+      "usage: metta-ts [--check [--json] [--undefined-symbols]] [--max-steps=N] [--max-stack-depth=N] [--hash-cons] [--flat-atomspace] <file.metta>\n",
     );
     process.exit(2);
+  }
+  // Static analysis short-circuit: `--check` runs the analyzer instead of evaluating, before the eval and
+  // big-stack-reexec path below. `--json` emits the Diagnostic[] as JSON to stdout; otherwise the
+  // rustc-style render goes to stderr (a diagnostic, not program output). Exit 1 on any error-severity diag.
+  if (values.check === true) {
+    const { text, exitCode } = checkFile(file, {
+      json: values.json === true,
+      undefinedSymbols: values["undefined-symbols"] === true,
+    });
+    if (text.length > 0) {
+      (values.json === true ? process.stdout : process.stderr).write(text + "\n");
+    }
+    process.exit(exitCode);
   }
   const fuel = values["max-steps"] !== undefined ? Number(values["max-steps"]) : undefined;
   const maxStackDepth =

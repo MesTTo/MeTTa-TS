@@ -14,8 +14,27 @@ export interface TopAtom {
   readonly bang: boolean;
 }
 
-const isWs = (c: string): boolean => /\s/.test(c);
-const isDelim = (c: string): boolean => c === "(" || c === ")" || c === '"' || c === ";" || isWs(c);
+export const isWs = (c: string): boolean => /\s/.test(c);
+export const isDelim = (c: string): boolean =>
+  c === "(" || c === ")" || c === '"' || c === ";" || isWs(c);
+
+/** Advance past whitespace and `;` line comments starting at `pos`; returns the new index. Shared by the
+ *  plain parser (via `Cursor`) and the spanned CST parser, so the two cannot disagree on trivia. */
+export function skipTrivia(s: string, pos: number): number {
+  while (pos < s.length) {
+    const c = s[pos]!;
+    if (isWs(c)) {
+      pos++;
+      continue;
+    }
+    if (c === ";") {
+      while (pos < s.length && s[pos] !== "\n") pos++;
+      continue;
+    }
+    break;
+  }
+  return pos;
+}
 
 class Cursor {
   pos = 0;
@@ -30,38 +49,30 @@ class Cursor {
     return this.s[this.pos] as string;
   }
   skipTrivia(): void {
-    while (!this.done()) {
-      const c = this.peek();
-      if (isWs(c)) {
-        this.pos++;
-        continue;
-      }
-      if (c === ";") {
-        while (!this.done() && this.peek() !== "\n") this.pos++;
-        continue;
-      }
-      break;
-    }
+    this.pos = skipTrivia(this.s, this.pos);
   }
 }
 
-function readString(c: Cursor): Atom {
-  c.pos++; // opening quote
+/** Read a `"..."` string literal starting at the opening quote index `start`. Returns the grounded String
+ *  atom and the index just past the closing quote. Inverse of `format`'s JSON.stringify output. Shared by
+ *  the plain parser and the spanned CST parser. */
+export function readStringAt(s: string, start: number): { atom: Atom; end: number } {
+  let pos = start + 1; // opening quote
   let out = "";
-  while (!c.done() && c.peek() !== '"') {
-    if (c.peek() === "\\" && c.pos + 1 < c.s.length) {
-      const next = c.s[c.pos + 1] as string;
+  while (pos < s.length && s[pos] !== '"') {
+    if (s[pos] === "\\" && pos + 1 < s.length) {
+      const next = s[pos + 1] as string;
       // `\uXXXX` (a 4-hex-digit code unit, the form JSON.stringify emits for control characters).
-      if (next === "u" && c.pos + 6 <= c.s.length) {
-        const hex = c.s.slice(c.pos + 2, c.pos + 6);
+      if (next === "u" && pos + 6 <= s.length) {
+        const hex = s.slice(pos + 2, pos + 6);
         if (/^[0-9a-fA-F]{4}$/.test(hex)) {
           out += String.fromCharCode(parseInt(hex, 16));
-          c.pos += 6;
+          pos += 6;
           continue;
         }
       }
       // The single-letter escapes JSON.stringify emits; for `"`, `\`, `/` and anything else `next` is the
-      // literal character. This keeps readString the inverse of format (which prints strings via JSON.stringify).
+      // literal character. This keeps readStringAt the inverse of format (which prints via JSON.stringify).
       out +=
         next === "n"
           ? "\n"
@@ -74,19 +85,24 @@ function readString(c: Cursor): Atom {
                 : next === "f"
                   ? "\f"
                   : next;
-      c.pos += 2;
+      pos += 2;
       continue;
     }
-    out += c.peek();
-    c.pos++;
+    out += s[pos];
+    pos++;
   }
-  if (c.done()) throw new Error("unterminated string literal in MeTTa source");
-  c.pos++; // closing quote
-  return gstr(out);
+  if (pos >= s.length) throw new Error("unterminated string literal in MeTTa source");
+  return { atom: gstr(out), end: pos + 1 }; // past the closing quote
+}
+
+function readString(c: Cursor): Atom {
+  const { atom, end } = readStringAt(c.s, c.pos);
+  c.pos = end;
+  return atom;
 }
 
 // Bound on expression nesting, so deliberately deep input cannot overflow the recursive walkers.
-const MAX_DEPTH = 4096;
+export const MAX_DEPTH = 4096;
 
 function readWord(c: Cursor): string {
   let out = "";
@@ -95,6 +111,13 @@ function readWord(c: Cursor): string {
     c.pos++;
   }
   return out;
+}
+
+/** Turn a bare word (already extracted, no delimiters) into its atom: a `$`-word is a variable, otherwise
+ *  the tokenizer decides, falling back to a Symbol. Shared by the plain and spanned parsers. */
+export function leafAtom(word: string, tk: Tokenizer): Atom {
+  if (word.startsWith("$")) return variable(word.slice(1));
+  return tk.tokenize(word) ?? sym(word);
 }
 
 function readAtom(c: Cursor, depth = 0): Atom {
@@ -117,8 +140,7 @@ function readAtom(c: Cursor, depth = 0): Atom {
   }
   if (ch === '"') return readString(c);
   const word = readWord(c);
-  if (word.startsWith("$")) return variable(word.slice(1));
-  return c.tk.tokenize(word) ?? sym(word);
+  return leafAtom(word, c.tk);
 }
 
 // Read one top-level atom from the cursor: an optional leading `!` sets the bang flag. The cursor must
