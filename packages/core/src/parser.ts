@@ -54,9 +54,13 @@ class Cursor {
 }
 
 /** Read a `"..."` string literal starting at the opening quote index `start`. Returns the grounded String
- *  atom and the index just past the closing quote. Inverse of `format`'s JSON.stringify output. Shared by
- *  the plain parser and the spanned CST parser. */
-export function readStringAt(s: string, start: number): { atom: Atom; end: number } {
+ *  atom, the index just past the closing quote (or end-of-input when unterminated), and whether a closing
+ *  quote was found. Inverse of `format`'s JSON.stringify output. Shared by the plain parser (which throws on
+ *  `terminated === false`) and the recovering spanned CST parser (which records a diagnostic instead). */
+export function readStringAt(
+  s: string,
+  start: number,
+): { atom: Atom; end: number; terminated: boolean } {
   let pos = start + 1; // opening quote
   let out = "";
   while (pos < s.length && s[pos] !== '"') {
@@ -91,12 +95,13 @@ export function readStringAt(s: string, start: number): { atom: Atom; end: numbe
     out += s[pos];
     pos++;
   }
-  if (pos >= s.length) throw new Error("unterminated string literal in MeTTa source");
-  return { atom: gstr(out), end: pos + 1 }; // past the closing quote
+  const terminated = pos < s.length; // stopped on a closing quote, not end-of-input
+  return { atom: gstr(out), end: terminated ? pos + 1 : pos, terminated };
 }
 
 function readString(c: Cursor): Atom {
-  const { atom, end } = readStringAt(c.s, c.pos);
+  const { atom, end, terminated } = readStringAt(c.s, c.pos);
+  if (!terminated) throw new Error("unterminated string literal in MeTTa source");
   c.pos = end;
   return atom;
 }

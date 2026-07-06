@@ -1,4 +1,4 @@
-# MeTTa TS 1.0.8
+# MeTTa TS 1.0.9
 
 A pure-TypeScript implementation of [MeTTa](https://metta-lang.dev) (Meta Type Talk), the OpenCog Hyperon language. It runs anywhere TypeScript runs: the browser, Node, Deno, Bun, and edge or serverless functions. No native addons, no WASM, no Rust.
 
@@ -6,11 +6,11 @@ A pure-TypeScript implementation of [MeTTa](https://metta-lang.dev) (Meta Type T
 
 This release is tested on Linux (Node 20, the CI matrix): lint, format, typecheck, the full test suite, and the build all run there. Because the engine is pure TypeScript with no native addon and no WASM, it is meant to be cross-platform and should run unchanged on any JavaScript runtime. Other operating systems are not yet part of the tested matrix.
 
-## What's new: a static analyzer and `metta-ts --check`
+## What's new: a recovering CST for editors and language servers
 
-This release adds a static analyzer that catches mistakes before a program runs and reports them the way a modern compiler does: the exact source span underlined, an error code, a message, and a suggested fix. It ships in `@metta-ts/core` as a library and on the `metta-ts` CLI as `--check`.
+1.0.8 added a span-tracking parse for the static analyzer. This release turns it into a concrete syntax tree an editor can build on. `parseCst` never throws, so a language server can keep offering features while a document is mid-edit: an unclosed `(` closes at end of input, an unexpected `)` and an unterminated string each become a diagnostic instead of an exception, and deep nesting is bounded without a recursive overflow. The tree also carries what an editor needs and the analyzer did not: the comments, a syntactic kind per node, the paren spans, and the span of a top-level `!` query.
 
-The analyzer reads the interpreter's own signature table, so it flags exactly the calls the interpreter itself would reject. A builtin called with the wrong number of arguments is checked against the same `(-> ...)` declaration the evaluator uses at run time, not against a second copy of the arity rules that could drift from it:
+Leaf atoms still come from the interpreter's own reader primitives, so on valid input the CST is byte-identical to `parseAll`. A 1000-run differential checks the atoms and bang flags against the plain reader, and a 2000-run fuzz checks that the parser never throws on arbitrary input. The diagnostics are shaped as Language Server Protocol `Diagnostic`s with a range, a severity, and a stable code, so an editor consumes them directly. The static analyzer and `metta-ts --check` from 1.0.8 are unchanged and still read the interpreter's own signature table:
 
 ```
 error[arity-mismatch]: prog.metta:1:2
@@ -19,11 +19,7 @@ error[arity-mismatch]: prog.metta:1:2
   |  ^^^^^^^^^^^^^^ car-atom expects 1 argument, got 2
 ```
 
-An opt-in `--undefined-symbols` pass adds a "did you mean" on an unknown head, suggesting the closest defined name by edit distance. It is off by default because MeTTa's add-mode makes an unknown head legal: `(foo 1 2)` with no rule for `foo` is data added to the space, not a typo. With the flag on, `(fibonaci 10)` next to a defined `fibonacci` becomes a warning that carries the fix, never an error.
-
-Precise spans come from a span-tracking parse that reuses the interpreter's own reader primitives, so the analyzer cannot disagree with the real parser about where a token starts or ends. `--json` emits the findings as a Language Server Protocol `Diagnostic[]`, each with a range, a severity, a code, and suggestions that carry an applicability tier, so an editor or a language server can consume them directly.
-
-None of this changes the evaluator. The only edit to existing run-time code is a refactor of the parser that exports the primitives the span parser reuses, and it is guarded by the parser's own tests. So the 270-assertion Hyperon oracle and the corpus benchmark below are byte-identical to 1.0.7, and the analyzer adds no dependency.
+None of this touches the evaluator. `parseCst` is off the `runFile` hot path; the only change to shared code is that `readStringAt` now reports whether a string was terminated instead of throwing, and the plain parser re-throws exactly as before. The 270-assertion Hyperon oracle and every byte-identical experimental suite still pass, and a parse/eval microbench is within noise of 1.0.8.
 
 ## Corpus benchmark
 

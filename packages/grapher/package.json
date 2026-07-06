@@ -1,6 +1,6 @@
 {
   "name": "@metta-ts/grapher",
-  "version": "1.0.8",
+  "version": "1.0.9",
   "author": "MesTTo",
   "license": "MIT",
   "description": "MeTTaGrapher: a pure-SVG visual node-graph editor for MeTTa. Build a program as connected nodes, evaluate any subtree on the engine, and see the result. A node graph is a MeTTa atom.",
