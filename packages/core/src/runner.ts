@@ -12,6 +12,7 @@ import {
   type St,
   type MinEnv,
   type AsyncGroundFn,
+  type HostImportFn,
   buildEnv,
   addAtomToEnv,
   initSt,
@@ -28,11 +29,11 @@ import { pettaStdlibAtoms } from "./petta-stdlib";
 /** The standard tokenizer: integer/float literals and the `True`/`False` grounded booleans. */
 export function standardTokenizer(): Tokenizer {
   const t = new Tokenizer();
-  t.register(/^-?\d+$/, (s) => gint(BigInt(s)));
-  t.register(/^-?\d+\.\d+$/, (s) => gfloat(Number(s)));
+  t.register(/^[+-]?\d+$/, (s) => gint(BigInt(s)));
+  t.register(/^[+-]?\d+\.\d+$/, (s) => gfloat(Number(s)));
   // Scientific-notation floats (Hyperon arithmetics.rs: `[\-\+]?\d+(\.\d+)?[eE][\-\+]?\d+`), e.g. 1e-3,
   // 1.5e2, -2e10. Registered after the plain int/decimal forms, which it does not overlap.
-  t.register(/^-?\d+(\.\d+)?[eE][-+]?\d+$/, (s) => gfloat(Number(s)));
+  t.register(/^[+-]?\d+(\.\d+)?[eE][-+]?\d+$/, (s) => gfloat(Number(s)));
   t.register(/^True$/, () => gbool(true));
   t.register(/^False$/, () => gbool(false));
   return t;
@@ -63,13 +64,15 @@ const DEFAULT_TABLING = true;
 function buildDefaultEnv(
   imports: Map<string, Atom[]>,
   tabling: boolean,
-  experimental?: RunOptions["experimental"],
+  opts: RunOptions = {},
 ): MinEnv {
+  const experimental = opts.experimental;
   const env: MinEnv = buildEnv(
     [...preludeAtoms(), ...stdlibAtoms(), ...pettaStdlibAtoms()],
     stdTable(),
   );
   env.imports = withBuiltinModules(imports);
+  if (opts.hostImport !== undefined) env.hostImport = opts.hostImport;
   if (experimental?.hashCons === true) env.intern = createInternTable();
   if (experimental?.trail === true) env.useTrail = true;
   if (experimental?.flatAtomspace === true) env.useFlatAtomspace = true;
@@ -107,16 +110,79 @@ export interface RunOptions {
   // starting bound but is not a hard ceiling; the `fuel` argument is the resource ceiling. Left to the
   // developer rather than hardcoded so a host embedding untrusted programs can pick its own policy.
   readonly maxStackDepth?: number;
-  // Optional parallel branch evaluator for `(once (hyperpose …))`, supplied by the Node host (a
-  // worker_threads pool; see packages/node/src/par-hyperpose.ts). Given the program's rule source, the
-  // formatted branch atoms, and whether to stop at the first result, it returns each branch's results as
-  // formatted source strings (or `null` for a branch that errored or, under `firstOnly`, lost the race).
-  // Absent in the browser, where `hyperpose` falls back to sequential evaluation.
+  // Optional parallel branch evaluator for `(once (hyperpose …))`, supplied by hosts that can block the
+  // caller while branch workers run. Node uses this for the CLI worker_threads path.
   readonly parEvalImpl?: (
     rulesSrc: string,
     branchSrcs: string[],
     firstOnly: boolean,
   ) => (string[] | null)[];
+  // Async equivalent for hosts such as browsers where Web Workers report back through messages. Used only by
+  // the async runner; the sync runner still falls back unless `parEvalImpl` is present.
+  readonly parEvalAsyncImpl?: (
+    rulesSrc: string,
+    branchSrcs: string[],
+    firstOnly: boolean,
+  ) => Promise<(string[] | null)[]>;
+  readonly hostImport?: HostImportFn;
+}
+
+function wireParallelEvaluation(
+  env: MinEnv,
+  atoms: readonly { atom: Atom; bang: boolean }[],
+  opts: RunOptions,
+): void {
+  if (opts.parEvalImpl === undefined && opts.parEvalAsyncImpl === undefined) return;
+  env.pureFunctors ??= analyzePurity(env);
+  // Re-evaluate a branch in a worker from the program's static (non-`!`) rules; a pure ground branch
+  // references only those, so this reproduces the in-line evaluation. Result strings are parsed back.
+  const rulesSrc = atoms
+    .filter((a) => !a.bang)
+    .map((a) => format(a.atom))
+    .join("\n");
+  const parseBranchResults = (results: (string[] | null)[]): (Atom[] | null)[] =>
+    results.map((r) =>
+      r === null ? null : r.flatMap((s) => parseAll(s, standardTokenizer()).map((p) => p.atom)),
+    );
+  const impl = opts.parEvalImpl;
+  if (impl !== undefined) {
+    env.parEval = (branchSrcs, firstOnly) =>
+      parseBranchResults(impl(rulesSrc, branchSrcs, firstOnly));
+  }
+  const asyncImpl = opts.parEvalAsyncImpl;
+  if (asyncImpl !== undefined) {
+    env.parEvalAsync = async (branchSrcs, firstOnly) =>
+      parseBranchResults(await asyncImpl(rulesSrc, branchSrcs, firstOnly));
+  }
+}
+
+function resultsForQuery(pairs: Array<[Atom, unknown]>): Atom[] {
+  return pairs.map((p) => p[0]);
+}
+
+function evalSequentialInternal(
+  atoms: readonly { atom: Atom; bang: boolean }[],
+  fuel = DEFAULT_FUEL,
+  imports: Map<string, Atom[]> = new Map(),
+  opts: RunOptions = {},
+  includeNonBang: boolean,
+): QueryResult[] {
+  const out: QueryResult[] = [];
+  let st: St = initSt();
+  if (opts.maxStackDepth !== undefined) st.world.maxStackDepth = opts.maxStackDepth;
+  const env = buildDefaultEnv(imports, opts.tabling ?? DEFAULT_TABLING, opts);
+  wireParallelEvaluation(env, atoms, opts);
+  for (const { atom, bang } of atoms) {
+    if (!bang) {
+      addAtomToEnv(env, atom);
+      if (includeNonBang) out.push({ query: atom, results: [] });
+      continue;
+    }
+    const [pairs, st2] = mettaEval(env, fuel, st, [], atom);
+    st = st2;
+    out.push({ query: atom, results: resultsForQuery(pairs) });
+  }
+  return out;
 }
 
 /** Evaluate a parsed program sequentially. `imports` backs `import!` (pre-read by the caller). */
@@ -126,33 +192,17 @@ export function evalSequential(
   imports: Map<string, Atom[]> = new Map(),
   opts: RunOptions = {},
 ): QueryResult[] {
-  const out: QueryResult[] = [];
-  let st: St = initSt();
-  if (opts.maxStackDepth !== undefined) st.world.maxStackDepth = opts.maxStackDepth;
-  const env = buildDefaultEnv(imports, opts.tabling ?? DEFAULT_TABLING, opts.experimental);
-  if (opts.parEvalImpl !== undefined) {
-    // Re-evaluate a branch in a worker from the program's static (non-`!`) rules; a pure ground branch
-    // references only those, so this reproduces the in-line evaluation. Result strings are parsed back.
-    const rulesSrc = atoms
-      .filter((a) => !a.bang)
-      .map((a) => format(a.atom))
-      .join("\n");
-    const impl = opts.parEvalImpl;
-    env.parEval = (branchSrcs, firstOnly) =>
-      impl(rulesSrc, branchSrcs, firstOnly).map((r) =>
-        r === null ? null : r.flatMap((s) => parseAll(s, standardTokenizer()).map((p) => p.atom)),
-      );
-  }
-  for (const { atom, bang } of atoms) {
-    if (!bang) {
-      addAtomToEnv(env, atom);
-      continue;
-    }
-    const [pairs, st2] = mettaEval(env, fuel, st, [], atom);
-    st = st2;
-    out.push({ query: atom, results: pairs.map((p) => p[0]) });
-  }
-  return out;
+  return evalSequentialInternal(atoms, fuel, imports, opts, false);
+}
+
+/** Evaluate every top-level directive, including non-`!` atoms as empty result directives. */
+export function evalSequentialAllDirectives(
+  atoms: readonly { atom: Atom; bang: boolean }[],
+  fuel = DEFAULT_FUEL,
+  imports: Map<string, Atom[]> = new Map(),
+  opts: RunOptions = {},
+): QueryResult[] {
+  return evalSequentialInternal(atoms, fuel, imports, opts, true);
 }
 
 /** Parse and run a MeTTa source string sequentially. */
@@ -163,6 +213,16 @@ export function runProgram(
   opts: RunOptions = {},
 ): QueryResult[] {
   return evalSequential(parseAll(src, standardTokenizer()), fuel, imports, opts);
+}
+
+/** Parse and run a MeTTa source string, returning one result entry per top-level directive. */
+export function runProgramAllDirectives(
+  src: string,
+  fuel = DEFAULT_FUEL,
+  imports: Map<string, Atom[]> = new Map(),
+  opts: RunOptions = {},
+): QueryResult[] {
+  return evalSequentialAllDirectives(parseAll(src, standardTokenizer()), fuel, imports, opts);
 }
 
 /** Async sequential evaluation: like `runProgram`, but `!`-queries are awaited, so async grounded
@@ -176,7 +236,8 @@ export async function runProgramAsync(
   opts: RunOptions = {},
 ): Promise<QueryResult[]> {
   const parsed = parseAll(src, standardTokenizer());
-  const env = buildDefaultEnv(imports, opts.tabling ?? false, opts.experimental);
+  const env = buildDefaultEnv(imports, opts.tabling ?? false, opts);
+  wireParallelEvaluation(env, parsed, opts);
   for (const [k, v] of asyncOps) env.agt.set(k, v);
   const out: QueryResult[] = [];
   let st: St = initSt();
@@ -188,7 +249,7 @@ export async function runProgramAsync(
     }
     const [pairs, st2] = await mettaEvalAsync(env, fuel, st, [], atom);
     st = st2;
-    out.push({ query: atom, results: pairs.map((p) => p[0]) });
+    out.push({ query: atom, results: resultsForQuery(pairs) });
   }
   return out;
 }
@@ -196,15 +257,21 @@ export async function runProgramAsync(
 /** Module names referenced by top-level `import!` statements (so a caller can pre-read them). */
 export function collectImports(src: string): string[] {
   const out: string[] = [];
+  const importName = (atom: Atom): string | undefined => {
+    if (atom.kind === "sym") return atom.name;
+    if (atom.kind === "gnd" && atom.value.g === "str") return atom.value.s;
+    return undefined;
+  };
   for (const { atom } of parseAll(src, standardTokenizer())) {
     if (
       atom.kind === "expr" &&
       atom.items.length === 3 &&
       atom.items[0]!.kind === "sym" &&
-      atom.items[0]!.name === "import!" &&
-      atom.items[2]!.kind === "sym"
-    )
-      out.push((atom.items[2] as { name: string }).name);
+      atom.items[0]!.name === "import!"
+    ) {
+      const name = importName(atom.items[2]!);
+      if (name !== undefined) out.push(name);
+    }
   }
   return out;
 }

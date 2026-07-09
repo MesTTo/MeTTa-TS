@@ -43,7 +43,7 @@ factorial(6); // 720
 ## The two term surfaces
 
 - **Proxies + combinators.** `names()` and `vars()` mint names and variables (`const { parent, x } = ...`), and the capitalized combinators build the special forms: `If`, `Case`, `Let`, `LetStar`, `Match`, `Superpose`, `Collapse`, `Empty`, `Unify`, `Sealed`, `Quote`. Lowercase builders cover the grounded ops: `add`/`sub`/`mul`/`div`/`mod`, `eq`/`gt`/`lt`/`ge`/`le`, `and`/`or`/`not`, `carAtom`/`cdrAtom`/`consAtom`/`deconsAtom`, and `list`/`nil`/`e`. Builders compose, so nested patterns and repeated variables are just nested calls.
-- **The tagged template `m\`...\`` (and `mAll` for several atoms)** runs the real parser, so it expresses every MeTTa form, and `${value}` auto-grounds, which is the easiest way to drop a TS object in.
+- **The tagged template ``m`...` `` (and `mAll` for several atoms)** runs the real parser, so it expresses every MeTTa form, and `${value}` auto-grounds, which is the easiest way to drop a TS object in.
 
 ## The runner and the host bridge
 
@@ -82,7 +82,7 @@ rows[0]!.thing; // ok, autocompleted
 // rows[0]!.other  // compile error: not a variable in the source
 ```
 
-This types the variable *structure*, not the result *values* (those come from runtime rewriting, which the type system cannot evaluate), so values are `unknown`. It works on a plain string, not the `m\`\`` tag: TypeScript widens a tagged template's text to `string`, which discards the literal the type-level parser needs. For a builder-form query with the same auto-inferred keys, use `db.query(pattern)`.
+This types the variable _structure_, not the result _values_ (those come from runtime rewriting, which the type system cannot evaluate), so values are `unknown`. It works on a plain string, not the ``m`...` `` tag: TypeScript widens a tagged template's text to `string`, which discards the literal the type-level parser needs. For a builder-form query with the same auto-inferred keys, use `db.query(pattern)`.
 
 ## JSON and dict-spaces
 
@@ -94,6 +94,30 @@ db.evalJs(jsonEncode(42)); // ["42"]
 const doc = jsonDecode('{"name": "Ada", "age": 36}'); // a dict-space
 db.evalFirst(getValue(doc, "name")); // "Ada"  (JSON keys decode to strings)
 ```
+
+## Optional host interop builders
+
+The eDSL also has pure builder subpaths for optional host runtimes. They only
+construct atoms. You still register the Python or Prolog runtime explicitly
+through `@metta-ts/py`, `@metta-ts/prolog`, the Node CLI flags, or browser host
+composition.
+
+```ts
+import { ground, vars } from "@metta-ts/edsl";
+import { pyCall } from "@metta-ts/edsl/py";
+import { prologCall, importPrologFunction } from "@metta-ts/edsl/prolog";
+
+const { x } = vars();
+
+pyCall("math.add", 40, 2); // (py-call (math.add 40 2))
+prologCall(["edge", "alice", x]); // (prolog-call (edge alice $x))
+importPrologFunction("edge"); // (import_prolog_function edge)
+```
+
+Strings in `pyCall` arguments stay normal eDSL strings, which Python receives as
+Python strings. Strings in Prolog goal arrays are Prolog atoms, so
+`["edge", "alice", x]` builds `(edge alice $x)`. Use `ground("text")` inside a
+Prolog goal when you need a Prolog string.
 
 ## License
 

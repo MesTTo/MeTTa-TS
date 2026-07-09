@@ -13,6 +13,7 @@ import { placeProgram } from "./block/layout";
 import { makeSettings, type BlockSettings } from "./block/settings";
 import {
   frameSvg,
+  framesPerStepFor,
   boundsOf,
   union,
   esc,
@@ -171,10 +172,7 @@ export async function sideBySideReductionGif(
   };
 
   const n = states.length;
-  const perStep = Math.max(
-    1,
-    Math.min(opts.framesPerStep ?? 6, Math.floor((opts.maxFrames ?? 180) / Math.max(1, n - 1))),
-  );
+  const perStep = framesPerStepFor(opts, n - 1);
 
   // Hold the first state, then morph both views together through each step, holding at each settled state.
   await addFrame(blockPrims[0]!, interpolateTrace(graphFrames[0]!, graphFrames[0]!, 0), holdMs);
@@ -241,10 +239,7 @@ export function graphReductionSvgs(
   };
 
   const n = states.length;
-  const perStep = Math.max(
-    1,
-    Math.min(opts.framesPerStep ?? 6, Math.floor((opts.maxFrames ?? 180) / Math.max(1, n - 1))),
-  );
+  const perStep = framesPerStepFor(opts, n - 1);
   push(interpolateTrace(frames[0]!, frames[0]!, 0), holdMs);
   for (let i = 1; i < n; i++) {
     for (let k = 1; k <= perStep; k++) {
@@ -312,10 +307,7 @@ export function blockReductionSvgs(
     out.push({ svg: frameSvg(bp, vb, width, height, bg), delay });
   };
   const n = states.length;
-  const perStep = Math.max(
-    1,
-    Math.min(opts.framesPerStep ?? 6, Math.floor((opts.maxFrames ?? 180) / Math.max(1, n - 1))),
-  );
+  const perStep = framesPerStepFor(opts, n - 1);
   push(prims[0]!, holdMs);
   for (let i = 1; i < n; i++) {
     for (let k = 1; k <= perStep; k++) {

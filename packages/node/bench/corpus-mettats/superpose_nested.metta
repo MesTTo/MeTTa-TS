@@ -16,4 +16,7 @@
 ; yields a×x, a×y, … not the union a b c x y z. This is the Hyperon semantics, verified byte-for-byte
 ; against the LeaTTa reference binary; PeTTa instead flattens nested superposes into a union.
 !(test (progme)
-       ((a x a y a z b x b y b z c x c y c z) (a b c) (a b c) (a x y z b x y z c x y z)))
+       ((, a x a y a z b x b y b z c x c y c z)
+        (, a b c)
+        (, a b c)
+        (, a x y z b x y z c x y z)))

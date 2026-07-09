@@ -12,6 +12,40 @@ import { Bindings, BindingsSet } from "./bindings";
 
 const DEFAULT_FUEL = 100_000;
 
+export type AsyncOperationEffect =
+  | { readonly kind: "addAtom"; readonly space: Atom; readonly atom: Atom }
+  | { readonly kind: "removeAtom"; readonly space: Atom; readonly atom: Atom }
+  | { readonly kind: "bindToken"; readonly name: string; readonly atom: Atom };
+
+export interface AsyncOperationResult {
+  readonly results: readonly Atom[];
+  readonly effects?: readonly AsyncOperationEffect[];
+}
+
+export type AsyncOperationReturn = readonly Atom[] | AsyncOperationResult;
+
+function asyncOperationEffectToReduceEffect(effect: AsyncOperationEffect): core.ReduceEffect {
+  switch (effect.kind) {
+    case "addAtom":
+      return { kind: "addAtom", space: effect.space.catom, atom: effect.atom.catom };
+    case "removeAtom":
+      return { kind: "removeAtom", space: effect.space.catom, atom: effect.atom.catom };
+    case "bindToken":
+      return { kind: "bindToken", name: effect.name, atom: effect.atom.catom };
+  }
+}
+
+export function asyncOperationReturnToReduceResult(raw: AsyncOperationReturn): core.ReduceResult {
+  const result: AsyncOperationResult = Array.isArray(raw)
+    ? { results: raw }
+    : (raw as AsyncOperationResult);
+  const effects = result.effects?.map(asyncOperationEffectToReduceEffect);
+  const coreResults = result.results.map((atom) => atom.catom);
+  return effects === undefined
+    ? { tag: "ok", results: coreResults }
+    : { tag: "ok", results: coreResults, effects };
+}
+
 /** A reference to a Space: a store of atoms that can be added to, queried, and substituted over. */
 export class SpaceRef {
   constructor(readonly space: core.Space) {}
@@ -177,19 +211,34 @@ export class MeTTa {
     return true;
   }
 
+  private shouldEvaluate(atom: core.Atom, bang: boolean): boolean {
+    if (bang) return true;
+    this.addToKb(atom);
+    return false;
+  }
+
+  private *evaluableAtoms(program: string): IterableIterator<core.Atom> {
+    for (const { atom, bang } of core.parseAll(program, this.tok.ctok)) {
+      if (this.shouldEvaluate(atom, bang)) yield atom;
+    }
+  }
+
+  private recordEvaluation(
+    out: Atom[][],
+    pairs: readonly [core.Atom, core.Bindings][],
+    state: core.St,
+  ): void {
+    this.st = state;
+    out.push(pairs.map((p) => Atom.fromCAtom(p[0])));
+  }
+
   /** Run MeTTa source. Non-bang atoms extend the knowledge base; each `!`-query yields its results.
    *  Returns one atom list per `!`-query, in order. */
   run(program: string, fuel = DEFAULT_FUEL): Atom[][] {
-    const parsed = core.parseAll(program, this.tok.ctok);
     const out: Atom[][] = [];
-    for (const { atom, bang } of parsed) {
-      if (!bang) {
-        this.addToKb(atom);
-        continue;
-      }
+    for (const atom of this.evaluableAtoms(program)) {
       const [pairs, st2] = core.mettaEval(this.env, fuel, this.st, [], atom);
-      this.st = st2;
-      out.push(pairs.map((p) => Atom.fromCAtom(p[0])));
+      this.recordEvaluation(out, pairs, st2);
     }
     return out;
   }
@@ -197,28 +246,23 @@ export class MeTTa {
   /** Run MeTTa source asynchronously, awaiting any async grounded operations (registered with
    *  {@link registerAsyncOperation}). Identical to {@link run} for a program with no async ops. */
   async runAsync(program: string, fuel = DEFAULT_FUEL): Promise<Atom[][]> {
-    const parsed = core.parseAll(program, this.tok.ctok);
     const out: Atom[][] = [];
-    for (const { atom, bang } of parsed) {
-      if (!bang) {
-        this.addToKb(atom);
-        continue;
-      }
+    for (const atom of this.evaluableAtoms(program)) {
       const [pairs, st2] = await core.mettaEvalAsync(this.env, fuel, this.st, [], atom);
-      this.st = st2;
-      out.push(pairs.map((p) => Atom.fromCAtom(p[0])));
+      this.recordEvaluation(out, pairs, st2);
     }
     return out;
   }
 
   /** Register an async grounded operation callable from MeTTa source by `name` (resolved by the async
-   *  runner). The function receives argument atoms and resolves to result atoms. A rejection becomes a
+   *  runner). The function receives argument atoms and resolves to result atoms, optionally with
+   *  evaluator-applied effects such as adding/removing atoms or binding a token. A rejection becomes a
    *  MeTTa `(Error ...)` atom. Use it for I/O: fetch, a DAS query, a timer. */
-  registerAsyncOperation(name: string, op: (args: Atom[]) => Promise<Atom[]>): void {
+  registerAsyncOperation(name: string, op: (args: Atom[]) => Promise<AsyncOperationReturn>): void {
     this.env.agt.set(name, async (args) => {
       try {
-        const results = await op(args.map(Atom.fromCAtom));
-        return { tag: "ok", results: results.map((a) => a.catom) };
+        const raw = await op(args.map(Atom.fromCAtom));
+        return asyncOperationReturnToReduceResult(raw);
       } catch (e) {
         return { tag: "runtimeError", msg: e instanceof Error ? e.message : String(e) };
       }
@@ -288,8 +332,7 @@ export class MeTTa {
       try {
         return { tag: "ok", results: op(args.map(Atom.fromCAtom)).map((a) => a.catom) };
       } catch (e) {
-        if (e instanceof IncorrectArgumentError)
-          return { tag: "incorrectArgument", msg: e.message };
+        if (e instanceof IncorrectArgumentError) return { tag: "noReduce" };
         return { tag: "runtimeError", msg: e instanceof Error ? e.message : String(e) };
       }
     });

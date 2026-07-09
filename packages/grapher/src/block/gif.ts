@@ -9,6 +9,7 @@
 // view box (the union of every state's bounds) so the animation does not jump or rescale.
 
 import type { Atom } from "@metta-ts/hyperon";
+import { DEFAULT_TRACE_MS } from "../anim";
 import type { BlockSettings } from "./settings";
 import { placeProgram, type BlockBox } from "./layout";
 import { boxesToPrims, interpolate, ease, type Prim } from "./animate";
@@ -33,7 +34,7 @@ export interface GifEncoderLib {
 export interface GifOptions {
   /** Output width in pixels (height follows the aspect ratio). Default 720. */
   width?: number;
-  /** Morph frames per reduction step. Default 6, reduced to keep under `maxFrames`. */
+  /** Morph frames per reduction step. Default `morphMs / stepMs`, reduced to keep under `maxFrames`. */
   framesPerStep?: number;
   /** Cap on the total number of frames. Default 180. */
   maxFrames?: number;
@@ -41,8 +42,24 @@ export interface GifOptions {
   holdMs?: number;
   /** Milliseconds per morph frame. Default 40. */
   stepMs?: number;
+  /** Milliseconds one step's morph spans, the live view's trace duration. Sets the default frame count
+   *  per step so the export glides exactly like the screen; an explicit `framesPerStep` wins. The editor
+   *  export methods fill this in with their current trace duration. Default 550 (`DEFAULT_TRACE_MS`). */
+  morphMs?: number;
   /** Canvas background color. Used by the graph GIF, which has no block palette to take it from. */
   background?: string;
+}
+
+/** Morph frames per reduction step: the morph span over the per-frame delay, so the exported glide runs
+ *  as long as the live one, cut down so `transitions` steps stay under `maxFrames`. */
+export function framesPerStepFor(opts: GifOptions, transitions: number): number {
+  const wanted =
+    opts.framesPerStep ??
+    Math.max(1, Math.round((opts.morphMs ?? DEFAULT_TRACE_MS) / (opts.stepMs ?? 40)));
+  return Math.max(
+    1,
+    Math.min(wanted, Math.floor((opts.maxFrames ?? 180) / Math.max(1, transitions))),
+  );
 }
 
 export interface Rect {
@@ -152,10 +169,7 @@ export async function reductionGif(
   };
 
   const n = states.length;
-  const perStep = Math.max(
-    1,
-    Math.min(opts.framesPerStep ?? 6, Math.floor((opts.maxFrames ?? 180) / Math.max(1, n - 1))),
-  );
+  const perStep = framesPerStepFor(opts, n - 1);
 
   await addFrame(framePrims[0]!, holdMs);
   for (let i = 1; i < n; i++) {

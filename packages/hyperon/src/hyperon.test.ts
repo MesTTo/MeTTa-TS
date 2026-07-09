@@ -197,6 +197,23 @@ describe("MeTTa runner", () => {
     expect(out[0]!.map((a) => a.toString())).toEqual(["42"]);
   });
 
+  it("registers an async operation with evaluator-applied effects", async () => {
+    const m = new MeTTa();
+    m.registerAsyncOperation("install-async-rule", async () => ({
+      results: [E()],
+      effects: [
+        {
+          kind: "addAtom",
+          space: S("&self"),
+          atom: E(S("="), E(S("async-hyperon-rule")), S("ok")),
+        },
+      ],
+    }));
+    const out = await m.runAsync("!(install-async-rule)\n!(async-hyperon-rule)");
+    expect(out[0]!.map((a) => a.toString())).toEqual(["()"]);
+    expect(out[1]!.map((a) => a.toString())).toEqual(["ok"]);
+  });
+
   it("error atoms are detected", () => {
     expect(atomIsError(E(S("Error"), S("x"), S("boom")))).toBe(true);
     expect(atomIsError(S("ok"))).toBe(false);

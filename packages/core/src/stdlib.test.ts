@@ -90,14 +90,12 @@ describe("stdlib include", () => {
   });
 });
 
-describe("spaces: get-atoms returns atoms verbatim", () => {
-  // Regression: get-atoms had no return-type signature, so its results were re-reduced to normal form
-  // ((+ 2 3) -> 5), diverging from Hyperon and PeTTa, which both return the stored atom literally.
-  // The `(: get-atoms (-> SpaceType Atom))` declaration makes the Atom-typed result inert.
-  it("does not reduce a stored, reducible atom", () => {
+describe("spaces: get-atoms follows LeaTTa add-atom semantics", () => {
+  // LeaTTa evaluates `add-atom` arguments before storage, so get-atoms returns the reduced atom.
+  it("returns a stored atom after add-atom argument evaluation", () => {
     expect(
       r1("!(bind! &g (new-space)) !(add-atom &g (color (+ 2 3) red)) !(get-atoms &g)"),
-    ).toEqual(["(color (+ 2 3) red)"]);
+    ).toEqual(["(color 5 red)"]);
   });
 
   it("add-atom itself already stores the argument unevaluated", () => {

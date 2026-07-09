@@ -14,6 +14,6 @@
 
 ; PeTTa's TupleConcat relies on a nested superpose treating an empty branch as identity, so the recursion
 ; accumulates 1..9. In Hyperon semantics a tuple element that is itself empty (the base case's
-; (superpose ()) ) makes the whole cross-product empty, and that emptiness propagates back up, so the
-; result is (). Verified against the LeaTTa reference binary, which also yields the empty collapse here.
-!(test (range 1 10) ())
+; (superpose ()) ) makes the whole cross-product empty, and that emptiness propagates back up. `collapse`
+; represents that empty result bag as `(,)`.
+!(test (range 1 10) (,))

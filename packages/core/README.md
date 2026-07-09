@@ -1,6 +1,6 @@
 # @metta-ts/core
 
-The MeTTa (OpenCog Hyperon) interpreter in pure TypeScript: atoms, spaces, the type system, pattern matching, evaluation, and the standard library. No native addons, no WASM. Runs in any JavaScript runtime (browser, Node, Deno, Bun, edge).
+The MeTTa (OpenCog Hyperon) interpreter in pure TypeScript: atoms, spaces, the type system, pattern matching, evaluation, and the standard library. No native addons and no required WASM. Runs in any JavaScript runtime (browser, Node, Deno, Bun, edge).
 
 Part of [MeTTa TS](https://github.com/MesTTo/Meta-TypeScript-Talk).
 

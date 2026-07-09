@@ -17,6 +17,20 @@ export interface TopAtom {
 export const isWs = (c: string): boolean => /\s/.test(c);
 export const isDelim = (c: string): boolean =>
   c === "(" || c === ")" || c === '"' || c === ";" || isWs(c);
+export const isWordBodyDelim = (c: string, word: string): boolean => {
+  if (c === "(" || c === ")" || isWs(c)) return true;
+  if (c === ";") return !word.startsWith("$");
+  if (c === '"') return word.length === 0;
+  return false;
+};
+
+/** Top-level `!` dispatches evaluation only when it is the exact `!` token. A word that merely begins with
+ *  `!`, such as `!foo` or `!!foo`, is a symbol. */
+export function isBangQueryPrefixAt(s: string, pos: number): boolean {
+  if (s[pos] !== "!") return false;
+  const next = s[pos + 1];
+  return next === undefined || next === "(" || next === '"' || next === ";" || isWs(next);
+}
 
 /** Advance past whitespace and `;` line comments starting at `pos`; returns the new index. Shared by the
  *  plain parser (via `Cursor`) and the spanned CST parser, so the two cannot disagree on trivia. */
@@ -111,7 +125,7 @@ export const MAX_DEPTH = 4096;
 
 function readWord(c: Cursor): string {
   let out = "";
-  while (!c.done() && !isDelim(c.peek())) {
+  while (!c.done() && !isWordBodyDelim(c.peek(), out)) {
     out += c.peek();
     c.pos++;
   }
@@ -152,7 +166,7 @@ function readAtom(c: Cursor, depth = 0): Atom {
 // already be positioned at the atom (the caller skips leading trivia and checks for end-of-input).
 function readTop(c: Cursor): TopAtom {
   let bang = false;
-  if (c.peek() === "!") {
+  if (isBangQueryPrefixAt(c.s, c.pos)) {
     bang = true;
     c.pos++;
     c.skipTrivia();

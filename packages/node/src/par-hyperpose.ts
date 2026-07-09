@@ -16,11 +16,14 @@ import { createRequire } from "node:module";
 // (each atom formatted to source) into its slice of the shared buffer as a JSON string, then signals.
 const WORKER_SRC = `
 const { workerData } = require("node:worker_threads");
-const { corePath, rulesSrc, branchSrc, sab, base, cap, fuel } = workerData;
+const { corePath, rulesSrc, branchSrc, sab, base, cap, fuel, hostEffects } = workerData;
 const view = new Int32Array(sab);
 (async () => {
   try {
     const m = await import(corePath);
+    if (hostEffects === false && typeof m.setHostEffectsEnabled === "function") {
+      m.setHostEffectsEnabled(false);
+    }
     const r = m.runProgram(rulesSrc + "\\n!" + branchSrc, fuel);
     const last = r[r.length - 1];
     const out = JSON.stringify((last && last.results ? last.results : []).map((a) => m.format(a)));
@@ -43,6 +46,10 @@ const view = new Int32Array(sab);
 
 const CAP = 16384; // ints (chars) reserved per branch for its formatted-result JSON; overflow -> bail
 
+export interface ParEvalOptions {
+  readonly hostEffects?: boolean;
+}
+
 /** Evaluate each branch source (with the shared `rulesSrc` prelude) in its own worker. Returns, per branch,
  *  the list of formatted result atoms, or `null` if the branch errored, overflowed the buffer, or was not
  *  read under `firstOnly` because an earlier branch already won. */
@@ -52,6 +59,7 @@ export function evalBranchesParallel(
   branchSrcs: readonly string[],
   firstOnly: boolean,
   fuel: number,
+  options: ParEvalOptions = {},
 ): (string[] | null)[] {
   const n = branchSrcs.length;
   const region = 2 + CAP; // [status, len, chars...] per branch; status 0=pending, 1=done, -1=bail
@@ -69,6 +77,7 @@ export function evalBranchesParallel(
           base: 1 + i * region,
           cap: CAP,
           fuel,
+          hostEffects: options.hostEffects,
         },
       }),
   );
@@ -117,8 +126,9 @@ export function evalBranchesParallel(
  *  built `@metta-ts/core` entry once (the worker re-imports it) and binds the step ceiling. */
 export function makeParEvalImpl(
   fuel: number,
+  options: ParEvalOptions = {},
 ): (rulesSrc: string, branchSrcs: string[], firstOnly: boolean) => (string[] | null)[] {
   const corePath = createRequire(import.meta.url).resolve("@metta-ts/core");
   return (rulesSrc, branchSrcs, firstOnly) =>
-    evalBranchesParallel(corePath, rulesSrc, branchSrcs, firstOnly, fuel);
+    evalBranchesParallel(corePath, rulesSrc, branchSrcs, firstOnly, fuel, options);
 }

@@ -9,7 +9,7 @@ import { bindVizSpace, readViz, colorOf, textOf, normalizeRange } from "./viz";
 import { heatColor } from "./color";
 
 describe("viz directives via the &grapher space", () => {
-  it("reads directives verbatim, with targets left unevaluated", () => {
+  it("reads directives after LeaTTa add-atom argument evaluation", () => {
     const m = new MeTTa();
     bindVizSpace(m);
     m.run("(= (fact $n) (if (> $n 0) (* $n (fact (- $n 1))) 1))");
@@ -19,11 +19,10 @@ describe("viz directives via the &grapher space", () => {
     m.run('!(add-atom &grapher (label (fact 5) "answer"))');
     const ds = readViz(m).directives;
     const first = (k: string) => ds.find((d) => d.kind === k)!;
-    // the target of `(fact 5)` is kept literal, not reduced to 120
-    expect(first("color").target.toString()).toBe("(fact 5)");
+    expect(first("color").target.toString()).toBe("120");
     expect(colorOf(first("color").arg!)).toBe("#f85149");
     expect(first("highlight").target.toString()).toBe("if");
-    expect(first("focus").target.toString()).toBe("(fact 5)");
+    expect(first("focus").target.toString()).toBe("120");
     expect(textOf(first("label").arg!)).toBe("answer");
   });
 
@@ -61,7 +60,7 @@ describe("viz directives via the &grapher space", () => {
     const ds = readViz(m).directives;
     const size = ds.find((d) => d.kind === "size")!;
     const shade = ds.find((d) => d.kind === "shade")!;
-    expect(size.target.toString()).toBe("(fact 5)"); // target kept literal
+    expect(size.target.toString()).toBe("120");
     expect(size.value).toBe(42);
     expect(shade.target.toString()).toBe("if");
     expect(shade.value).toBe(-9.32);

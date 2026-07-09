@@ -13,7 +13,8 @@
    (: > (-> Number Number Bool))
    (: <= (-> Number Number Bool))
    (: >= (-> Number Number Bool))
-   (: get-type (-> Atom Atom))
+   (: get-type (-> Atom %Undefined%))
+   (: check-types (-> Atom Atom))
    (: get-doc (-> Atom %Undefined%))
    (: help! (-> Atom %Undefined%))
    (: eval (-> Atom Atom))
@@ -21,12 +22,13 @@
    (: chain (-> Atom Variable Atom %Undefined%))
    (: unify (-> Atom Atom Atom Atom %Undefined%))
    (: function (-> Atom Atom))
-   (: return (-> Atom Atom))
+   (: return (-> $t $t))
    (: cons-atom (-> Atom Expression Atom))
    (: decons-atom (-> Expression Atom))
    (: collapse-bind (-> Atom Expression))
+   (: superpose (-> Expression %Undefined%))
    (: superpose-bind (-> Expression Atom))
-   (: metta (-> Atom Atom Atom Atom))
+   (: metta (-> Atom Type SpaceType Atom))
    (: quote (-> Atom Atom))
    (: new-state (-> $t (StateMonad $t)))
    (: change-state! (-> (StateMonad $t) $t (StateMonad $t)))
@@ -53,10 +55,10 @@
    (: union (-> Atom Atom %Undefined%))
    (: intersection (-> Atom Atom %Undefined%))
    (: subtraction (-> Atom Atom %Undefined%))
-   (: Error (-> Atom Atom Atom))
+   (: Error (-> Atom Atom ErrorType))
    (: noeval (-> Atom Atom))
    (: id (-> $t $t))
-   (: match (-> Atom Atom Atom %Undefined%))
+   (: match (-> SpaceType Atom Atom %Undefined%))
    (: if-decons-expr (-> Expression Variable Variable Atom Atom %Undefined%))
    (: foldl-atom (-> Expression Atom Variable Variable Atom %Undefined%))
    (: assert (-> Atom (->)))
@@ -85,9 +87,15 @@
             (Error (let* $pairs $template) bad-let-star))
           $template)))
    (= (car-atom $a)
-      (chain (decons-atom $a) $ht (unify ($head $tail) $ht $head (Error (car-atom $a) car-atom-empty))))
+      (chain (decons-atom $a) $ht
+        (unify ($head $tail) $ht
+          $head
+          (Error (car-atom $a) "car-atom expects a non-empty expression as an argument"))))
    (= (cdr-atom $a)
-      (chain (decons-atom $a) $ht (unify ($head $tail) $ht $tail (Error (cdr-atom $a) cdr-atom-empty))))
+      (chain (decons-atom $a) $ht
+        (unify ($head $tail) $ht
+          $tail
+          (Error (cdr-atom $a) "cdr-atom expects a non-empty expression as an argument"))))
    (= (switch $atom $cases) (id (switch-minimal $atom $cases)))
    (= (switch-minimal $atom $cases)
       (function (chain (decons-atom $cases) $list

@@ -46,7 +46,7 @@ Type a variable's unwrapped value with `vars<{ x: number }>()`. The special form
 
 ## A tagged template
 
-`m\`...\`` is the general escape hatch. It runs the real parser, so it expresses every MeTTa form, and `${value}` interpolations are auto-grounded:
+`m\`...\``is the general escape hatch. It runs the real parser, so it expresses every MeTTa form, and`${value}` interpolations are auto-grounded:
 
 ```ts
 import { mettaDB, m } from "@metta-ts/edsl";
@@ -123,7 +123,7 @@ const rows = db.q("(Likes Ada $thing)"); // Array<{ thing: unknown }>
 rows[0]!.thing; // ok, autocompleted
 ```
 
-This types the variable structure, not the result values (those come from runtime rewriting, which the type system cannot evaluate), so values are `unknown`. It works on a plain string, not the `m\`\`` tag: TypeScript widens a tagged template's text to `string`, which discards the literal the type-level parser needs.
+This types the variable structure, not the result values (those come from runtime rewriting, which the type system cannot evaluate), so values are `unknown`. It works on a plain string, not the `m\`\``tag: TypeScript widens a tagged template's text to`string`, which discards the literal the type-level parser needs.
 
 ## JSON and dict-spaces
 
@@ -136,4 +136,26 @@ const doc = jsonDecode('{"name": "Ada", "age": 36}'); // a dict-space
 db.evalFirst(getValue(doc, "name")); // "Ada"  (JSON keys decode to strings)
 ```
 
-The eDSL is the most ergonomic way to drive MeTTa from TypeScript. When a script is easier to read as plain MeTTa, reach for `m\`...\`` or `db.run(source)`; the two always interoperate.
+## Optional host interop builders
+
+The eDSL has helper subpaths for Python and Prolog host interop. They only
+construct atoms. The runtime still has to be registered explicitly through
+`@metta-ts/py`, `@metta-ts/prolog`, a CLI flag, or a browser host runner.
+
+```ts
+import { vars } from "@metta-ts/edsl";
+import { pyCall } from "@metta-ts/edsl/py";
+import { prologCall, importPrologFunction } from "@metta-ts/edsl/prolog";
+
+const { x } = vars();
+
+pyCall("math.add", 40, 2); // (py-call (math.add 40 2))
+prologCall(["edge", "alice", x]); // (prolog-call (edge alice $x))
+importPrologFunction("edge"); // (import_prolog_function edge)
+```
+
+Strings in `pyCall` arguments are normal MeTTa string atoms and reach Python as
+Python strings. Strings in Prolog goal arrays are Prolog atoms, so
+`["edge", "alice", x]` builds `(edge alice $x)`.
+
+The eDSL is the most ergonomic way to drive MeTTa from TypeScript. When a script is easier to read as plain MeTTa, reach for `m\`...\``or`db.run(source)`; the two always interoperate.

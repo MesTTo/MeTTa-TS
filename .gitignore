@@ -2,6 +2,7 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
+.npmrc
 zod
 
 # TypeDoc output (per-package)
@@ -10,7 +11,5 @@ packages/*/docs/
 # VitePress build output
 website/.vitepress/dist/
 website/.vitepress/cache/
-packages/node/bench/lib
-
 # Local hyperon venv for the @metta-ts/py differential oracle (HYPERON_LIVE=1)
 .venv-hyperon/

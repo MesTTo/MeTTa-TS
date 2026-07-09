@@ -77,12 +77,25 @@ export type GroundedExec = (args: readonly Atom[]) => readonly Atom[] | Promise<
 export type GroundedMatch = (other: Atom) => readonly unknown[];
 
 /** Structural equality of grounded values (LeaTTa `Ground.BEq`). */
+function isNumberGround(g: Ground): g is Extract<Ground, { g: "int" | "float" }> {
+  return g.g === "int" || g.g === "float";
+}
+
+function numberGroundEq(
+  a: Extract<Ground, { g: "int" | "float" }>,
+  b: Extract<Ground, { g: "int" | "float" }>,
+): boolean {
+  if (a.g === "int" && b.g === "int") return BigInt(a.n) === BigInt(b.n);
+  return Number(a.n) === Number(b.n);
+}
+
 export function groundEq(a: Ground, b: Ground): boolean {
+  if (isNumberGround(a) && isNumberGround(b)) return numberGroundEq(a, b);
   if (a.g !== b.g) return false;
   switch (a.g) {
     case "int":
     case "float":
-      return a.n === (b as { n: number }).n;
+      return false;
     case "str":
       return a.s === (b as { s: string }).s;
     case "bool":
@@ -354,9 +367,8 @@ export const strHash = (s: string): number => {
 function groundHash(g: Ground): number {
   switch (g.g) {
     case "int":
-      return strHash("i" + g.n.toString());
     case "float":
-      return strHash("f" + g.n.toString());
+      return strHash("n" + String(Number(g.n)));
     case "str":
       return strHash("s" + g.s);
     case "bool":
@@ -481,10 +493,21 @@ export const isGnd = (a: Atom): a is GndAtom => a.kind === "gnd";
 // overlapping large pairs repeatedly; this was 92-95% of CPU on such a search after the DAG-sharing fixes
 // above stopped it from also exhausting memory.
 const eqCache = new WeakMap<Atom, WeakMap<Atom, boolean>>();
+const exprHasNanCache = new WeakMap<ExprAtom, boolean>();
+
+function hasNanGround(a: Atom): boolean {
+  if (a.kind === "gnd") return a.value.g === "float" && Number.isNaN(a.value.n);
+  if (a.kind !== "expr") return false;
+  const cached = exprHasNanCache.get(a);
+  if (cached !== undefined) return cached;
+  const found = a.items.some(hasNanGround);
+  exprHasNanCache.set(a, found);
+  return found;
+}
 
 /** Structural equality. Interned symbols short-circuit to reference identity. */
 export function atomEq(a: Atom, b: Atom): boolean {
-  if (a === b) return true;
+  if (a === b) return !hasNanGround(a);
   if (a.kind !== b.kind) return false;
   switch (a.kind) {
     case "sym":

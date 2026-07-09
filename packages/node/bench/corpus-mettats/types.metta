@@ -25,7 +25,7 @@
 !(test (get-type 42) Number)
 !(test (get-type "42") String)
 
-!(test (collapse (get-type x)) (Letter Buchstabe))
+!(test (collapse (get-type x)) (, Letter Buchstabe))
  
 ;Function Types
 
@@ -48,5 +48,4 @@
 (= (testf at) t)
 
 !(test (testf at) t)
-
 

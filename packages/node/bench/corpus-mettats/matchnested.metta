@@ -18,6 +18,6 @@
                       (remove-atom &self (friend $1 $2))
                       (remove-atom &self (friend $2 $3))))))
 
-!(test (msort (collapse (match &self (transitive $1 $2 $3) (transitive $1 $2 $3))))
-       ((transitive sim som sam) (transitive tim tom tam)))
+!(test (collapse (match &self (transitive $1 $2 $3) (transitive $1 $2 $3)))
+       (, (transitive tim tom tam) (transitive sim som sam)))
        

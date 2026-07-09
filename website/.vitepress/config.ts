@@ -51,7 +51,10 @@ export default defineConfig({
               { text: "Main concepts", link: "/learn/evaluation/main-concepts" },
               { text: "Basic evaluation", link: "/learn/evaluation/basic-evaluation" },
               { text: "Recursion and control", link: "/learn/evaluation/recursion" },
-              { text: "Free variables and nondeterminism", link: "/learn/evaluation/nondeterminism" },
+              {
+                text: "Free variables and nondeterminism",
+                link: "/learn/evaluation/nondeterminism",
+              },
             ],
           },
           { text: "Exercises", link: "/learn/exercises" },
@@ -67,6 +70,7 @@ export default defineConfig({
           { text: "Async MeTTa", link: "/typescript/async" },
           { text: "JavaScript interop", link: "/typescript/js-interop" },
           { text: "Python interop", link: "/typescript/python-interop" },
+          { text: "Prolog interop", link: "/typescript/prolog-interop" },
         ],
       },
       {

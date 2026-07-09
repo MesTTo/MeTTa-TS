@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { matchAtoms, matchAtomsScoped, merge, addVarBinding } from "./match";
 import { type Bindings, lookupVal } from "./bindings";
-import { sym, variable, expr, gint, atomEq, type Atom } from "./atom";
+import { sym, variable, expr, gint, gfloat, atomEq, type Atom } from "./atom";
 import { applySubst } from "./substitution";
 import { bindingsToSubst } from "./instantiate";
 
@@ -75,6 +75,7 @@ describe("matchAtoms (verified against LeaTTa Matching.lean)", () => {
 
   it("grounded atoms match by value when no custom matcher", () => {
     expect(matchAtoms(gint(1), gint(1)).length).toBe(1);
+    expect(matchAtoms(gint(1), gfloat(1)).length).toBe(1);
     expect(matchAtoms(gint(1), gint(2)).length).toBe(0);
   });
 

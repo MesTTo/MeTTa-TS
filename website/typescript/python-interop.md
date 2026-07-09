@@ -5,11 +5,19 @@ SPDX-License-Identifier: MIT
 
 # Python interop
 
-MeTTa TS runs entirely in TypeScript. When you also want a MeTTa program to reach into Python, calling `numpy`, a model client, or any function in an installed package, the `@metta-ts/py` package gives you PeTTa's `py-call` surface and Hyperon's `py-atom` family on top of the same engine. Python runs in a separate CPython process and MeTTa talks to it over IPC, so the interpreter you already have stays as fast as it was.
+MeTTa TS runs entirely in TypeScript. When you also want a MeTTa program to
+reach into Python, calling `numpy`, a model client, or any function in an
+installed package, the `@metta-ts/py` package gives you PeTTa's `py-call`
+surface and Hyperon's `py-atom` family on top of the same engine. The root
+package is runtime-agnostic: use `@metta-ts/py/pythonia` for Node CPython or
+`@metta-ts/py/pyodide` for browsers.
 
-This is opt-in, and it is powerful in the literal sense: `py-eval` hands a string to Python's `eval`, and any resolved callable runs real Python. Enable it only for MeTTa source you trust, never for input from an untrusted user.
+This is opt-in, and it can execute arbitrary Python: `py-eval` hands a string to Python's `eval`, and any resolved callable runs real Python. Enable it only for MeTTa source you trust, never for input from an untrusted user.
 
-The Python ops are asynchronous, because a call crosses a process boundary. You run programs with `runAsync` rather than `run`, and you supply the Python bridge yourself. The package ships with no Python dependency of its own: you pass in a bridge, the same way `MeTTaGrapher` takes a GIF encoder. The reference bridge wraps [pythonia](https://www.npmjs.com/package/pythonia).
+The Python ops are asynchronous, because a call crosses a host-runtime
+boundary. You run programs with `runAsync` rather than `run`, and you supply the
+Python bridge yourself. The Node reference bridge wraps
+[pythonia](https://www.npmjs.com/package/pythonia).
 
 ## Wiring it up
 
@@ -23,7 +31,8 @@ Then build a bridge, register the ops, and run:
 
 ```ts
 import { MeTTa } from "@metta-ts/hyperon";
-import { registerPyInterop, pythoniaBridge } from "@metta-ts/py";
+import { registerPyInterop } from "@metta-ts/py";
+import { pythoniaBridge } from "@metta-ts/py/pythonia";
 import { python } from "pythonia";
 
 const metta = new MeTTa();
@@ -144,6 +153,33 @@ metta-ts --py program.metta
 
 You need `pythonia` installed and `python3` on your path. Without `--py`, the CLI never loads Python and runs exactly as before.
 
+## In the browser
+
+Use `@metta-ts/py/pyodide` when Python should run in the browser through
+Pyodide. The normal `@metta-ts/py` import stays runtime-agnostic. The Pyodide
+runtime is only pulled in when you import the Pyodide subpath.
+
+```ts
+import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
+import { createPyodideInterop } from "@metta-ts/py/pyodide";
+
+const files = new Map([["math.py", "def add(a, b):\n    return a + b\n"]]);
+const loadText = createBrowserTextLoader({ files, baseUrl: import.meta.url });
+const py = await createPyodideInterop({ loadText });
+const runner = createBrowserRunner({ files, interops: [py] });
+
+const results = await runner.run(`
+  !(import! &self "math.py")
+  !(py-call (math.add 40 2))
+`);
+
+await runner.dispose();
+```
+
+Run the browser runner and Pyodide inside a Web Worker for interactive pages.
+The main-thread adapter is fine for small examples, but Python startup and long
+calls can block rendering.
+
 ## Semantics and PeTTa parity
 
 The value conversions follow PeTTa and its `janus` bridge. Numbers cross both ways. A Python string becomes a MeTTa Symbol. `True`, `False`, and `None` become `(@ true)`, `(@ false)`, and `(@ none)`. A Python list becomes an expression, converted deeply. Anything else stays an opaque handle.
@@ -154,4 +190,6 @@ Three things diverge from PeTTa on purpose, and the `py-atom` family follows the
 - A dict stays a live handle you read with `.get` or `getattr`. PeTTa renders it to a string.
 - A Python error becomes an `(Error ...)` atom and evaluation continues. PeTTa aborts the run.
 
-That covers Python. To drive the host JavaScript runtime instead, see **[JavaScript interop](/typescript/js-interop)**.
+That covers Python. To drive Prolog through the same host-import boundary, see
+**[Prolog interop](/typescript/prolog-interop)**. To drive the host JavaScript
+runtime instead, see **[JavaScript interop](/typescript/js-interop)**.

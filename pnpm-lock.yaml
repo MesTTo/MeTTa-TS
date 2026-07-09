@@ -47,6 +47,9 @@ importers:
 
   examples:
     dependencies:
+      '@metta-ts/browser':
+        specifier: workspace:*
+        version: link:../packages/browser
       '@metta-ts/core':
         specifier: workspace:*
         version: link:../packages/core
@@ -62,16 +65,28 @@ importers:
       '@metta-ts/node':
         specifier: workspace:*
         version: link:../packages/node
+      '@metta-ts/prolog':
+        specifier: workspace:*
+        version: link:../packages/prolog
       '@metta-ts/py':
         specifier: workspace:*
         version: link:../packages/py
+      pyodide:
+        specifier: 314.0.2
+        version: 314.0.2
       pythonia:
         specifier: ^1.2.6
         version: 1.2.6(ws@7.5.11)
+      swipl-wasm:
+        specifier: 8.0.3
+        version: 8.0.3
       ws:
         specifier: ^7.5.10
         version: 7.5.11
     devDependencies:
+      esbuild:
+        specifier: 0.27.7
+        version: 0.27.7
       tsx:
         specifier: ^4.19.2
         version: 4.22.4
@@ -136,6 +151,9 @@ importers:
       '@metta-ts/core':
         specifier: workspace:*
         version: link:../core
+      '@metta-ts/prolog':
+        specifier: workspace:*
+        version: link:../prolog
       '@metta-ts/py':
         specifier: workspace:*
         version: link:../py
@@ -147,6 +165,19 @@ importers:
         specifier: ^7.5.10
         version: 7.5.11
 
+  packages/prolog:
+    dependencies:
+      '@metta-ts/core':
+        specifier: workspace:*
+        version: link:../core
+      '@metta-ts/hyperon':
+        specifier: workspace:*
+        version: link:../hyperon
+    devDependencies:
+      swipl-wasm:
+        specifier: 8.0.3
+        version: 8.0.3
+
   packages/py:
     dependencies:
       '@metta-ts/core':
@@ -156,6 +187,9 @@ importers:
         specifier: workspace:*
         version: link:../hyperon
     devDependencies:
+      pyodide:
+        specifier: 314.0.2
+        version: 314.0.2
       pythonia:
         specifier: ^1.2.6
         version: 1.2.6(ws@7.5.11)
@@ -1042,6 +1076,9 @@ packages:
   '@shikijs/vscode-textmate@10.0.2':
     resolution: {integrity: sha512-83yeghZ2xxin3Nj8z1NMd/NCuca+gsYXswywDy5bHvwlWL8tpTQmzGeUuHd9FC3E/SBEMvzJRwWEOz5gGes9Qg==}
 
+  '@types/emscripten@1.41.5':
+    resolution: {integrity: sha512-cMQm7pxu6BxtHyqJ7mQZ2kXWV5SLmugybFdHCBbJ5eHzOo6VhBckEgAT3//rP5FwPHNPeEiq4SmQ5ucBwsOo4Q==}
+
   '@types/esrecurse@4.3.1':
     resolution: {integrity: sha512-xJBAbDifo5hpffDBuHl0Y8ywswbiAp/Wi7Y/GtAgSlZyIABppyurxVueOPE8LUQOxdlgi6Zqce7uoEpqNTeiUw==}
 
@@ -1919,6 +1956,10 @@ packages:
   pure-rand@6.1.0:
     resolution: {integrity: sha512-bVWawvoZoBYpp6yIoQtQXHZjmz35RSVHnUOTefl8Vcjr8snTPY1wnpSPMWekcFwbxI6gtmT7rSYPFvz71ldiOA==}
 
+  pyodide@314.0.2:
+    resolution: {integrity: sha512-rXkXOriXhzRkEV/coVGELjz4da77oNQEOu8hOf8dtBHEKOzqoIAmSJGeKuPl4wbLDv9EDibfKOchnC73CVX4DQ==}
+    engines: {node: '>=18.0.0'}
+
   pythonia@1.2.6:
     resolution: {integrity: sha512-SL/J5+DugD0SP7ohatNps5jSRL+qnAyIOL8MsA6ACsLCml9XY3La1IRnirNkjgPnUItzpiVDGqc2dvBltudHjQ==}
     peerDependencies:
@@ -2031,6 +2072,10 @@ packages:
   supports-color@7.2.0:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
     engines: {node: '>=8'}
+
+  swipl-wasm@8.0.3:
+    resolution: {integrity: sha512-djTRuc1kWojXWqXMCGV3+oYN+0s7apE7m8aOGyHIAeOvHtFuGKODOC1NOGVu5CuVYN+hn4LWCI8wc5ihMVF9cA==}
+    hasBin: true
 
   tabbable@6.5.0:
     resolution: {integrity: sha512-wieBHXygIm7OyQOu5hQlkk62/WyCFYGlWg7L6/ZCUZwx0o398Zkn4pVmMyfYhfMG8kGrj/Krt8eIk6UKC6VzwA==}
@@ -2927,6 +2972,8 @@ snapshots:
       '@types/hast': 3.0.4
 
   '@shikijs/vscode-textmate@10.0.2': {}
+
+  '@types/emscripten@1.41.5': {}
 
   '@types/esrecurse@4.3.1': {}
 
@@ -3911,6 +3958,14 @@ snapshots:
 
   pure-rand@6.1.0: {}
 
+  pyodide@314.0.2:
+    dependencies:
+      '@types/emscripten': 1.41.5
+      ws: 8.21.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
   pythonia@1.2.6(ws@7.5.11):
     dependencies:
       caller: 1.1.0
@@ -4045,6 +4100,10 @@ snapshots:
   supports-color@7.2.0:
     dependencies:
       has-flag: 4.0.0
+
+  swipl-wasm@8.0.3:
+    dependencies:
+      '@types/emscripten': 1.41.5
 
   tabbable@6.5.0: {}
 

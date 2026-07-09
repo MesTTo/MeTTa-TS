@@ -18,6 +18,17 @@ metta-ts path/to/program.metta
 npx -p @metta-ts/node metta-ts path/to/program.metta
 ```
 
+Host runtimes are explicit:
+
+```bash
+metta-ts --py program.metta       # Python through pythonia
+metta-ts --prolog program.metta   # Prolog through a local swipl executable
+```
+
+Without those flags, the CLI never loads Python, Prolog, or their optional
+dependencies. With the flags, `.py` and `.pl` imports are handled by the
+matching host adapter.
+
 ## Usage
 
 ```ts

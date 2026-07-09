@@ -9,8 +9,8 @@
 
 !(remove-atom &self (= (function1) OK))
 
-!(test (repr (function1)) "(function1)")
+!(test (let $x (function1) (repr $x)) "(function1)")
 
 !(add-atom &self (= (function1) (OK)))
 
-!(test (repr (function1)) "(OK)")
+!(test (let $x (function1) (repr $x)) "(OK)")

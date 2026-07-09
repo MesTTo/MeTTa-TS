@@ -116,11 +116,20 @@ export interface CompiledImpureOps {
   ) => { readonly added: boolean; readonly state: St } | undefined;
 }
 type ImpEval = { readonly value: Atom; readonly st: St } | typeof BAIL;
+type ImpEmit = (value: Atom, st: St) => St | typeof BAIL;
+type ImpForEach = (
+  slots: readonly Atom[],
+  st: St,
+  ops: CompiledImpureOps,
+  discard: boolean | undefined,
+  emit: ImpEmit,
+) => St | typeof BAIL;
 interface ImperativeHolder {
   kind: "imperative";
   arity: number;
   clauseCount: number;
   run: (partAtoms: readonly Atom[], st: St, ops: CompiledImpureOps, discard?: boolean) => ImpEval;
+  runForEach?: ImpForEach;
 }
 // A compiled nondeterministic let*-chain functor (the backward-chainer class); see the section
 // header above compileNondet. `run` returns every solution in clause-major depth-first order, or
@@ -1857,6 +1866,7 @@ interface ImpScope {
 }
 interface ImpCompiled {
   readonly node: ImpNode;
+  readonly forEach?: ImpForEach;
   readonly directEffect: boolean;
   readonly callees: ReadonlySet<string>;
 }
@@ -1909,6 +1919,20 @@ function impMeta(parts: readonly ImpCompiled[]): Pick<ImpCompiled, "directEffect
 
 function impConst(atom: Atom): ImpCompiled {
   return { node: (_slots, st) => ({ value: atom, st }), directEffect: false, callees: new Set() };
+}
+
+function impForEach(
+  part: ImpCompiled,
+  slots: readonly Atom[],
+  st: St,
+  ops: CompiledImpureOps,
+  discard: boolean | undefined,
+  emit: ImpEmit,
+): St | typeof BAIL {
+  if (part.forEach !== undefined) return part.forEach(slots, st, ops, discard, emit);
+  const r = part.node(slots, st, ops, discard);
+  if (r === BAIL) return BAIL;
+  return r.value === EMPTY_VALUE ? r.st : emit(r.value, r.st);
 }
 
 /** Assemble an expression from part nodes, threading state (the shared shape of the static-data and
@@ -2005,8 +2029,10 @@ function compileImpGrounded(
   };
 }
 
+const collapsedEmptyExpr = expr([sym(",")]);
+
 // Structural pieces of the add-if-absent idiom, matched over the RULE's atoms (variables in place):
-// `(if (== () (collapse (once (match S A A)))) (add-atom S A) (empty))`. The same shape the
+// `(if (== (,) (collapse (once (match S A A)))) (add-atom S A) (empty))`. The same shape the
 // interpreter's tryFastNamedAddIfAbsent recognises at runtime; compiled it becomes one ops call.
 function impMatchInsideOnce(a: Atom): ExprAtom | undefined {
   if (a.kind !== "expr" || a.items.length !== 2) return undefined;
@@ -2029,8 +2055,8 @@ function impEmptyCollapseMatch(a: Atom): ExprAtom | undefined {
       ? impMatchInsideOnce(x.items[1]!)
       : undefined;
   };
-  if (atomEq(a.items[1]!, emptyExpr)) return fromCollapse(a.items[2]!);
-  if (atomEq(a.items[2]!, emptyExpr)) return fromCollapse(a.items[1]!);
+  if (atomEq(a.items[1]!, collapsedEmptyExpr)) return fromCollapse(a.items[2]!);
+  if (atomEq(a.items[2]!, collapsedEmptyExpr)) return fromCollapse(a.items[1]!);
   return undefined;
 }
 
@@ -2097,6 +2123,14 @@ function compileImpIf(
       if (c.value.kind !== "gnd" || c.value.value.g !== "bool") return BAIL;
       return (c.value.value.b ? then_ : els).node(slots, stIf, ops, discard);
     },
+    forEach: (slots, st, ops, discard, emit) => {
+      const c = cond.node(slots, st, ops); // the condition is needed, never discarded
+      if (c === BAIL) return BAIL;
+      if (c.value === EMPTY_VALUE) return c.st;
+      const stIf = addCounter(c.st, 2);
+      if (c.value.kind !== "gnd" || c.value.value.g !== "bool") return BAIL;
+      return impForEach(c.value.value.b ? then_ : els, slots, stIf, ops, discard, emit);
+    },
     ...impMeta([cond, then_, els]),
   };
 }
@@ -2128,6 +2162,12 @@ function compileImpLet(
       local[slot] = v.value;
       return body.node(local, addCounter(v.st, 1), ops, discard);
     },
+    forEach: (slots, st, ops, discard, emit) =>
+      impForEach(value, slots, st, ops, undefined, (v, stValue) => {
+        const local = slots.slice();
+        local[slot] = v;
+        return impForEach(body, local, addCounter(stValue, 1), ops, discard, emit);
+      }),
     ...impMeta([value, body]),
   };
 }
@@ -2175,6 +2215,18 @@ function compileImpLetStar(
         cur = addCounter(addCounter(v.st, 1), 1);
       }
       return body.node(local, cur, ops, discard);
+    },
+    forEach: (slots, st, ops, discard, emit) => {
+      const runBinding = (i: number, local: Atom[], cur: St): St | typeof BAIL => {
+        if (i === bindings.length) return impForEach(body, local, cur, ops, discard, emit);
+        const binding = bindings[i]!;
+        return impForEach(binding.value, local, cur, ops, undefined, (v, stValue) => {
+          const next = local.slice();
+          next[binding.slot] = v;
+          return runBinding(i + 1, next, addCounter(addCounter(stValue, 1), 1));
+        });
+      };
+      return runBinding(0, slots.slice(), addCounter(st, 1));
     },
     ...impMeta(parts),
   };
@@ -2228,12 +2280,59 @@ function compileImpPatternAtom(a: Atom, scope: ImpScope): ImpCompiled {
   return impAssembleExpr(a.items.map((it) => compileImpPatternAtom(it, scope)));
 }
 
-// `(case (match SP PAT TPL) ((V BODY)))` with a single bare-variable branch: the saturation step
-// (peano's expand-once). The match solutions are a snapshot of the space at entry; each branch runs
-// BODY with V bound to one solution, threading effects into the next branch, exactly the streamed
-// case's order. A branch whose value is Empty is pruned; the imperative contract is single-valued,
-// so more than one surviving branch BAILs (sound: worlds are immutable, so the interpreter re-runs
-// from the untouched input state).
+type ImpCaseMatchScrutinee = {
+  readonly match: ExprAtom;
+  readonly firstOnly: boolean;
+};
+
+function impMatchExpr(a: Atom): ExprAtom | undefined {
+  return a.kind === "expr" &&
+    a.items.length === 4 &&
+    a.items[0]!.kind === "sym" &&
+    a.items[0]!.name === "match"
+    ? a
+    : undefined;
+}
+
+function impCaseMatchScrutinee(scrut: Atom): ImpCaseMatchScrutinee | undefined {
+  if (scrut.kind !== "expr" || scrut.items.length === 0) return undefined;
+  const direct = scrut.items[0]!;
+  if (direct.kind === "sym" && direct.name === "match" && scrut.items.length === 4)
+    return { match: scrut, firstOnly: false };
+  if (direct.kind === "sym" && direct.name === "once" && scrut.items.length === 2) {
+    const match = impMatchExpr(scrut.items[1]!);
+    return match === undefined ? undefined : { match, firstOnly: true };
+  }
+  if (direct.kind !== "sym" || direct.name !== "superpose" || scrut.items.length !== 2)
+    return undefined;
+  let bag = scrut.items[1]!;
+  if (
+    bag.kind === "expr" &&
+    bag.items.length === 2 &&
+    bag.items[0]!.kind === "sym" &&
+    bag.items[0]!.name === "cdr-atom"
+  )
+    bag = bag.items[1]!;
+  if (
+    bag.kind !== "expr" ||
+    bag.items.length !== 2 ||
+    bag.items[0]!.kind !== "sym" ||
+    bag.items[0]!.name !== "collapse"
+  )
+    return undefined;
+  const match = impMatchExpr(bag.items[1]!);
+  return match === undefined ? undefined : { match, firstOnly: false };
+}
+
+// `(case (match SP PAT TPL) ((V BODY)))`, `(case (once (match SP PAT TPL)) ((V BODY)))`, and the
+// equivalent explicit snapshot shape `(case (superpose (cdr-atom (collapse (match SP PAT TPL)))) ((V
+// BODY)))`, with a single bare-variable branch: the saturation step (peano's expand-once, matespace2's
+// snapshot expand). The match solutions are a snapshot of the space at entry; each branch runs BODY with V
+// bound to one solution, threading effects into the next branch, exactly the streamed case's order. A
+// branch whose value is Empty is pruned; the imperative contract is single-valued, so more than one
+// surviving branch BAILs (sound: worlds are immutable, so the interpreter re-runs from the untouched input
+// state). The `once(match ...)` form uses the same full match counter as the interpreter, then feeds only
+// the first solution to the branch.
 function compileImpCaseMatch(
   env: MinEnv,
   args: readonly Atom[],
@@ -2241,19 +2340,18 @@ function compileImpCaseMatch(
   holders: ImperativeFns,
 ): ImpCompiled | undefined {
   if (args.length !== 2 || (env.ruleIndex.get("case")?.length ?? 0) !== 1) return undefined;
-  const scrut = args[0]!;
-  if (scrut.kind !== "expr" || scrut.items.length !== 4) return undefined;
-  const sh = scrut.items[0]!;
-  if (sh.kind !== "sym" || sh.name !== "match") return undefined;
+  const scrut = impCaseMatchScrutinee(args[0]!);
+  if (scrut === undefined) return undefined;
   const pairs = args[1]!;
   if (pairs.kind !== "expr" || pairs.items.length !== 1) return undefined;
   const branch = pairs.items[0]!;
   if (branch.kind !== "expr" || branch.items.length !== 2 || branch.items[0]!.kind !== "var")
     return undefined;
-  const space = compileImpStaticAtom(env, scrut.items[1]!, scope);
+  const match = scrut.match;
+  const space = compileImpStaticAtom(env, match.items[1]!, scope);
   if (space === undefined) return undefined;
-  const pattern = compileImpPatternAtom(scrut.items[2]!, scope);
-  const template = compileImpPatternAtom(scrut.items[3]!, scope);
+  const pattern = compileImpPatternAtom(match.items[2]!, scope);
+  const template = compileImpPatternAtom(match.items[3]!, scope);
   const slot = scope.len;
   const branchScope: ImpScope = {
     vars: new Map(scope.vars).set(branch.items[0]!.name, slot),
@@ -2276,7 +2374,8 @@ function compileImpCaseMatch(
       let cur = addCounter(t.st, m.counterDelta);
       const local = slots.slice();
       let survived: Atom | undefined;
-      for (const [value] of m.pairs) {
+      const pairs = scrut.firstOnly ? m.pairs.slice(0, 1) : m.pairs;
+      for (const [value] of pairs) {
         local[slot] = value;
         const r = body.node(local, cur, ops, discard);
         if (r === BAIL) return BAIL;
@@ -2287,6 +2386,28 @@ function compileImpCaseMatch(
         }
       }
       return { value: survived ?? EMPTY_VALUE, st: cur };
+    },
+    forEach: (slots, st, ops, discard, emit) => {
+      const matchSolutions = ops.matchSolutions;
+      if (matchSolutions === undefined) return BAIL;
+      const s = space.node(slots, st, ops);
+      if (s === BAIL) return BAIL;
+      const p = pattern.node(slots, s.st, ops);
+      if (p === BAIL) return BAIL;
+      const t = template.node(slots, p.st, ops);
+      if (t === BAIL) return BAIL;
+      const m = matchSolutions(env, t.st, s.value, p.value, t.value);
+      if (m === undefined) return BAIL;
+      let cur = addCounter(t.st, m.counterDelta);
+      const local = slots.slice();
+      const pairs = scrut.firstOnly ? m.pairs.slice(0, 1) : m.pairs;
+      for (const [value] of pairs) {
+        local[slot] = value;
+        const next = impForEach(body, local, cur, ops, discard, emit);
+        if (next === BAIL) return BAIL;
+        cur = next;
+      }
+      return cur;
     },
     directEffect: true,
     callees: body.callees,
@@ -2314,6 +2435,15 @@ function compileImpCall(
       if (r.empty) return { value: EMPTY_VALUE, st: r.st };
       return h.run(r.vals, r.st, ops, discard);
     },
+    forEach: (slots, st, ops, discard, emit) => {
+      const r = impEvalArgs(parts, slots, st, ops); // call args are needed, never discarded
+      if (r === BAIL) return BAIL;
+      if (r.empty) return r.st;
+      if (h.runForEach !== undefined) return h.runForEach(r.vals, r.st, ops, discard, emit);
+      const v = h.run(r.vals, r.st, ops, discard);
+      if (v === BAIL) return BAIL;
+      return v.value === EMPTY_VALUE ? v.st : emit(v.value, v.st);
+    },
     directEffect: meta.directEffect,
     callees: new Set([...meta.callees, op]),
   };
@@ -2328,34 +2458,43 @@ function compileImpTuple(
   const parts = items.map((it) => compileImpAtom(env, it, scope, holders));
   if (parts.some((part) => part === undefined)) return undefined;
   const compiled = parts as ImpCompiled[];
-  return {
-    node: (slots, st, ops, discard) => {
-      let cur = st;
-      if (discard === true) {
-        // The result is thrown away (a dead let binding the build never reads). Run each element for its
-        // effects, forwarding discard, so a deeply recursive tuple build (matespace's rewriteK) runs all its
-        // add-atoms without ever allocating the result tree, then return a shared sentinel. Skipping the cons
-        // does not allocate or advance the gensym, so the side effects and the counter are unchanged.
-        for (const part of compiled) {
-          const r = part.node(slots, cur, ops, true);
-          if (r === BAIL) return BAIL;
-          cur = r.st;
-        }
-        return { value: emptyExpr, st: cur };
-      }
-      const out: Atom[] = [];
+  const node: ImpNode = (slots, st, ops, discard) => {
+    let cur = st;
+    if (discard === true) {
+      // The result is thrown away (a dead let binding the build never reads). Run each element for its
+      // effects, forwarding discard, so a deeply recursive tuple build (matespace's rewriteK) runs all its
+      // add-atoms without ever allocating the result tree. Empty still prunes the tuple, because the binding
+      // value is dead but the binding branch is not.
       let empty = false;
       for (const part of compiled) {
-        const r = part.node(slots, cur, ops);
+        const r = part.node(slots, cur, ops, true);
         if (r === BAIL) return BAIL;
         if (r.value === EMPTY_VALUE) empty = true;
-        out.push(r.value);
         cur = r.st;
       }
-      // An Empty element makes the whole tuple empty (the cross-product with nothing); the other
-      // elements still ran for their effects.
       if (empty) return { value: EMPTY_VALUE, st: cur };
-      return { value: expr(out), st: cur };
+      return { value: emptyExpr, st: cur };
+    }
+    const out: Atom[] = [];
+    let empty = false;
+    for (const part of compiled) {
+      const r = part.node(slots, cur, ops);
+      if (r === BAIL) return BAIL;
+      if (r.value === EMPTY_VALUE) empty = true;
+      out.push(r.value);
+      cur = r.st;
+    }
+    // An Empty element makes the whole tuple empty (the cross-product with nothing); the other
+    // elements still ran for their effects.
+    if (empty) return { value: EMPTY_VALUE, st: cur };
+    return { value: expr(out), st: cur };
+  };
+  return {
+    node,
+    forEach: (slots, st, ops, discard, emit) => {
+      const r = node(slots, st, ops, discard);
+      if (r === BAIL) return BAIL;
+      return r.value === EMPTY_VALUE ? r.st : emit(r.value, r.st);
     },
     ...impMeta(compiled),
   };
@@ -2466,6 +2605,15 @@ function compileImperative(env: MinEnv, compiled: CompiledFns): void {
         // thrown BAIL sentinel and let everything else (RangeError included) unwind.
         try {
           return body.node(partAtoms, addCounter(st, 1), ops, discard);
+        } catch (e) {
+          if (e === BAIL) return BAIL;
+          throw e;
+        }
+      };
+      holders.get(f)!.runForEach = (partAtoms, st, ops, discard, emit) => {
+        if (partAtoms.length !== arity || partAtoms.some((a) => !a.ground)) return BAIL;
+        try {
+          return impForEach(body, partAtoms, addCounter(st, 1), ops, discard, emit);
         } catch (e) {
           if (e === BAIL) return BAIL;
           throw e;
@@ -2618,4 +2766,29 @@ export function runCompiled(
     if (e === BAIL || e instanceof RangeError) return undefined;
     throw e;
   }
+}
+
+export function runCompiledEffectCount(
+  env: MinEnv,
+  op: string,
+  partAtoms: readonly Atom[],
+  st: St,
+  ops: CompiledImpureOps,
+): { readonly count: number; readonly state: St } | undefined {
+  const h = env.compiled?.get(op);
+  if (h === undefined || h.kind !== "imperative" || partAtoms.length !== h.arity) return undefined;
+  const runForEach = h.runForEach;
+  if (runForEach === undefined) return undefined;
+  let count = 0;
+  let state: St | typeof BAIL;
+  try {
+    state = runForEach(partAtoms, st, ops, true, (_value, stValue) => {
+      count += 1;
+      return stValue;
+    });
+  } catch (e) {
+    if (e === BAIL || e instanceof RangeError) return undefined;
+    throw e;
+  }
+  return state === BAIL ? undefined : { count, state };
 }

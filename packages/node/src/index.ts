@@ -9,13 +9,11 @@ import {
   type Atom,
   parseAll,
   standardTokenizer,
-  evalSequential,
   collectImports,
   type QueryResult,
   type RunOptions,
-  DEFAULT_FUEL,
 } from "@metta-ts/core";
-import { makeParEvalImpl } from "./par-hyperpose";
+import { runSource, runSourceAllDirectives } from "./source";
 
 /** Pre-read every `import!` target referenced in `src`, resolving names against `baseDir`. */
 export function readImports(
@@ -46,16 +44,27 @@ export function readImports(
  *  ceiling; `opts` carries interpreter settings such as the initial `maxStackDepth`. */
 export function runFile(path: string, fuel?: number, opts?: RunOptions): QueryResult[] {
   const src = readFileSync(path, "utf8");
-  const tops = parseAll(src, standardTokenizer());
   const fileDir = dirname(resolve(path));
-  // Node hosts `(once (hyperpose …))` on a worker_threads pool by default (the browser cannot, and falls
-  // back to sequential). A caller can override by passing its own `parEvalImpl` (or `null` to disable).
-  const withPar: RunOptions =
-    opts?.parEvalImpl === undefined
-      ? { ...opts, parEvalImpl: makeParEvalImpl(fuel ?? DEFAULT_FUEL) }
-      : opts;
-  return evalSequential(tops, fuel, readImports(src, fileDir, dirname(fileDir)), withPar);
+  return runSource(src, fuel, readImports(src, fileDir, dirname(fileDir)), opts);
+}
+
+/** Run a file and return one result entry for every top-level directive. */
+export function runFileAllDirectives(
+  path: string,
+  fuel?: number,
+  opts?: RunOptions,
+): QueryResult[] {
+  const src = readFileSync(path, "utf8");
+  const fileDir = dirname(resolve(path));
+  return runSourceAllDirectives(src, fuel, readImports(src, fileDir, dirname(fileDir)), opts);
 }
 
 export * from "@metta-ts/core";
+export {
+  runSource,
+  runSourceAllDirectives,
+  runSourceAsync,
+  makeParEvalImpl,
+  type ParEvalOptions,
+} from "./source";
 export { ParallelFlatMatcher } from "./flat-parallel";

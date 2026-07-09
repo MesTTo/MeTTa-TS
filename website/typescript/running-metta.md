@@ -79,4 +79,10 @@ A thrown error becomes a MeTTa `(Error ...)` atom the program can inspect, rathe
 
 ## Where to next
 
-From here you can pass whole TypeScript objects into the atomspace, do asynchronous I/O from MeTTa, and write rules with a typed eDSL. Those build directly on what is above. For the language itself, the **[Learn MeTTa](/learn/evaluation/main-concepts)** track starts from evaluation.
+From here you can pass whole TypeScript objects into the atomspace, do
+asynchronous I/O from MeTTa, and write rules with a typed eDSL. If you need a
+host language instead of a TypeScript function, use the explicit [Python
+interop](/typescript/python-interop) or [Prolog
+interop](/typescript/prolog-interop) adapters. For the language itself, the
+**[Learn MeTTa](/learn/evaluation/main-concepts)** track starts from
+evaluation.

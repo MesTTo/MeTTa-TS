@@ -91,22 +91,24 @@ describe("evaluator (smoke)", () => {
     expect(first(run(src))).toEqual(["matched"]);
   });
 
-  it("a typed function applied to the wrong arity errors with IncorrectNumberOfArguments (Hyperon)", () => {
-    // Matches hyperon-experimental's own tests (`(foo b c)`, issue 1037). Too many or too few arguments
-    // to a function-typed operator yield the error; a correct-arity call still reduces normally.
+  it("a typed function over-applied to the wrong arity errors with IncorrectNumberOfArguments", () => {
+    // Too many arguments cannot be represented as a partial application, so the arity error remains.
     const tooMany = `
-      (: foo (-> A B))
-      !(foo b c)`;
+	      (: foo (-> A B))
+	      !(foo b c)`;
     expect(first(run(tooMany))).toEqual(["(Error (foo b c) IncorrectNumberOfArguments)"]);
-    const tooFew = `
-      (: g (-> A A B))
-      (= (g $x $y) ok)
-      !(g a)`;
-    expect(first(run(tooFew))).toEqual(["(Error (g a) IncorrectNumberOfArguments)"]);
     const right = `
-      (: g (-> A A B))
-      (= (g $x $y) ok)
-      !(g a a)`;
+	      (: g (-> Atom Atom Atom))
+	      (= (g $x $y) ok)
+	      !(g a a)`;
     expect(first(run(right))).toEqual(["ok"]);
+  });
+
+  it("a typed function under-applied to the wrong arity errors with IncorrectNumberOfArguments", () => {
+    const tooFew = `
+	      (: g (-> Atom Atom Atom))
+	      (= (g $x $y) ok)
+	      !(g a)`;
+    expect(first(run(tooFew))).toEqual(["(Error (g a) IncorrectNumberOfArguments)"]);
   });
 });

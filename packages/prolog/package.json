@@ -1,0 +1,71 @@
+{
+  "name": "@metta-ts/prolog",
+  "version": "1.1.1",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./swi-node": {
+      "types": "./dist/swi-node.d.ts",
+      "default": "./dist/swi-node.js"
+    },
+    "./swi-wasm": {
+      "types": "./dist/swi-wasm.d.ts",
+      "default": "./dist/swi-wasm.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/swi-node.ts src/swi-wasm.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@metta-ts/core": "workspace:*",
+    "@metta-ts/hyperon": "workspace:*"
+  },
+  "author": "MesTTo",
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "module": "./dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Prolog interop for MeTTa TS: PeTTa-compatible Predicate/callPredicate/prolog-call/import_prolog_function over SWI-Prolog or SWI-WASM.",
+  "keywords": [
+    "metta",
+    "hyperon",
+    "prolog",
+    "swi-prolog",
+    "interop",
+    "typescript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MesTTo/Meta-TypeScript-Talk.git",
+    "directory": "packages/prolog"
+  },
+  "homepage": "https://github.com/MesTTo/Meta-TypeScript-Talk#readme",
+  "bugs": {
+    "url": "https://github.com/MesTTo/Meta-TypeScript-Talk/issues"
+  },
+  "devDependencies": {
+    "swipl-wasm": "8.0.3"
+  },
+  "peerDependencies": {
+    "swipl-wasm": "8.0.3"
+  },
+  "peerDependenciesMeta": {
+    "swipl-wasm": {
+      "optional": true
+    }
+  }
+}

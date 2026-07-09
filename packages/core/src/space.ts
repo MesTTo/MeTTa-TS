@@ -18,24 +18,62 @@ export interface Space {
   atoms(): readonly Atom[];
 }
 
-/** Linear-scan in-memory space. Indexing is a future extension behind this same interface. */
+function expressionHeadKey(atom: Atom): string | undefined {
+  if (atom.kind !== "expr" || atom.items.length === 0) return undefined;
+  const head = atom.items[0]!;
+  return head.kind === "sym" ? head.name : undefined;
+}
+
+/** In-memory space with a symbol-head index for ordinary expression queries. */
 export class InMemorySpace implements Space {
   private readonly store: Atom[] = [];
+  private readonly byHead = new Map<string, Atom[]>();
+  private readonly unindexed: Atom[] = [];
 
   add(atom: Atom): void {
     this.store.push(atom);
+    const key = expressionHeadKey(atom);
+    if (key === undefined) {
+      this.unindexed.push(atom);
+      return;
+    }
+    const bucket = this.byHead.get(key);
+    if (bucket === undefined) this.byHead.set(key, [atom]);
+    else bucket.push(atom);
   }
 
   remove(atom: Atom): boolean {
     const i = this.store.findIndex((a) => atomEq(a, atom));
     if (i < 0) return false;
+    const removed = this.store[i]!;
     this.store.splice(i, 1);
+    const key = expressionHeadKey(removed);
+    const bucket = key === undefined ? this.unindexed : this.byHead.get(key);
+    if (bucket !== undefined) {
+      let j = bucket.findIndex((a) => a === removed);
+      if (j < 0) j = bucket.findIndex((a) => atomEq(a, removed));
+      if (j >= 0) bucket.splice(j, 1);
+      if (key !== undefined && bucket.length === 0) this.byHead.delete(key);
+    }
     return true;
+  }
+
+  private *indexedCandidates(key: string): Iterable<Atom> {
+    if (this.unindexed.length === 0) {
+      yield* this.byHead.get(key) ?? [];
+      return;
+    }
+    for (const atom of this.store) {
+      const atomKey = expressionHeadKey(atom);
+      if (atomKey === key || atomKey === undefined) yield atom;
+    }
   }
 
   query(pattern: Atom, freshen?: (a: Atom) => Atom): Bindings[] {
     const out: Bindings[] = [];
-    for (const a of this.store) {
+    const key = expressionHeadKey(pattern);
+    const candidates = key === undefined ? this.store : this.indexedCandidates(key);
+    for (const a of candidates) {
       const target = freshen ? freshen(a) : a;
       for (const b of matchAtoms(pattern, target)) out.push(b);
     }

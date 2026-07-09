@@ -50,6 +50,31 @@ describe("compiled impure body (matespace VM de-risk)", () => {
     expect(r.out[0]).toEqual(["done"]); // it actually completed (non-vacuous)
   });
 
+  const mateOnce = `
+    (= (add-atom-no-duplicate $Space $Atom)
+       (if (== (,) (collapse (once (match $Space $Atom $Atom))))
+           (add-atom $Space $Atom)
+           (empty)))
+    (= (mate)
+       (case (match &self (num (M $t)) $t)
+             (($t (case (once (match &self (num (W $t)) $t))
+                        (($t (add-atom-no-duplicate &self (num (C $t))))))))))
+    !(add-atom &self (num (M Z)))
+    !(add-atom &self (num (W Z)))
+    !(mate)
+    !(mate)
+    !(collapse (match &self (num $k) $k))`;
+
+  it("case over once(match): compiled == interpreted and duplicate add prunes", () => {
+    const env = compiledEnvWith(mateOnce);
+    expect(env.compiled!.get("mate")?.kind).toBe("imperative");
+    const c = run(mateOnce, true);
+    expect(c.out).toEqual(run(mateOnce, false).out);
+    expect(c.out[2]).toEqual(["()"]);
+    expect(c.out[3]).toEqual([]);
+    expect(c.out[4]).toEqual(["(, (M Z) (W Z) (C Z))"]);
+  });
+
   // The regression guard for the matespace/scale OOM. A self-call recurses natively, so a deep impure
   // recursion overflows the host stack exactly as the interpreter does, producing the identical
   // `(Error <call> StackOverflow)` and rolling back every partial add-atom. The compiled path must NOT
@@ -66,7 +91,7 @@ describe("compiled impure body (matespace VM de-risk)", () => {
     expect(compiled).toEqual(run(deep, false));
     // It overflowed rather than completing, and the partial build rolled back to an empty space.
     expect(compiled.out[0]![0]).toContain("StackOverflow");
-    expect(compiled.out[1]).toEqual(["()"]);
+    expect(compiled.out[1]).toEqual(["(,)"]);
   });
 
   // A doubly-recursive impure function whose body returns a TUPLE of two recursive calls, matespacefast's

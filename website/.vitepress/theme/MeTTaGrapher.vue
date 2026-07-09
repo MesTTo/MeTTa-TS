@@ -289,9 +289,10 @@ async function exportGif(): Promise<void> {
   exporting.value = true;
   try {
     const enc = await import("gifenc");
-    // Hold each step for the on-screen playback delay (less the ~240ms morph), so the GIF plays at the
-    // speed set on the slider.
-    const opts = { holdMs: Math.max(60, delayMs() - 240) };
+    // The editor paces the export off the same trace duration the screen plays (setTraceDuration keeps
+    // it current), so holding each settled state for the rest of the playback beat makes the GIF match
+    // the slider exactly: morph + hold = one step delay.
+    const opts = { holdMs: Math.max(60, delayMs() - morphMs()) };
     const graph = viewMode.value === "graph";
     const blob = graph
       ? await grapher.exportGraphReductionGif(enc, opts)

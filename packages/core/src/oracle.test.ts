@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { evalOracleFile, ORACLE_FILES, summarizeOracleResults } from "./oracle-corpus";
 
-describe("Hyperon oracle (270 assertions)", () => {
+describe("LeaTTa MettaHyperonFull oracle (270 assertions)", () => {
   let grand = 0;
   let grandPass = 0;
   for (const f of ORACLE_FILES) {

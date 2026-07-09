@@ -11,24 +11,16 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { basename, join, resolve } from "node:path";
+import { arg, benchDir as here, cliPath, hashConsEnabled } from "./bench-common.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const arg = (name, dflt) => {
-  const hit = process.argv.find((a) => a.startsWith(`--${name}=`));
-  return hit ? hit.slice(name.length + 3) : dflt;
-};
-const flag = (name) => process.argv.includes(`--${name}`);
-
-const CLI = resolve(here, "../dist/cli.js");
+const CLI = cliPath;
 const CORPUS = resolve(here, "corpus-mettats");
 const RUNS = Math.max(3, Number(arg("runs", "3")));
 const TIMEOUT_MS = Number(arg("timeout", "120")) * 1000;
 const MAX_STEPS = arg("max-steps", "100000000");
 const FILTER = arg("filter", "");
-const HASH_CONS =
-  flag("hash-cons") || process.env.METTA_TS_HASHCONS === "1" || process.env.METTA_TS_HASHCONS === "true";
+const HASH_CONS = hashConsEnabled();
 
 const groups = [
   ["primary", ["nilbc.metta", "permutations.metta", "peano.metta"]],
@@ -98,7 +90,13 @@ console.log(
 if (FILTER) console.log(`  filter=${FILTER}`);
 console.log("");
 
-console.log(pad("group", 16), pad("program", 18), padL("median ms", 10), padL("runs ms", 28), " status");
+console.log(
+  pad("group", 16),
+  pad("program", 18),
+  padL("median ms", 10),
+  padL("runs ms", 28),
+  " status",
+);
 console.log("-".repeat(86));
 
 for (const [group, files] of groups) {

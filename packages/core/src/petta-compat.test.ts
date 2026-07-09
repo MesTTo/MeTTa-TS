@@ -4,8 +4,7 @@
 
 // PeTTa-compat stdlib: functions PeTTa auto-loads (src/metta.pl) that Hyperon lacks, added as grounded ops
 // so the PeTTa example corpus runs on the same engine. They are a fallback — a program's own `=` rule of the
-// same name wins — and the corpus `test` op compares modulo the conventions where MeTTa-TS (Hyperon) and
-// PeTTa render the same value differently (`,`-tuples, Bool casing, integer-valued floats).
+// same name wins. The corpus `test` op is strict and expects LeaTTa's observable syntax.
 import { describe, it, expect } from "vitest";
 import { runProgram } from "./runner";
 import { format } from "./parser";
@@ -51,16 +50,17 @@ describe("PeTTa-compat stdlib ops", () => {
     expect(one("(= (length (Cons $h $t)) custom)\n!(length (a b c))")).toBe("3");
   });
 
-  it("the corpus `test` op is strict (no convention forgiving) and uses MeTTa-TS conventions", () => {
-    // collapse returns a bare tuple, so this matches exactly.
-    expect(one("!(test (collapse (superpose (1 2 3))) (1 2 3))")).toBe("()");
+  it("the corpus `test` op is strict and uses LeaTTa conventions", () => {
+    // `collapse` returns an explicit comma tuple.
+    expect(one("!(test (collapse (superpose (1 2 3))) (, 1 2 3))")).toBe("()");
     // Written in MeTTa-TS conventions: grounded Bool `False`, full float `8.0`.
     expect(one("!(test (is-member z (a b)) False)")).toBe("()");
     expect(one("!(test (+ 3.0 5.0) 8.0)")).toBe("()");
     // A genuinely different value fails.
     expect(one("!(test (+ 1 1) 3)")).toContain("test-failed");
-    // And the comparison is now strict: a PeTTa-convention expected (`false`, `8`) does NOT pass.
+    // And the comparison is strict: non-LeaTTa expected values do NOT pass.
+    expect(one("!(test (collapse (superpose (1 2 3))) (1 2 3))")).toContain("test-failed");
     expect(one("!(test (is-member z (a b)) false)")).toContain("test-failed");
-    expect(one("!(test (+ 3.0 5.0) 8)")).toContain("test-failed");
+    expect(one("!(test (+ 3.0 5.0) 9)")).toContain("test-failed");
   });
 });

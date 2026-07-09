@@ -14,11 +14,11 @@
 // is credited to Rob Freeman (robjfr): it grew out of his need to visualize a dynamic-parser atomspace whose
 // nodes carry attributes like energy.
 //
-//   !(add-atom &grapher (color (fact 5) red))
+//   !(add-atom &grapher (color (noeval (fact 5)) red))
 //   !(add-atom &grapher (highlight if))
 //
-// The directives are read back with `(get-atoms &grapher)`, which returns every stored atom verbatim, so a
-// target like `(fact 5)` stays exactly what the program wrote rather than being reduced to its result.
+// The directives are read back with `(get-atoms &grapher)`. Under LeaTTa semantics `add-atom` evaluates its
+// atom argument first, so use `noeval` when a target like `(fact 5)` should be stored as data.
 
 import { ExpressionAtom, atomIsError, type Atom, type MeTTa } from "@metta-ts/hyperon";
 

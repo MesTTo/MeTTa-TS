@@ -1,6 +1,6 @@
 {
   "name": "@metta-ts/browser",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -10,13 +10,25 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./source": {
+      "types": "./dist/source.d.ts",
+      "default": "./dist/source.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
+    "./hyperpose-worker": {
+      "types": "./dist/hyperpose-worker.d.ts",
+      "default": "./dist/hyperpose-worker.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --platform browser"
+    "build": "tsup src/index.ts src/source.ts src/host.ts src/hyperpose-worker.ts --format esm --dts --clean --platform browser"
   },
   "dependencies": {
     "@metta-ts/core": "workspace:*"
@@ -25,12 +37,14 @@
   "engines": {
     "node": ">=20"
   },
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/hyperpose-worker.js"
+  ],
   "module": "./dist/index.js",
   "publishConfig": {
     "access": "public"
   },
-  "description": "Browser entry for MeTTa TS with an in-memory virtual file system for import!.",
+  "description": "Browser entry for MeTTa TS with an in-memory virtual file system and optional host interop composition.",
   "keywords": [
     "metta",
     "hyperon",

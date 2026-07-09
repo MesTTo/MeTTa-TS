@@ -2,38 +2,39 @@
 //
 // SPDX-License-Identifier: MIT
 
+import { alphaEq } from "./alpha";
 // The grounding table: built-in operations dispatched by symbol name, a faithful port of
 // LeaTTa `Core/Builtins.lean`. Each op takes already-evaluated argument atoms and returns a
 // ReduceResult. Numbers track int vs float; arithmetic on two ints stays int.
 import {
   type Atom,
-  sym,
-  gint,
-  gfloat,
-  gbool,
-  gstr,
+  atomEq,
+  atomVars,
   emptyExpr,
   expr,
-  atomEq,
-  atomSize,
-  atomVars,
+  gbool,
+  gfloat,
+  gint,
+  gnd,
+  gstr,
   isErrorAtom,
+  sym,
+  variable,
 } from "./atom";
-import { variable } from "./atom";
-import { alphaEq } from "./alpha";
-import { applySubst, type Subst } from "./substitution";
+import { matchAtoms } from "./match";
 import {
-  type IntVal,
   addInt,
-  subInt,
-  mulInt,
+  type IntVal,
+  intAbs,
   intDiv,
   intMod,
-  intAbs,
   isZero,
+  mulInt,
+  subInt,
   toF64,
 } from "./number";
 import { format, parseAll } from "./parser";
+import { applySubst, type Subst } from "./substitution";
 import { Tokenizer } from "./tokenizer";
 
 // A standalone tokenizer for `parse`/`sread` (number/bool literals), built here to avoid importing the runner
@@ -42,8 +43,9 @@ let parseTokenizer: Tokenizer | undefined;
 function makeTokenizer(): Tokenizer {
   if (parseTokenizer === undefined) {
     const t = new Tokenizer();
-    t.register(/^-?\d+$/, (s) => gint(BigInt(s)));
-    t.register(/^-?\d+\.\d+$/, (s) => gfloat(Number(s)));
+    t.register(/^[+-]?\d+$/, (s) => gint(BigInt(s)));
+    t.register(/^[+-]?\d+\.\d+$/, (s) => gfloat(Number(s)));
+    t.register(/^[+-]?\d+(\.\d+)?[eE][-+]?\d+$/, (s) => gfloat(Number(s)));
     t.register(/^True$/, () => gbool(true));
     t.register(/^False$/, () => gbool(false));
     parseTokenizer = t;
@@ -51,8 +53,17 @@ function makeTokenizer(): Tokenizer {
   return parseTokenizer;
 }
 
+export type ReduceEffect =
+  | { readonly kind: "addAtom"; readonly space: Atom; readonly atom: Atom }
+  | { readonly kind: "removeAtom"; readonly space: Atom; readonly atom: Atom }
+  | { readonly kind: "bindToken"; readonly name: string; readonly atom: Atom };
+
 export type ReduceResult =
-  | { readonly tag: "ok"; readonly results: readonly Atom[] }
+  | {
+      readonly tag: "ok";
+      readonly results: readonly Atom[];
+      readonly effects?: readonly ReduceEffect[];
+    }
   | { readonly tag: "runtimeError"; readonly msg: string }
   | { readonly tag: "incorrectArgument"; readonly msg: string }
   | { readonly tag: "noReduce" };
@@ -65,6 +76,7 @@ let sealCounter = 0;
 const ok = (...results: Atom[]): ReduceResult => ({ tag: "ok", results });
 const rerr = (msg: string): ReduceResult => ({ tag: "runtimeError", msg });
 const ierr = (msg: string): ReduceResult => ({ tag: "incorrectArgument", msg });
+const nored = (): ReduceResult => ({ tag: "noReduce" });
 
 // Line sink for println!/trace!: console.log is the natural equivalent (it appends the newline).
 // Overridable so embedders and tests can capture output instead of writing to the console.
@@ -118,6 +130,157 @@ function asFloat(a: Atom): number | undefined {
   if (v.g === "float") return v.n;
   return undefined;
 }
+function asByteOffset(a: Atom): number | undefined {
+  const n = asFloat(a);
+  return n !== undefined && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+}
+
+interface HostFs {
+  readonly constants: {
+    readonly O_RDONLY: number;
+    readonly O_WRONLY: number;
+    readonly O_RDWR: number;
+    readonly O_CREAT: number;
+    readonly O_APPEND: number;
+    readonly O_TRUNC: number;
+  };
+  openSync(path: string, flags: number, mode?: number): number;
+  readSync(
+    fd: number,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): number;
+  writeSync(
+    fd: number,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ): number;
+  fstatSync(fd: number): { readonly size: number | bigint };
+}
+
+interface HostGitFs {
+  existsSync(path: string): boolean;
+  mkdirSync(path: string, options?: { readonly recursive?: boolean }): unknown;
+  statSync(path: string): { isDirectory(): boolean };
+}
+
+interface HostChildProcess {
+  execFileSync(
+    file: string,
+    args: readonly string[],
+    options?: { readonly stdio?: "pipe" | "ignore" | "inherit" },
+  ): unknown;
+}
+
+interface HostGit {
+  readonly fs: HostGitFs;
+  readonly childProcess: HostChildProcess;
+}
+
+let hostFsChecked = false;
+let hostFs: HostFs | undefined;
+let hostGitChecked = false;
+let hostGit: HostGit | undefined;
+let hostEffectsEnabled = true;
+
+/** Enable or disable host effects such as file IO and git imports for this process. */
+export function setHostEffectsEnabled(enabled: boolean): void {
+  hostEffectsEnabled = enabled;
+}
+
+function isHostFs(value: unknown): value is HostFs {
+  const fs = value as Partial<HostFs> | undefined;
+  return (
+    fs !== undefined &&
+    typeof fs.openSync === "function" &&
+    typeof fs.readSync === "function" &&
+    typeof fs.writeSync === "function" &&
+    typeof fs.fstatSync === "function" &&
+    fs.constants !== undefined
+  );
+}
+
+function isHostGitFs(value: unknown): value is HostGitFs {
+  const fs = value as Partial<HostGitFs> | undefined;
+  return (
+    fs !== undefined &&
+    typeof fs.existsSync === "function" &&
+    typeof fs.mkdirSync === "function" &&
+    typeof fs.statSync === "function"
+  );
+}
+
+function isHostChildProcess(value: unknown): value is HostChildProcess {
+  const childProcess = value as Partial<HostChildProcess> | undefined;
+  return childProcess !== undefined && typeof childProcess.execFileSync === "function";
+}
+
+function getHostFs(): HostFs | undefined {
+  if (!hostEffectsEnabled) return undefined;
+  if (hostFsChecked) return hostFs;
+  hostFsChecked = true;
+  try {
+    const proc = (
+      globalThis as {
+        readonly process?: {
+          readonly getBuiltinModule?: (name: string) => unknown;
+        };
+      }
+    ).process;
+    const fs = proc?.getBuiltinModule?.("node:fs") ?? proc?.getBuiltinModule?.("fs");
+    if (isHostFs(fs)) hostFs = fs;
+  } catch {
+    // Browser and sandboxed hosts fall through to the explicit Error atom path.
+  }
+  if (hostFs !== undefined) return hostFs;
+  try {
+    const req = (0, eval)("typeof require === 'function' ? require : undefined") as
+      | ((moduleName: string) => unknown)
+      | undefined;
+    const fs = req?.("node:fs");
+    if (isHostFs(fs)) hostFs = fs;
+  } catch {
+    // Browser and sandboxed hosts fall through to the explicit Error atom path.
+  }
+  return hostFs;
+}
+
+function getHostGit(): HostGit | undefined {
+  if (!hostEffectsEnabled) return undefined;
+  if (hostGitChecked) return hostGit;
+  hostGitChecked = true;
+  try {
+    const proc = (
+      globalThis as {
+        readonly process?: {
+          readonly getBuiltinModule?: (name: string) => unknown;
+        };
+      }
+    ).process;
+    const fs = proc?.getBuiltinModule?.("node:fs") ?? proc?.getBuiltinModule?.("fs");
+    const childProcess =
+      proc?.getBuiltinModule?.("node:child_process") ?? proc?.getBuiltinModule?.("child_process");
+    if (isHostGitFs(fs) && isHostChildProcess(childProcess)) hostGit = { fs, childProcess };
+  } catch {
+    // Browser and sandboxed hosts fall through to the explicit Error atom path.
+  }
+  if (hostGit !== undefined) return hostGit;
+  try {
+    const req = (0, eval)("typeof require === 'function' ? require : undefined") as
+      | ((moduleName: string) => unknown)
+      | undefined;
+    const fs = req?.("node:fs");
+    const childProcess = req?.("node:child_process");
+    if (isHostGitFs(fs) && isHostChildProcess(childProcess)) hostGit = { fs, childProcess };
+  } catch {
+    // Browser and sandboxed hosts fall through to the explicit Error atom path.
+  }
+  return hostGit;
+}
 
 /** Binary arithmetic: two Ints use exact integer math (bigint on overflow); a Float on either side
  *  promotes both to f64. Mirrors Hyperon's int-stays-int, int+float->float rule. */
@@ -132,7 +295,7 @@ function arithBin(
     if (ax !== undefined && ay !== undefined) return ok(gint(intF(ax, ay)));
     const fx = asFloat(args[0]!);
     const fy = asFloat(args[1]!);
-    if (fx === undefined || fy === undefined) return ierr("expected two Numbers");
+    if (fx === undefined || fy === undefined) return nored();
     return ok(gfloat(floatF(fx, fy)));
   };
 }
@@ -152,13 +315,14 @@ function compareNumbers(a: Atom, b: Atom): number | undefined {
   const af = asFloat(a);
   const bf = asFloat(b);
   if (af === undefined || bf === undefined) return undefined;
+  if (Number.isNaN(af) || Number.isNaN(bf)) return Number.NaN;
   return af < bf ? -1 : af > bf ? 1 : 0;
 }
 function numCmp(f: (c: number) => boolean): GroundFn {
   return (args) => {
     if (args.length !== 2) return ierr("expected exactly two arguments");
     const c = compareNumbers(args[0]!, args[1]!);
-    if (c === undefined) return ierr("expected two Numbers");
+    if (c === undefined) return nored();
     return ok(gbool(f(c)));
   };
 }
@@ -193,14 +357,14 @@ const deconsAtom: GroundFn = (args) => {
   if (args.length !== 1) return ierr("expected non-empty expression");
   const e = args[0]!;
   if (e.kind !== "expr") return ierr("expected non-empty expression");
-  if (e.items.length === 0) return ok(emptyExpr);
+  if (e.items.length === 0) return ierr("expected non-empty expression");
   const [h, ...t] = e.items;
   return ok(expr([h!, expr(t)]));
 };
 const carAtom: GroundFn = (args) => {
   const e = args[0];
   if (args.length !== 1 || e?.kind !== "expr" || e.items.length === 0)
-    return ierr("expected non-empty expression");
+    return ierr("car-atom expects a non-empty expression as an argument");
   return ok(e.items[0]!);
 };
 const cdrAtom: GroundFn = (args) => {
@@ -210,9 +374,10 @@ const cdrAtom: GroundFn = (args) => {
   return ok(expr(e.items.slice(1)));
 };
 const sizeAtom: GroundFn = (args) => {
-  if (args.length !== 1) return ierr("expected one atom");
+  if (args.length !== 1) return ierr("size-atom expects one expression");
   const a = args[0]!;
-  return ok(gint(a.kind === "expr" ? a.items.length : atomSize(a)));
+  if (a.kind !== "expr") return ierr("size-atom expects one expression");
+  return ok(gint(a.items.length));
 };
 const minMaxAtom =
   (isMin: boolean, name: string): GroundFn =>
@@ -248,7 +413,7 @@ const floatUn =
   (args) => {
     if (args.length !== 1) return ierr("expected exactly one argument");
     const x = asFloat(args[0]!);
-    return x === undefined ? ierr("expected a Number") : ok(gfloat(ff(x)));
+    return x === undefined ? nored() : ok(gfloat(ff(x)));
   };
 const floatBin =
   (ff: (x: number, y: number) => number): GroundFn =>
@@ -256,7 +421,7 @@ const floatBin =
     if (args.length !== 2) return ierr("expected exactly two arguments");
     const x = asFloat(args[0]!);
     const y = asFloat(args[1]!);
-    return x === undefined || y === undefined ? ierr("expected two Numbers") : ok(gfloat(ff(x, y)));
+    return x === undefined || y === undefined ? nored() : ok(gfloat(ff(x, y)));
   };
 const numRound =
   (fi: (n: IntVal) => IntVal, ff: (x: number) => number): GroundFn =>
@@ -265,7 +430,7 @@ const numRound =
     const a = args[0]!;
     if (a.kind === "gnd" && a.value.g === "int") return ok(gint(fi(a.value.n)));
     if (a.kind === "gnd" && a.value.g === "float") return ok(gfloat(ff(a.value.n)));
-    return ierr("expected a Number");
+    return nored();
   };
 const floatPred =
   (fb: (x: number) => boolean): GroundFn =>
@@ -274,7 +439,7 @@ const floatPred =
     const a = args[0]!;
     if (a.kind === "gnd" && a.value.g === "int") return ok(gbool(false));
     if (a.kind === "gnd" && a.value.g === "float") return ok(gbool(fb(a.value.n)));
-    return ierr("expected a Number");
+    return nored();
   };
 
 const mathEntries: Array<[string, GroundFn]> = [
@@ -348,6 +513,12 @@ const msSubtract = (lhs: readonly Atom[], rhs: readonly Atom[]): Atom[] => {
 };
 const resultItems = (xs: readonly Atom[]): Atom[] =>
   xs.length > 0 && xs[0]!.kind === "sym" && xs[0]!.name === "," ? xs.slice(1) : [...xs];
+const isResultBag = (xs: readonly Atom[]): boolean =>
+  xs.length > 0 && xs[0]!.kind === "sym" && xs[0]!.name === ",";
+const unionItems = (lhs: readonly Atom[], rhs: readonly Atom[]): Atom[] =>
+  isResultBag(lhs) && isResultBag(rhs)
+    ? [sym(","), ...lhs.slice(1), ...rhs.slice(1)]
+    : [...lhs, ...rhs];
 const removeFirstBy = (
   eq: (a: Atom, b: Atom) => boolean,
   a: Atom,
@@ -409,7 +580,447 @@ const assertEqOp =
 const sortByFormat = (xs: readonly Atom[]): Atom[] =>
   [...xs].sort((a, b) => (format(a) < format(b) ? -1 : format(a) > format(b) ? 1 : 0));
 
+const DICT_SPACE_KIND = "dict-space";
+const dictSpaceRegistry = new Map<string, readonly Atom[]>();
+let dictSpaceCounter = 0;
+
+function makeDictSpace(entries: readonly Atom[]): Atom {
+  const id = String(dictSpaceCounter++);
+  const stored = [...entries];
+  dictSpaceRegistry.set(id, stored);
+  return gnd({ g: "ext", kind: DICT_SPACE_KIND, id }, sym("Grounded"), undefined, (other) =>
+    stored.flatMap((entry) => matchAtoms(entry, other)),
+  );
+}
+
+function dictSpaceEntries(atom: Atom): readonly Atom[] | undefined {
+  if (atom.kind !== "gnd" || atom.value.g !== "ext" || atom.value.kind !== DICT_SPACE_KIND)
+    return undefined;
+  return dictSpaceRegistry.get(atom.value.id);
+}
+
+function jsonToAtom(value: unknown): Atom {
+  if (value === null) return sym("null");
+  if (Array.isArray(value)) return expr(value.map(jsonToAtom));
+  switch (typeof value) {
+    case "string":
+      return gstr(value);
+    case "number":
+      return Number.isInteger(value) ? gint(value) : gfloat(value);
+    case "boolean":
+      return gbool(value);
+    case "object":
+      return makeDictSpace(
+        Object.entries(value as Record<string, unknown>).map(([k, v]) =>
+          expr([sym(k), jsonToAtom(v)]),
+        ),
+      );
+    default:
+      return sym("null");
+  }
+}
+
+function atomToJsonKey(atom: Atom): string {
+  if (atom.kind === "gnd") {
+    switch (atom.value.g) {
+      case "str":
+        return atom.value.s;
+      case "int":
+      case "float":
+        return String(atom.value.n);
+      case "bool":
+        return String(atom.value.b);
+      default:
+        break;
+    }
+  }
+  return atom.kind === "sym" ? atom.name : format(atom);
+}
+
+function atomToJson(atom: Atom): unknown {
+  const entries = dictSpaceEntries(atom);
+  if (entries !== undefined) {
+    const out: Record<string, unknown> = {};
+    for (const entry of entries) {
+      if (entry.kind !== "expr") continue;
+      const key = entry.items[0];
+      const value = entry.items[1];
+      if (key !== undefined && value !== undefined) out[atomToJsonKey(key)] = atomToJson(value);
+    }
+    return out;
+  }
+  if (atom.kind === "expr") return atom.items.map(atomToJson);
+  if (atom.kind === "sym") return atom.name === "null" ? null : atom.name;
+  if (atom.kind === "var") return format(atom);
+  switch (atom.value.g) {
+    case "str":
+      return atom.value.s;
+    case "int":
+      return typeof atom.value.n === "bigint" ? Number(atom.value.n) : atom.value.n;
+    case "float":
+      return atom.value.n;
+    case "bool":
+      return atom.value.b;
+    default:
+      throw new Error(`json-encode: grounded value is not JSON-encodable: ${format(atom)}`);
+  }
+}
+
+const dictSpaceOp: GroundFn = (args) => {
+  const pairs = args[0];
+  return args.length === 1 && pairs?.kind === "expr"
+    ? ok(makeDictSpace(pairs.items))
+    : ierr("dict-space expects one expression");
+};
+
+const jsonDecodeOp: GroundFn = (args) => {
+  const text = asStr(args[0]!);
+  if (args.length !== 1 || text === undefined) return ierr("json-decode expects one String");
+  try {
+    return ok(jsonToAtom(JSON.parse(text)));
+  } catch (err) {
+    return rerr(err instanceof Error ? `json-decode: ${err.message}` : "json-decode failed");
+  }
+};
+
+const jsonEncodeOp: GroundFn = (args) => {
+  const atom = args[0];
+  if (args.length !== 1 || atom === undefined) return ierr("json-encode expects one Atom");
+  try {
+    const json = JSON.stringify(atomToJson(atom));
+    return json === undefined ? rerr("json-encode: value is not JSON-encodable") : ok(gstr(json));
+  } catch (err) {
+    return rerr(err instanceof Error ? err.message : "json-encode failed");
+  }
+};
+
+const FILE_HANDLE_KIND = "file-handle";
+interface FileHandleRecord {
+  readonly fd: number;
+  readonly path: string;
+  cursor: number;
+  readonly append: boolean;
+}
+const fileHandleRegistry = new Map<string, FileHandleRecord>();
+let fileHandleCounter = 0;
+
+function fileIoError(op: string, args: readonly Atom[], msg: string): ReduceResult {
+  return ok(expr([sym("Error"), expr([sym(op), ...args]), gstr(msg)]));
+}
+
+function fileIoHost(op: string, args: readonly Atom[]): HostFs | ReduceResult {
+  return getHostFs() ?? fileIoError(op, args, "file IO requires a host file system");
+}
+
+function gitImportError(op: string, args: readonly Atom[], msg: string): ReduceResult {
+  return ok(expr([sym("Error"), expr([sym(op), ...args]), gstr(msg)]));
+}
+
+function gitImportHost(op: string, args: readonly Atom[]): HostGit | ReduceResult {
+  return (
+    getHostGit() ?? gitImportError(op, args, "git-import! requires node:child_process and node:fs")
+  );
+}
+
+function hostCwd(): string | undefined {
+  try {
+    const proc = (
+      globalThis as {
+        readonly process?: {
+          cwd?: () => string;
+        };
+      }
+    ).process;
+    return typeof proc?.cwd === "function" ? proc.cwd() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function repoNameFromGitPath(gitPath: string): string | undefined {
+  const trimmed = gitPath.replace(/[\/\\]+$/, "");
+  const last = trimmed
+    .split(/[\/:\\]+/)
+    .filter(Boolean)
+    .at(-1);
+  if (last === undefined) return undefined;
+  const name = last.endsWith(".git") ? last.slice(0, -4) : last;
+  return name !== "" && name !== "." && name !== ".." ? name : undefined;
+}
+
+function joinHostPath(baseDir: string, name: string): string {
+  return baseDir.replace(/[\/\\]+$/, "") + "/" + name;
+}
+
+function fileHandle(atom: Atom): FileHandleRecord | undefined {
+  if (atom.kind !== "gnd" || atom.value.g !== "ext" || atom.value.kind !== FILE_HANDLE_KIND)
+    return undefined;
+  return fileHandleRegistry.get(atom.value.id);
+}
+
+function makeFileHandle(fd: number, path: string, append: boolean): Atom {
+  const id = `file-handle-${fileHandleCounter++}`;
+  fileHandleRegistry.set(id, { fd, path, cursor: 0, append });
+  return gnd({ g: "ext", kind: FILE_HANDLE_KIND, id }, sym("FileHandle"));
+}
+
+function fileSize(fs: HostFs, fd: number): number | undefined {
+  const size = fs.fstatSync(fd).size;
+  const n = typeof size === "bigint" ? Number(size) : size;
+  return Number.isSafeInteger(n) && n >= 0 ? n : undefined;
+}
+
+function readFromCursor(fs: HostFs, handle: FileHandleRecord, limit?: number): string {
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let remaining = limit ?? Number.POSITIVE_INFINITY;
+  while (remaining > 0) {
+    const chunkSize = Math.min(65_536, remaining);
+    const buffer = new Uint8Array(chunkSize);
+    const bytesRead = fs.readSync(handle.fd, buffer, 0, buffer.length, handle.cursor);
+    if (bytesRead === 0) break;
+    handle.cursor += bytesRead;
+    remaining -= bytesRead;
+    parts.push(decoder.decode(buffer.subarray(0, bytesRead), { stream: true }));
+  }
+  parts.push(decoder.decode());
+  return parts.join("");
+}
+
+function parseFileOpenFlags(
+  fs: HostFs,
+  options: string,
+): { readonly flags: number; readonly append: boolean } | { readonly error: string } {
+  if (options.length === 0) return { error: "file-open!: expected at least one open option" };
+  const chars = new Set(options);
+  for (const ch of chars)
+    if (!"rwcat".includes(ch)) return { error: `file-open!: unsupported open option '${ch}'` };
+  const read = chars.has("r");
+  const write = chars.has("w");
+  const create = chars.has("c");
+  const append = chars.has("a");
+  const truncate = chars.has("t");
+  if (create && !write) return { error: "file-open!: option c requires option w" };
+  if (truncate && !write) return { error: "file-open!: option t requires option w" };
+  if (!read && !write && !append) return { error: "file-open!: options must include r, w, or a" };
+
+  const c = fs.constants;
+  let flags = write || (read && append) ? c.O_RDWR : read ? c.O_RDONLY : c.O_WRONLY;
+  if (create) flags |= c.O_CREAT;
+  if (append) flags |= c.O_APPEND;
+  if (truncate) flags |= c.O_TRUNC;
+  return { flags, append };
+}
+
+const fileOpenOp: GroundFn = (args) => {
+  const fs = fileIoHost("file-open!", args);
+  if (!isHostFs(fs)) return fs;
+  const path = args[0] === undefined ? undefined : asStr(args[0]);
+  const options = args[1] === undefined ? undefined : asStr(args[1]);
+  if (args.length !== 2 || path === undefined || options === undefined)
+    return ierr("file-open! expects path and options Strings");
+  const parsed = parseFileOpenFlags(fs, options);
+  if ("error" in parsed) return fileIoError("file-open!", args, parsed.error);
+  try {
+    return ok(makeFileHandle(fs.openSync(path, parsed.flags, 0o666), path, parsed.append));
+  } catch (err) {
+    return fileIoError(
+      "file-open!",
+      args,
+      err instanceof Error
+        ? `Failed to open file with provided path=${path} and options=${options}: ${err.message}`
+        : `Failed to open file with provided path=${path} and options=${options}`,
+    );
+  }
+};
+
+const fileReadToStringOp: GroundFn = (args) => {
+  const fs = fileIoHost("file-read-to-string!", args);
+  if (!isHostFs(fs)) return fs;
+  const handle = args.length === 1 ? fileHandle(args[0]!) : undefined;
+  if (handle === undefined) return ierr("file-read-to-string! expects one FileHandle");
+  try {
+    return ok(gstr(readFromCursor(fs, handle)));
+  } catch (err) {
+    return fileIoError(
+      "file-read-to-string!",
+      args,
+      err instanceof Error
+        ? `Failed to read file contents: ${err.message}`
+        : "Failed to read file contents",
+    );
+  }
+};
+
+const fileReadExactOp: GroundFn = (args) => {
+  const fs = fileIoHost("file-read-exact!", args);
+  if (!isHostFs(fs)) return fs;
+  const handle = args.length === 2 ? fileHandle(args[0]!) : undefined;
+  const bytes = args[1] === undefined ? undefined : asByteOffset(args[1]);
+  if (handle === undefined || bytes === undefined)
+    return ierr("file-read-exact! expects FileHandle and non-negative byte count");
+  try {
+    return ok(gstr(readFromCursor(fs, handle, bytes)));
+  } catch (err) {
+    return fileIoError(
+      "file-read-exact!",
+      args,
+      err instanceof Error ? `Read exact failed: ${err.message}` : "Read exact failed",
+    );
+  }
+};
+
+const fileWriteOp: GroundFn = (args) => {
+  const fs = fileIoHost("file-write!", args);
+  if (!isHostFs(fs)) return fs;
+  const handle = args.length === 2 ? fileHandle(args[0]!) : undefined;
+  const content = args[1] === undefined ? undefined : asStr(args[1]);
+  if (handle === undefined || content === undefined)
+    return ierr("file-write! expects FileHandle and String");
+  try {
+    const bytes = new TextEncoder().encode(content);
+    let written = 0;
+    while (written < bytes.length) {
+      const n = fs.writeSync(
+        handle.fd,
+        bytes,
+        written,
+        bytes.length - written,
+        handle.cursor + written,
+      );
+      if (n === 0) return fileIoError("file-write!", args, "Failed to write content to file");
+      written += n;
+    }
+    handle.cursor += written;
+    if (handle.append) handle.cursor = fileSize(fs, handle.fd) ?? handle.cursor;
+    return ok(emptyExpr);
+  } catch (err) {
+    return fileIoError(
+      "file-write!",
+      args,
+      err instanceof Error
+        ? `Failed to write content to file: ${err.message}`
+        : "Failed to write content to file",
+    );
+  }
+};
+
+const fileSeekOp: GroundFn = (args) => {
+  const fs = fileIoHost("file-seek!", args);
+  if (!isHostFs(fs)) return fs;
+  const handle = args.length === 2 ? fileHandle(args[0]!) : undefined;
+  const cursor = args[1] === undefined ? undefined : asByteOffset(args[1]);
+  if (handle === undefined || cursor === undefined)
+    return ierr("file-seek! expects FileHandle and non-negative byte position");
+  handle.cursor = cursor;
+  return ok(emptyExpr);
+};
+
+const fileGetSizeOp: GroundFn = (args) => {
+  const fs = fileIoHost("file-get-size!", args);
+  if (!isHostFs(fs)) return fs;
+  const handle = args.length === 1 ? fileHandle(args[0]!) : undefined;
+  if (handle === undefined) return ierr("file-get-size! expects one FileHandle");
+  try {
+    const size = fileSize(fs, handle.fd);
+    return size === undefined
+      ? fileIoError("file-get-size!", args, "Get size failed: file is too large")
+      : ok(gint(size));
+  } catch (err) {
+    return fileIoError(
+      "file-get-size!",
+      args,
+      err instanceof Error ? `Get size failed: ${err.message}` : "Get size failed",
+    );
+  }
+};
+
+const gitImportOp: GroundFn = (args) => {
+  const host = gitImportHost("git-import!", args);
+  if (!("fs" in host)) return host;
+  if (args.length !== 1 && args.length !== 2)
+    return ierr("git-import! expects repository URL String and optional base directory String");
+  const gitPath = args[0] === undefined ? undefined : asStr(args[0]);
+  const baseArg = args[1] === undefined ? undefined : asStr(args[1]);
+  if (gitPath === undefined || (args.length === 2 && baseArg === undefined))
+    return ierr("git-import! expects repository URL String and optional base directory String");
+  const name = repoNameFromGitPath(gitPath);
+  if (name === undefined)
+    return gitImportError("git-import!", args, "git-import!: repository path has no basename");
+  const cwd = hostCwd();
+  if (cwd === undefined)
+    return gitImportError(
+      "git-import!",
+      args,
+      "git-import! requires a host current working directory",
+    );
+  const baseDir = baseArg ?? joinHostPath(cwd, "repos");
+  if (baseDir === "")
+    return gitImportError("git-import!", args, "git-import!: base directory must not be empty");
+  const localDir = joinHostPath(baseDir, name);
+  try {
+    if (host.fs.existsSync(localDir)) {
+      if (host.fs.statSync(localDir).isDirectory()) return ok(emptyExpr);
+      return gitImportError(
+        "git-import!",
+        args,
+        `git-import!: target exists and is not a directory: ${localDir}`,
+      );
+    }
+    host.fs.mkdirSync(baseDir, { recursive: true });
+    host.childProcess.execFileSync("git", ["clone", "--depth", "1", gitPath, localDir], {
+      stdio: "pipe",
+    });
+    return ok(emptyExpr);
+  } catch (err) {
+    return gitImportError(
+      "git-import!",
+      args,
+      err instanceof Error
+        ? `git-import!: failed to clone ${gitPath} into ${localDir}: ${err.message}`
+        : `git-import!: failed to clone ${gitPath} into ${localDir}`,
+    );
+  }
+};
+
+// A minimal in-memory module catalog behind catalog-list!/update!/clear!. A real package catalog
+// (versioned, on-disk or git-backed) is the module system's job; this holds the built-in module names so the
+// operations exist, are documented, and list something. The Symbol argument is a catalog name or `all`.
+const moduleCatalogs = new Map<string, string[]>([
+  ["builtin", ["concurrency", "json", "catalog", "git"]],
+]);
+const catalogTargets = (arg: Atom | undefined): string[] => {
+  const name = arg?.kind === "sym" ? arg.name : "all";
+  return name === "all" ? [...moduleCatalogs.keys()] : [name];
+};
+
+const catalogClearOp: GroundFn = (args) => {
+  for (const name of catalogTargets(args[0]))
+    if (moduleCatalogs.has(name)) moduleCatalogs.set(name, []);
+  return ok(emptyExpr);
+};
+const catalogListOp: GroundFn = (args) => {
+  for (const name of catalogTargets(args[0]))
+    outputSink(`${name}: ${(moduleCatalogs.get(name) ?? []).join(", ")}`);
+  return ok(emptyExpr);
+};
+const catalogUpdateOp: GroundFn = (args) => {
+  // No versioned backend yet, so updating a managed catalog reports success without changing it.
+  catalogTargets(args[0]);
+  return ok(emptyExpr);
+};
+
 const stdEntries: Array<[string, GroundFn]> = [
+  ["catalog-clear!", catalogClearOp],
+  ["catalog-list!", catalogListOp],
+  ["catalog-update!", catalogUpdateOp],
+  ["file-get-size!", fileGetSizeOp],
+  ["git-import!", gitImportOp],
+  ["file-open!", fileOpenOp],
+  ["file-read-exact!", fileReadExactOp],
+  ["file-read-to-string!", fileReadToStringOp],
+  ["file-seek!", fileSeekOp],
+  ["file-write!", fileWriteOp],
   [
     "println!",
     (args) => {
@@ -516,7 +1127,7 @@ const stdEntries: Array<[string, GroundFn]> = [
     (args) => {
       const e = exprArgs(args);
       return e && e.length === 2
-        ? ok(expr([...e[0]!, ...e[1]!]))
+        ? ok(expr(unionItems(e[0]!, e[1]!)))
         : ierr("union-atom expects two expressions");
     },
   ],
@@ -561,11 +1172,13 @@ const stdEntries: Array<[string, GroundFn]> = [
     (args) => {
       const e = exprArgs(args);
       if (!e || e.length !== 1) return ierr("collapse-extract expects one expression");
-      // collapse returns a bare tuple of the results: `(r1 r2 ...)`, `()` when empty, matching Hyperon
-      // (hyperon-experimental b4_nondeterm: `(collapse (shape))` is `((shape))`). Each collapse-bind entry
-      // is a `(atom bindings)` pair; take the atom.
+      // LeaTTa represents a collapsed bag as a comma tuple `(, r1 r2 ...)`. `resultItems` strips the comma
+      // when a bag is spread back through `superpose`.
       return ok(
-        expr(e[0]!.map((p) => (p.kind === "expr" && p.items.length > 0 ? p.items[0]! : p))),
+        expr([
+          sym(","),
+          ...e[0]!.map((p) => (p.kind === "expr" && p.items.length > 0 ? p.items[0]! : p)),
+        ]),
       );
     },
   ],
@@ -589,6 +1202,9 @@ const stdEntries: Array<[string, GroundFn]> = [
     },
   ],
   ["nop", () => ok(emptyExpr)],
+  ["dict-space", dictSpaceOp],
+  ["json-decode", jsonDecodeOp],
+  ["json-encode", jsonEncodeOp],
   // `pragma!` is handled as a stateful embedded op in eval.ts (it writes interpreter settings), not here.
   ["register-module!", () => ok(emptyExpr)],
   ["help!", () => ok(emptyExpr)],
@@ -858,13 +1474,16 @@ const pettaEntries: Array<[string, GroundFn]> = [
   [
     "random-int",
     (a) => {
-      const lo = asIntVal(a[0]!);
-      const hi = asIntVal(a[1]!);
-      if (a.length !== 2 || lo === undefined || hi === undefined)
-        return ierr("random-int expects two Ints");
+      const offset = a.length === 3 ? 1 : 0;
+      const lo = asIntVal(a[offset]!);
+      const hi = asIntVal(a[offset + 1]!);
+      if ((a.length !== 2 && a.length !== 3) || lo === undefined || hi === undefined)
+        return ierr("random-int expects an optional RNG and two Ints");
       const l = Number(lo);
       const h = Number(hi);
-      return ok(gint(BigInt(l + Math.floor(Math.random() * Math.max(0, h - l)))));
+      if (h <= l)
+        return ok(expr([sym("Error"), expr([sym("random-int"), ...a]), sym("RangeIsEmpty")]));
+      return ok(gint(BigInt(l + Math.floor(Math.random() * (h - l)))));
     },
   ],
   [

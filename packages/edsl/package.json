@@ -1,9 +1,9 @@
 {
   "name": "@metta-ts/edsl",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "MesTTo",
   "license": "MIT",
-  "description": "Ergonomic, typed TypeScript eDSL for MeTTa: typed term builders, rewrite rules, a tagged-template surface, and auto-grounding of TypeScript values.",
+  "description": "Ergonomic, typed TypeScript eDSL for MeTTa: term builders, tagged templates, host-interop builders, and auto-grounding of TypeScript values.",
   "keywords": [
     "metta",
     "hyperon",
@@ -21,6 +21,14 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./py": {
+      "types": "./dist/py.d.ts",
+      "default": "./dist/py.js"
+    },
+    "./prolog": {
+      "types": "./dist/prolog.d.ts",
+      "default": "./dist/prolog.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -31,7 +39,7 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean"
+    "build": "tsup src/index.ts src/py.ts src/prolog.ts --format esm --dts --clean"
   },
   "dependencies": {
     "@metta-ts/hyperon": "workspace:*"

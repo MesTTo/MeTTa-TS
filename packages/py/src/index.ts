@@ -15,4 +15,3 @@ export {
   type PyHandle,
 } from "./py";
 export { MockPyBridge } from "./py-mock";
-export { pythoniaBridge, type PythoniaLike } from "./py-pythonia";

@@ -10,7 +10,7 @@ import {
   summarizeOracleResults,
 } from "./oracle-corpus";
 
-describe("Hyperon oracle with experimental.hashCons", () => {
+describe("LeaTTa MettaHyperonFull oracle with experimental.hashCons", () => {
   let grand = 0;
   let grandPass = 0;
 

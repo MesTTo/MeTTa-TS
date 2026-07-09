@@ -28,7 +28,7 @@ describe("match functor indexing", () => {
         !(add-atom &self (Q x 9))
         !(collapse (match &self (P $k $v) $v))
       `),
-    ).toEqual(["(1 2)"]);
+    ).toEqual(["(, 1 2)"]);
   });
 
   it("a variable-headed query still scans everything", () => {
@@ -37,7 +37,7 @@ describe("match functor indexing", () => {
         !(add-atom &self (Foo 1))
         !(collapse (match &self ($f 1) $f))
       `),
-    ).toEqual(["(Foo)"]);
+    ).toEqual(["(, Foo)"]);
   });
 
   it("conjunctive match works through the index", () => {
@@ -47,7 +47,7 @@ describe("match functor indexing", () => {
         !(add-atom &self (link B C))
         !(collapse (match &self (, (link $x $y) (link $y $z)) ($x $z)))
       `),
-    ).toEqual(["((A C))"]);
+    ).toEqual(["(, (A C))"]);
   });
 
   it("scales: one match over a 100k-atom KB is fast and correct", () => {
@@ -90,6 +90,6 @@ describe("match functor indexing", () => {
         !(add-atom &self (edge $a 9))
         !(collapse (match &self (edge 1 $y) $y))
       `),
-    ).toEqual(["(2 9)"]);
+    ).toEqual(["(, 2 9)"]);
   });
 });

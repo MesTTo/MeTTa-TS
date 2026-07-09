@@ -1,85 +1,121 @@
-# MeTTa TS 1.1.0
+# MeTTa TS 1.1.1
 
-A pure-TypeScript implementation of [MeTTa](https://metta-lang.dev) (Meta Type Talk), the OpenCog Hyperon language. It runs anywhere TypeScript runs: the browser, Node, Deno, Bun, and edge or serverless functions. No native addons, no WASM, no Rust.
+A pure-TypeScript implementation of [MeTTa](https://metta-lang.dev), the
+OpenCog Hyperon language. The core engine runs in the browser, Node, Deno, Bun,
+edge runtimes, and TypeScript-based agents with no native addon and no required
+WASM. Optional host adapters can load Python or Prolog runtimes when a program
+asks for them.
 
 ## Tested on Linux
 
-This release is tested on Linux (Node 20, the CI matrix): lint, format, typecheck, the full test suite, and the build all run there. Because the engine is pure TypeScript with no native addon and no WASM, it is meant to be cross-platform and should run unchanged on any JavaScript runtime. Other operating systems are not yet part of the tested matrix.
+This release is prepared on Linux with Node 22 and pnpm 11. The release gate
+builds every package, typechecks the workspace, runs the full Vitest suite,
+builds the GitHub Pages documentation, runs the live Python, Pyodide,
+SWI-Prolog, and SWI-WASM adapter checks, and runs the benchmark suite before
+tagging.
 
-## What's new: Python interop
+The Hyperon experimental conformance run is unchanged from the previous
+host-import slice. Core/ST reports 431 passed, 77 failed, 60 expected failures,
+and 0 skipped. Full/ST with `fileio,json,random` reports 470 passed, 174 failed,
+4 expected failures, and 26 skipped. The remaining gaps are the tracked
+parser/directive, kernel, typing, stdlib, feature, and concurrency divergences,
+so this release should not be described as full Hyperon conformance.
 
-This release adds `@metta-ts/py`, an optional package that lets a MeTTa program call into Python. It carries two surfaces over one bridge: PeTTa's `py-call` and Hyperon's `py-atom` family.
+## What's new
 
-`py-call` dispatches on the head of its argument, the way PeTTa does. A bare name is a builtin, a dotted name is a module function, and a leading-dot name is a method on a live object. `py-eval` runs a Python expression string and `py-str` folds a MeTTa list into a Python string:
+### Browser Python and Prolog
+
+`@metta-ts/browser/host` composes optional host runtimes into the browser
+runner. A browser app can now run the same `.metta` program shape as Node:
 
 ```metta
-!(py-call (math.gcd 12 18))   ; 6
-!(py-eval "2 ** 10")          ; 1024
+!(import! &self "math.py")
+!(py-call (math.add 40 2))
+
+!(import! &self "facts.pl")
+!(prolog-call (edge alice $x))
 ```
 
-The `py-atom` family is Hyperon's surface over the same bridge. `py-atom` resolves a dotted path into an atom you can apply or read as a value, and `py-dot`, `py-list`, `py-tuple`, `py-dict`, and `py-chain` round it out:
+Python runs through `@metta-ts/py/pyodide`. Prolog runs through
+`@metta-ts/prolog/swi-wasm`. The base `@metta-ts/browser` package stays
+runtime-agnostic; Pyodide and SWI-WASM are only included when their adapter
+subpaths are imported.
 
-```metta
-!((py-atom operator.add) 40 2)   ; 42
-!(py-atom math.pi)               ; 3.141592653589793
+### Prolog interop package
+
+`@metta-ts/prolog` is now part of the release. The root package contains the
+generic bridge and MeTTa-side helper source. Runtime adapters live on subpaths:
+
+- `@metta-ts/prolog/swi-node` talks to a local `swipl` executable.
+- `@metta-ts/prolog/swi-wasm` runs through `swipl-wasm`.
+
+The supported surface follows PeTTa where the operation is a host Prolog bridge:
+`Predicate`, `callPredicate`, `assertaPredicate`, `assertzPredicate`,
+`retractPredicate`, `prolog-call`, `prolog-consult`, and
+`import_prolog_function`.
+
+MeTTa TS keeps Hyperon-style evaluation. There is no PeTTa mode and no curry
+mode. Plain `.pl` imports and predicate calls are host capabilities, not a
+second evaluator.
+
+### Runtime adapter split
+
+The Python and Prolog roots no longer import runtime backends from their package
+roots. Node-specific adapters are explicit subpaths:
+
+- `@metta-ts/py/pythonia`
+- `@metta-ts/prolog/swi-node`
+
+Browser adapters are explicit subpaths:
+
+- `@metta-ts/py/pyodide`
+- `@metta-ts/prolog/swi-wasm`
+
+That keeps default imports browser-clean and leaves optional dependencies behind
+their adapter subpaths.
+
+### eDSL host helpers
+
+`@metta-ts/edsl/py` and `@metta-ts/edsl/prolog` provide dependency-free builders
+for the host interop forms. They build ordinary atoms such as `py-call`,
+`py-atom`, `prolog-call`, `Predicate`, and `import_prolog_function`. They do
+not load Python, Prolog, Pyodide, SWI-WASM, or Node adapters.
+
+```ts
+import { vars } from "@metta-ts/edsl";
+import { pyCall } from "@metta-ts/edsl/py";
+import { prologCall } from "@metta-ts/edsl/prolog";
+
+const { x } = vars();
+
+pyCall("math.add", 40, 2); // (py-call (math.add 40 2))
+prologCall(["edge", "alice", x]); // (prolog-call (edge alice $x))
 ```
-
-Python runs in a separate CPython process and MeTTa talks to it over IPC, so the interpreter stays pure TypeScript and as fast as before. The package ships no Python dependency of its own: you pass in a bridge, the way `MeTTaGrapher` takes a GIF encoder. The reference bridge wraps [pythonia](https://www.npmjs.com/package/pythonia). Because a call crosses a process boundary the ops are asynchronous, so you run with `runAsync`, or from the command line with `metta-ts --py program.metta`.
-
-Value conversions follow PeTTa and its `janus` bridge: numbers both ways, a Python string to a Symbol, `True`/`False`/`None` to `(@ true)`/`(@ false)`/`(@ none)`, a list to an expression, and anything else to a live handle. A raised Python error becomes an `(Error <expr> <message>)` atom carrying the real Python message, and evaluation continues, where PeTTa aborts. Enabling this grants the program the host's Python, so it is opt-in and meant for trusted source only.
-
-Two differential oracles pin the behaviour. A byte-parity suite runs the same corpus through a live PeTTa checkout and through this package, comparing the result lines exactly. A second suite runs the `py-atom` surface through pip `hyperon`, comparing results on the numeric surface where the two marshallings coincide. Both are gated behind environment flags so the default suite needs no Python.
-
-The one change to the engine is that a grounded atom's executor may now return a `Promise`, which is what lets an applied `py-atom` run asynchronously. Nothing returned a Promise from that path before, so the synchronous behaviour is unchanged: the 270-assertion Hyperon oracle is byte-identical and the corpus microbench is within noise of 1.0.9.
-
-## Corpus benchmark
-
-The engine is unchanged for pure-MeTTa programs, so the PeTTa-corpus benchmark (107 shared programs, 97 both engines pass, median 2.01x, geomean 2.06x) is identical to 1.0.9. See [`packages/node/bench/RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md) for the full per-program table.
-
-## Major performance gains (since 1.0.0)
-
-The speed comes from general engine work:
-
-- an O(1)-stack reduce-loop trampoline and worklist, so deep recursion does not grow the JS stack;
-- deferred rule-RHS freshening with a head-shape candidate pre-filter;
-- Prolog-style clause indexing by head functor and by every ground-leaf argument, so a keyed query over a 1,000,000-atom space resolves in about 0.2 to 1.4 ms;
-- ground-atom type memoisation and an exact-match ground-fact index;
-- automatic tabling of pure functions, including ones defined at runtime, and moded (variant) tabling for non-ground pure calls;
-- a native-code compiler for the pure deterministic int/bool/tuple subset, with tail-recursion compiled to loops and higher-order specialisation;
-- worker-thread parallelism: `(once (hyperpose ...))` races branches across CPU cores on Node, and a `SharedArrayBuffer` flat matcher scans large knowledge bases in parallel;
-- the compiled clause-skeleton and JavaScript-codegen search for match-free nondeterministic groups.
-
-Every optimisation is verified byte-identical against the 270-assertion Hyperon oracle.
-
-## What is in this release
-
-- `@metta-ts/core` is the interpreter, parser, type system, pattern matching, standard library, and static analyzer, as a single ESM bundle. It passes all 270 assertions of Hyperon's oracle corpus, cross-checked against [LeaTTa](https://github.com/MesTTo/LeaTTa), the machine-checked (Lean 4) MeTTa semantics pinned to the same commit.
-- `@metta-ts/hyperon` is a TypeScript class API modeled on Python's `hyperon`, with a JavaScript interop layer (`js-atom`, `js-dot`, `js-list`, `js-dict`) that calls into the host runtime directly.
-- `@metta-ts/edsl` is a typed eDSL with term builders, special-form combinators, and a tagged-template surface.
-- `@metta-ts/py` is the new Python interop package, described above: `py-call` and the `py-atom` family over a caller-supplied pythonia bridge, opt-in and asynchronous.
-- `@metta-ts/node` has the `metta-ts` CLI, with `--check` for static analysis and `--py` for Python interop, plus file `import!` and the worker-thread parallel matcher.
-- `@metta-ts/browser` is a browser entry with an in-memory virtual file system for `import!`.
-- `@metta-ts/grapher` renders a MeTTa reduction as a node graph or a nested-block view, as static SVGs or an animated GIF, with a data-driven stylesheet for node size and colour.
-- `@metta-ts/das-client` and `@metta-ts/das-gateway` are an optional client to SingularityNET's Distributed AtomSpace, run end to end against a live cluster, with atom handles matching the AtomDB byte for byte.
 
 ## Install
 
 ```bash
-npm install @metta-ts/core        # the interpreter (works in any JS runtime)
-npm install -g @metta-ts/node     # the metta-ts CLI
-npm install @metta-ts/py pythonia # optional: call Python from MeTTa
+npm install @metta-ts/core
+npm install -g @metta-ts/node
+npm install @metta-ts/py pythonia
+npm install @metta-ts/prolog
 ```
 
-Run a Python-using program from the command line:
+Browser projects that use optional host runtimes should also install the runtime
+adapter they import:
 
 ```bash
-metta-ts --py program.metta       # needs pythonia installed and python3 on PATH
+npm install pyodide swipl-wasm
 ```
 
 ## Provenance
 
-- Semantics: [hyperon-experimental](https://github.com/trueagi-io/hyperon-experimental), pinned to commit `3f76dc4`.
-- Python interop surface: PeTTa's `py-call` and Hyperon's [`py-atom`](https://trueagi-io.github.io/hyperon-experimental/reference/atoms/) family, over [pythonia](https://www.npmjs.com/package/pythonia).
-- Verified spec and differential oracle: [LeaTTa](https://github.com/MesTTo/LeaTTa) (Lean 4).
-- Formal models: [Alloy](https://alloytools.org) specs in [`spec/`](spec/) for the matcher's deep loop rejection and the compiled search's occurs check.
+- Semantics: [hyperon-experimental](https://github.com/trueagi-io/hyperon-experimental).
+- Python interop surface: PeTTa's `py-call` and Hyperon's
+  [`py-atom`](https://trueagi-io.github.io/hyperon-experimental/reference/atoms/)
+  family.
+- Prolog interop surface: PeTTa-compatible predicate bridge forms where they do
+  not depend on PeTTa's evaluator.
+- Verified spec and differential oracle:
+  [LeaTTa](https://github.com/MesTTo/LeaTTa).
 - License: [MIT](LICENSE).

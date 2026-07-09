@@ -1,6 +1,6 @@
 {
   "name": "@metta-ts/node",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -13,16 +13,21 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./source": {
+      "types": "./dist/source.d.ts",
+      "default": "./dist/source.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts --format esm --dts --clean"
+    "build": "tsup src/index.ts src/cli.ts src/source.ts --format esm --dts --clean"
   },
   "dependencies": {
     "@metta-ts/core": "workspace:*",
+    "@metta-ts/prolog": "workspace:*",
     "@metta-ts/py": "workspace:*"
   },
   "author": "MesTTo",
@@ -34,7 +39,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "Node.js entry for MeTTa TS: the metta-ts CLI, file import!, and a worker-thread parallel matcher.",
+  "description": "Node.js entry for MeTTa TS: the metta-ts CLI, file import!, optional Python/Prolog interop, and a worker-thread parallel matcher.",
   "keywords": [
     "metta",
     "hyperon",

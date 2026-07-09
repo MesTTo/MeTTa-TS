@@ -8,7 +8,7 @@
 // its type signatures into scope (see `registerImportedTypes` in eval.ts), which is what makes the
 // type-directed argument handling work, e.g. `transaction`'s body is typed `Atom`, so it reaches the
 // transaction instruction unevaluated and is evaluated under snapshot/rollback.
-import { type Atom } from "./atom";
+import type { Atom } from "./atom";
 import { parseAll } from "./parser";
 import { standardTokenizer } from "./runner";
 
@@ -17,37 +17,137 @@ export const CONCURRENCY_MODULE_SRC = `
   (: transaction (-> Atom %Undefined%))
 `;
 
-/** The `curry` module: PeTTa-style partial application. Importing it sets the engine's curry flag (see
- *  the import! handler), so a symbol-headed call applied to fewer arguments than the function's arity
- *  reduces to `(partial fn (args))`. This module supplies the rules that *apply* such a closure (append
- *  the new arguments and re-evaluate the now-fuller call, which re-curries if still short), plus the
- *  same under-application handling for |-> lambdas, whose head is an expression and so is not reached by
- *  the symbol-headed hook. Off unless imported, so the Hyperon oracle baseline is untouched. */
-export const CURRY_MODULE_SRC = `
-  (: partial (-> Atom Expression Atom))
+/** The `json` module: JSON encode/decode plus dict-space query helpers. */
+export const JSON_MODULE_SRC = `
+  (: dict-space (-> Expression Grounded))
+  (: json-encode (-> Atom String))
+  (: json-decode (-> String Atom))
+  (: get-keys (-> Grounded Atom))
+  (: get-value (-> Grounded Atom %Undefined%))
 
-  ; Apply a closure to further arguments: append them to the bound list, rebuild the call, evaluate it.
-  ; append is forced through its own let (cons-atom would otherwise take it as a literal subexpression),
-  ; and the rebuilt call is fully reduced with metta (eval is a single step), which re-curries if still
-  ; under-applied.
-  (= ((partial $f $bound) $a)
-     (let $args (append $bound ($a))
-       (let $call (cons-atom $f $args) (metta $call %Undefined% &self))))
-  (= ((partial $f $bound) $a $b)
-     (let $args (append $bound ($a $b))
-       (let $call (cons-atom $f $args) (metta $call %Undefined% &self))))
+  (@doc get-value
+    (@desc "Function takes space and key as input, checks if space contains key-value pairs in form of (key value) and returns value tied to the input key")
+    (@params (
+      (@param "Space")
+      (@param "Key")))
+    (@return "Value which tied to input key, empty if no such key in space"))
+  (= (get-value $dictspace $key) (unify $dictspace ($key $value) $value (empty)))
 
-  ; An under-applied |-> lambda (head is an expression, so the core hook does not see it) becomes a
-  ; partial closure over the lambda value; applying it later rebuilds the full application.
-  (= ((|-> ($p1 $p2) $body) $a1)
-     (partial (|-> ($p1 $p2) $body) ($a1)))
-  (= ((|-> ($p1 $p2 $p3) $body) $a1)
-     (partial (|-> ($p1 $p2 $p3) $body) ($a1)))
-  (= ((|-> ($p1 $p2 $p3) $body) $a1 $a2)
-     (partial (|-> ($p1 $p2 $p3) $body) ($a1 $a2)))
+  (@doc get-keys
+    (@desc "Function takes space and returns all keys from (<key> <value>) tuples in space")
+    (@params (
+      (@param "Space")))
+    (@return "All keys in the input space"))
+  (= (get-keys $dictspace)
+     (function
+       (chain (unify $dictspace ($key $value) $key Empty) $t (return $t)) ))
+
+  (@doc dict-space
+    (@desc "Function takes key-value pairs in form of expression as input, creates space and adds key-value pairs into it")
+    (@params (
+      (@param "Expression")))
+    (@return "Space"))
+
+  (@doc json-encode
+    (@desc "Function takes atom as an input and encodes it to json-string. Atom could be a string, number, expression, space and combination of those")
+    (@params (
+      (@param "Input atom")))
+    (@return "Json string"))
+
+  (@doc json-decode
+    (@desc "Function takes json string as an input and decodes it to the metta objects (list to expression, dictionary to space which will contain key-value pairs in form of (key value), string to string, number to number)")
+    (@params (
+      (@param "Json string")))
+    (@return "Metta object"))
 `;
 
 const moduleCache = new Map<string, Atom[]>();
+
+/** The `catalog` module: module-catalog management (list/update/clear), mirroring hyperon-experimental.
+ *  The operations are grounded (in builtins.ts) over a minimal in-memory catalog; this source supplies
+ *  their type signatures and documentation. */
+export const CATALOG_MODULE_SRC = `
+  (: catalog-list! (-> Symbol (->)))
+  (: catalog-update! (-> Symbol (->)))
+  (: catalog-clear! (-> Symbol (->)))
+
+  (@doc catalog-list!
+    (@desc "Lists the contents of all module catalogs that support the list method")
+    (@params ((@param "Name of the catalog to list, or all to list every available catalog")))
+    (@return "Unit atom"))
+  (@doc catalog-update!
+    (@desc "Updates the contents of all managed catalogs to the latest version of all modules")
+    (@params ((@param "Name of the catalog to update, or all to update every catalog")))
+    (@return "Unit atom"))
+  (@doc catalog-clear!
+    (@desc "Clears the contents of all managed catalogs")
+    (@params ((@param "Name of the catalog to clear, or all to clear every catalog")))
+    (@return "Unit atom"))
+`;
+
+/** The `fileio` module: opt-in host file IO for Node-like hosts. */
+export const FILEIO_MODULE_SRC = `
+  (: FileHandle Type)
+  (: file-open! (-> String String FileHandle))
+  (: file-read-to-string! (-> FileHandle String))
+  (: file-read-exact! (-> FileHandle Number String))
+  (: file-write! (-> FileHandle String (->)))
+  (: file-seek! (-> FileHandle Number (->)))
+  (: file-get-size! (-> FileHandle Number))
+
+  (@doc file-open!
+    (@desc "Function takes path to the file and open options r, w, c, a, t, both in form of string, creates filehandle and returns it")
+    (@params (
+      (@param "Filepath string atom")
+      (@param "Open options string atom: r read, w write, c create if missing, a append to file, t truncate file")))
+    (@return "Filehandle or error if combination of path and open options is wrong, for example file does not exist and no c option, or rc option provided since c demands w"))
+
+  (@doc file-read-to-string!
+    (@desc "Function takes filehandle provided by file-open! reads its content from current cursor place till the end of file and returns content in form of string.")
+    (@params (
+      (@param "Filehandle")))
+    (@return "File's content"))
+
+  (@doc file-write!
+    (@desc "Function takes filehandle provided by file-open!, content to be written string atom and puts content into file associated with filehandle")
+    (@params (
+      (@param "Filehandle")
+      (@param "Content string atom")))
+    (@return "Unit atom"))
+
+  (@doc file-seek!
+    (@desc "Function takes filehandle provided by file-open! and desired cursor position number and sets cursor to provided position")
+    (@params (
+      (@param "Filehandle")
+      (@param "Desired cursor position number")))
+    (@return "Unit atom"))
+
+  (@doc file-read-exact!
+    (@desc "Function takes filehandle provided by file-open! and desired number of bytes to read number, reads content of file from current cursor position and returns it in form of string")
+    (@params (
+      (@param "Filehandle")
+      (@param "Number of bytes to read")))
+    (@return "File's content"))
+
+  (@doc file-get-size!
+    (@desc "Function takes filehandle provided by file-open! and returns size of file")
+    (@params (
+      (@param "Filehandle")))
+    (@return "Size of file"))
+`;
+
+/** The `git` module: opt-in host git imports for Node-like hosts. */
+export const GIT_MODULE_SRC = `
+  (: GitImportOp Type)
+  (: git-import! (-> String (->)))
+  (: git-import! GitImportOp)
+
+  (@doc git-import!
+    (@desc "Clones a git repository shallowly into the repos directory if it is not already present")
+    (@params (
+      (@param "Git repository URL or local path")))
+    (@return "Unit atom, or Error atom if the host git capability is unavailable or cloning fails"))
+`;
 
 function parseModule(src: string): Atom[] {
   return parseAll(src, standardTokenizer())
@@ -59,7 +159,10 @@ function parseModule(src: string): Atom[] {
 export function builtinModules(): Map<string, Atom[]> {
   if (moduleCache.size === 0) {
     moduleCache.set("concurrency", parseModule(CONCURRENCY_MODULE_SRC));
-    moduleCache.set("curry", parseModule(CURRY_MODULE_SRC));
+    moduleCache.set("json", parseModule(JSON_MODULE_SRC));
+    moduleCache.set("catalog", parseModule(CATALOG_MODULE_SRC));
+    moduleCache.set("fileio", parseModule(FILEIO_MODULE_SRC));
+    moduleCache.set("git", parseModule(GIT_MODULE_SRC));
   }
   return moduleCache;
 }
@@ -67,8 +170,7 @@ export function builtinModules(): Map<string, Atom[]> {
 /** A fresh imports map seeded with the built-in extension modules, optionally merged with caller
  *  imports. Built-ins are only applied when a program actually `(import! ...)`s them, so this never
  *  affects the Hyperon oracle baseline. Built-in module names are reserved: a caller-supplied module of
- *  the same name does NOT override the built-in (otherwise a disk file that happens to share a name, e.g.
- *  a corpus `curry.metta` that itself does `(import! &self curry)`, would shadow the built-in rules). */
+ *  the same name does NOT override the built-in. */
 export function withBuiltinModules(extra?: Map<string, Atom[]>): Map<string, Atom[]> {
   const out = new Map<string, Atom[]>(builtinModules());
   if (extra) for (const [k, v] of extra) if (!out.has(k)) out.set(k, v);

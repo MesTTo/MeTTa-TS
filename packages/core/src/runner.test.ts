@@ -3,10 +3,17 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { runProgram } from "./runner";
-import { format } from "./parser";
+import { runProgram, standardTokenizer } from "./runner";
+import { format, parseAll } from "./parser";
+import type { Atom } from "./atom";
 
 const q = (src: string, i = 0): string[] => runProgram(src)[i]!.results.map(format);
+const moduleAtoms = (src: string): Atom[] =>
+  parseAll(src, standardTokenizer())
+    .filter((top) => !top.bang)
+    .map((top) => top.atom);
+const lastWithImports = (src: string, imports: Map<string, Atom[]>): string[] =>
+  runProgram(src, 100_000, imports).at(-1)!.results.map(format);
 
 describe("runner + stdlib prelude", () => {
   it("stdlib if reduces", () => {
@@ -37,18 +44,127 @@ describe("runner + stdlib prelude", () => {
     expect(r[6]!.results.map(format)).toEqual([]); //   ... so (bar (g)) is not stored
   });
 
+  it("remove-atom hides static &self rules and runtime add-atom can define the function again", () => {
+    const r = runProgram(`
+      (= (function1) OK)
+      !(remove-atom &self (= (function1) OK))
+      !(let $x (function1) (repr $x))
+      !(collapse (match &self (= (function1) $x) $x))
+      !(add-atom &self (= (function1) (OK)))
+      !(let $x (function1) (repr $x))
+      !(collapse (match &self (= (function1) $x) $x))
+    `);
+
+    expect(r[1]!.results.map(format)).toEqual(['"(function1)"']);
+    expect(r[2]!.results.map(format)).toEqual(["(,)"]);
+    expect(r[4]!.results.map(format)).toEqual(['"(OK)"']);
+    expect(r[5]!.results.map(format)).toEqual(["(, (OK))"]);
+  });
+
+  it("remove-atom deletes runtime &self rules from the function index", () => {
+    const r = runProgram(`
+      !(add-atom &self (= (dyn) old))
+      !(dyn)
+      !(remove-atom &self (= (dyn) old))
+      !(dyn)
+      !(collapse (match &self (= (dyn) $x) $x))
+    `);
+
+    expect(r[1]!.results.map(format)).toEqual(["old"]);
+    expect(r[3]!.results.map(format)).toEqual(["(dyn)"]);
+    expect(r[4]!.results.map(format)).toEqual(["(,)"]);
+  });
+
   it("cons-atom requires an expression tail (does not wrap a non-expression)", () => {
     expect(q("!(cons-atom a (b c))")).toEqual(["(a b c)"]);
-    // a non-expression tail is not silently wrapped into (a b); the call is left unreduced
-    expect(q("!(cons-atom a b)")).toEqual(["(cons-atom a b)"]);
+    expect(q("!(case (cons-atom a b) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (cons-atom a) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+  });
+
+  it("stdlib bad-argument errors are catchable by case", () => {
+    expect(q("!(case (decons-atom ()) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (size-atom 5) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (=alpha 1) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (intersection-atom (a b) c) (((Error $a $c) caught) ($_ other)))")).toEqual([
+      "caught",
+    ]);
+    expect(q("!(case (== 1) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (unquote) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (if-equal 1) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (size-atom) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+  });
+
+  it("car-atom reports Hyperon's empty-expression error text", () => {
+    expect(q("!(car-atom ())")).toEqual([
+      '(Error (car-atom ()) "car-atom expects a non-empty expression as an argument")',
+    ]);
+  });
+
+  it("random-int reports RangeIsEmpty for Hyperon's generator form", () => {
+    const r = runProgram(`
+      !(import! &self random)
+      !(case (random-int &rng 5 5)
+        (((Error $sym RangeIsEmpty) is-range-empty)
+         ($_ other)))
+    `);
+    expect(r[0]!.results.map(format)).toEqual(["()"]);
+    expect(r[1]!.results.map(format)).toEqual(["is-range-empty"]);
   });
 
   it("get-type-space consults the named space's type declarations", () => {
     const r = runProgram(`
       !(add-atom &kb (: Foo Bar))
       !(get-type-space &kb Foo)
+      !(bind! &s (new-space))
+      !(add-atom &s (: y Foo))
+      !(get-type-space &s y)
     `);
     expect(r[1]!.results.map(format)).toEqual(["Bar"]);
+    expect(r[4]!.results.map(format)).toEqual(["Foo"]);
+  });
+
+  it("evalc uses the explicit space for equation lookup only", () => {
+    const r = runProgram(`
+      (= (bar) 7)
+      !(bind! &s (new-space))
+      !(add-atom &s (= (bar) 42))
+      !(evalc (bar) &s)
+      !(evalc (bar) &self)
+      !(evalc (if True yes no) &s)
+      !(evalc (context-space) &s)
+    `);
+    expect(r[1]!.results.map(format)).toEqual(["()"]);
+    expect(r[2]!.results.map(format)).toEqual(["42"]);
+    expect(r[3]!.results.map(format)).toEqual(["7"]);
+    expect(r[4]!.results.map(format)).toEqual(["(evalc (if True yes no) &s)"]);
+    expect(r[5]!.results.map(format)).toEqual(["&self"]);
+  });
+
+  it("deduplicates repeated type declarations in get-type results", () => {
+    expect(q("!(get-type BadType)")).toEqual(["(-> Type Type ErrorDescription)"]);
+    expect(q("!(get-type IncorrectNumberOfArguments)")).toEqual(["ErrorDescription"]);
+  });
+
+  it("reports undefined type for reducible user equations without declarations", () => {
+    const r = runProgram(`
+      (= (always-true $x) True)
+      !(get-type (always-true 5))
+    `);
+    expect(r[0]!.results.map(format)).toEqual(["%Undefined%"]);
+  });
+
+  it("check-types exposes the interpreter application check without reducing the target", () => {
+    expect(q("!(check-types (car-atom 5))")).toEqual([
+      "(Error (car-atom 5) (BadArgType 1 Expression Number))",
+    ]);
+    expect(q('!(check-types (+ 1 "hi"))')).toEqual([
+      '(Error (+ 1 "hi") (BadArgType 2 Number String))',
+    ]);
+    expect(q("!(check-types (+ 1 2 3))")).toEqual(["(Error (+ 1 2 3) IncorrectNumberOfArguments)"]);
+    expect(q("!(check-types (+ 1 2))")).toEqual(["()"]);
+    expect(q("!(check-types (foo 1))")).toEqual(["()"]);
+    expect(q("!(check-types 5)")).toEqual(["()"]);
+    expect(q("!(get-type check-types)")).toEqual(["(-> Atom Atom)"]);
   });
 
   it("stdlib let* sequences bindings", () => {
@@ -60,8 +176,78 @@ describe("runner + stdlib prelude", () => {
     expect(q("!(== 2 2)")).toEqual(["True"]);
   });
 
+  it("tokenizes explicit-plus numeric literals as grounded atoms", () => {
+    expect(q("!(get-metatype +3)")).toEqual(["Grounded"]);
+    expect(q("!(get-metatype +3.5)")).toEqual(["Grounded"]);
+    expect(q("!(get-metatype +1e2)")).toEqual(["Grounded"]);
+    expect(q("!(get-metatype +1.5e-2)")).toEqual(["Grounded"]);
+  });
+
+  it("uses Hyperon numeric equality for int-float promotion and NaN", () => {
+    expect(q("!(unify 1 1.0 promoted not-promoted)")).toEqual(["promoted"]);
+    expect(q("!(== 1 1.0)")).toEqual(["True"]);
+    expect(q("!(== 1.0 1)")).toEqual(["True"]);
+    expect(q("!(let $nan (/ 0.0 0.0) (== $nan $nan))")).toEqual(["False"]);
+    expect(q("!(let $nan (/ 0.0 0.0) (< $nan 1.0))")).toEqual(["False"]);
+    expect(q("!(let $nan (/ 0.0 0.0) (<= $nan 1.0))")).toEqual(["False"]);
+    expect(q("!(let $nan (/ 0.0 0.0) (>= $nan 1.0))")).toEqual(["False"]);
+    expect(q("!(let $nan (/ 0.0 0.0) (isnan-math $nan))")).toEqual(["True"]);
+  });
+
+  it("explicit eval keeps an unreduced application like LeaTTa", () => {
+    expect(q("!(eval foo)")).toEqual(["(eval foo)"]);
+    expect(q("!(eval 42)")).toEqual(["(eval 42)"]);
+    expect(q("!(eval NotReducible)")).toEqual(["(eval NotReducible)"]);
+  });
+
+  it("explicit eval preserves nested unreduced eval as data", () => {
+    expect(q("!(eval (eval 5))")).toEqual(["(eval (eval 5))"]);
+  });
+
+  it("does not treat a double-bang word as a query", () => {
+    expect(runProgram("!!foo")).toEqual([]);
+  });
+
+  it("keeps bang-prefixed words as data inside a query expression", () => {
+    const out = runProgram(`
+      !(bind! &scratch (new-space))
+      !(add-atom &scratch !foo)
+      !(match &scratch $x $x)
+    `).map((r) => r.results.map(format));
+    expect(out).toEqual([["()"], ["()"], ["!foo"]]);
+  });
+
+  it("surfaces LeaTTa Empty results from switch", () => {
+    expect(q("!(switch foo ((1 a) (2 b)))")).toEqual(["Empty"]);
+    expect(q("!(switch foo ((foo Empty)))")).toEqual(["Empty"]);
+    expect(q("!(switch foo ((foo bar)))")).toEqual(["bar"]);
+  });
+
+  it("keeps Empty in result bags like LeaTTa", () => {
+    expect(q("! Empty")).toEqual(["Empty"]);
+    expect(q("!(superpose (Empty a))")).toEqual(["Empty", "a"]);
+    expect(q("!(collapse (superpose (Empty a)))")).toEqual(["(, Empty a)"]);
+    expect(q("!(unify a a Empty fail)")).toEqual(["Empty"]);
+    expect(q("!(unify a b then Empty)")).toEqual(["Empty"]);
+    expect(
+      q(`
+        !(chain (collapse-bind (superpose ((unify $y a Empty $y)
+                                           (unify $y b Empty $y))))
+                $bs
+                (done $bs))
+      `),
+    ).toEqual(["(done ((Empty ())))", "(done ((a ())))"]);
+  });
+
   it("sequential: a definition is visible to a later query", () => {
     const src = "(= (f $x) (* $x $x))\n!(f 7)";
     expect(q(src)).toEqual(["49"]);
+  });
+
+  it("import! resolves bare symbols and PeTTa library module references", () => {
+    const imports = new Map([["mymod", moduleAtoms("(= (myfn $x) (* $x 10))")]]);
+    expect(lastWithImports("!(import! &self mymod)\n!(myfn 5)", imports)).toEqual(["50"]);
+    expect(lastWithImports('!(import! &self "mymod")\n!(myfn 5)', imports)).toEqual(["50"]);
+    expect(lastWithImports("!(import! &self (library mymod))\n!(myfn 5)", imports)).toEqual(["50"]);
   });
 });

@@ -8,7 +8,8 @@
 //
 // Run it (after `pnpm build`, and with python3 on your PATH): npx tsx examples/python-interop.ts
 import { MeTTa } from "@metta-ts/hyperon";
-import { registerPyInterop, pythoniaBridge } from "@metta-ts/py";
+import { registerPyInterop } from "@metta-ts/py";
+import { pythoniaBridge } from "@metta-ts/py/pythonia";
 import { python } from "pythonia";
 
 const m = new MeTTa();

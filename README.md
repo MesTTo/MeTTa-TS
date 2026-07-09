@@ -1,6 +1,6 @@
 # MeTTa TS
 
-A pure-TypeScript implementation of **MeTTa** (Meta Type Talk), the OpenCog Hyperon language. It runs anywhere TypeScript runs: the browser, Node, Deno, Bun, edge and serverless functions, and inside TypeScript-based AI agents. No native addons, no WASM, no Rust.
+A pure-TypeScript implementation of **MeTTa** (Meta Type Talk), the OpenCog Hyperon language. The core engine runs anywhere TypeScript runs: the browser, Node, Deno, Bun, edge and serverless functions, and inside TypeScript-based AI agents. No native addons, no required WASM, no Rust.
 
 <p align="center">
   <img src="website/public/recursion.gif" width="840" alt="The factorial (fact 5) reducing to 120, played side by side as a node graph and as nested blocks in MeTTaGrapher" />
@@ -21,7 +21,8 @@ Other packages, add as needed:
 npm install @metta-ts/hyperon     # a Python-hyperon-style class API
 npm install @metta-ts/node        # CLI + file import! + a parallel matcher
 npm install @metta-ts/browser     # web entry + in-memory virtual file system
-npm install @metta-ts/py          # call Python (py-call / py-atom) via pythonia
+npm install @metta-ts/py          # optional Python interop: pythonia or Pyodide
+npm install @metta-ts/prolog      # optional Prolog interop: SWI native or SWI-WASM
 ```
 
 For the command-line runner, install `@metta-ts/node` globally (or use `npx`):
@@ -158,6 +159,65 @@ db.call.fact(5); // [120]
 const factorial = db.import<[number], number>("fact"); // typed callable, factorial(6) === 720
 ```
 
+The eDSL also has dependency-free helper subpaths for optional host interop:
+`@metta-ts/edsl/py` builds `py-call`, `py-atom`, and collection forms, while
+`@metta-ts/edsl/prolog` builds `prolog-call`, `Predicate`, and
+`import_prolog_function`. These helpers only build atoms. You still opt into the
+runtime through `@metta-ts/py` or `@metta-ts/prolog`.
+
+```ts
+import { vars } from "@metta-ts/edsl";
+import { pyCall } from "@metta-ts/edsl/py";
+import { prologCall } from "@metta-ts/edsl/prolog";
+
+const { x } = vars();
+
+pyCall("math.add", 40, 2); // (py-call (math.add 40 2))
+prologCall(["edge", "alice", x]); // (prolog-call (edge alice $x))
+```
+
+## Python and Prolog interop
+
+Host interop is explicit. A normal MeTTa run never loads Python or Prolog. When
+you pass a host adapter, MeTTa source can import host files and call them through
+ordinary MeTTa atoms.
+
+Node:
+
+```bash
+metta-ts --py program.metta       # needs pythonia and python3
+metta-ts --prolog program.metta   # needs swipl on PATH
+```
+
+Browser:
+
+```ts
+import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
+import { createPyodideInterop } from "@metta-ts/py/pyodide";
+import { createSwiWasmInterop } from "@metta-ts/prolog/swi-wasm";
+
+const files = new Map([
+  ["math.py", "def add(a, b):\n    return a + b\n"],
+  ["facts.pl", "edge(alice, bob).\nedge(alice, mars).\n"],
+]);
+const loadText = createBrowserTextLoader({ files, baseUrl: import.meta.url });
+const runner = createBrowserRunner({
+  files,
+  interops: [await createPyodideInterop({ loadText }), await createSwiWasmInterop({ loadText })],
+});
+
+await runner.run(`
+  !(import! &self "math.py")
+  !(py-call (math.add 40 2))
+  !(import! &self "facts.pl")
+  !(prolog-call (edge alice $x))
+`);
+```
+
+The Prolog surface follows PeTTa's `Predicate`, `callPredicate`, `prolog-call`,
+and `import_prolog_function` forms where they are independent of PeTTa's own
+evaluator. MeTTa TS does not add a PeTTa mode or a curry mode.
+
 More runnable examples are in [`examples/`](examples/): [`quickstart.ts`](examples/quickstart.ts), [`grounded-ops.ts`](examples/grounded-ops.ts), [`async.ts`](examples/async.ts), [`edsl.ts`](examples/edsl.ts), plus `.metta` source files. Run one with `npx tsx examples/quickstart.ts`.
 
 ## Connecting to a Distributed AtomSpace
@@ -191,7 +251,10 @@ A faithful port of hyperon-experimental's minimal interpreter (the nondeterminis
 
 Beyond the core: transactions, async evaluation, concurrency primitives (`par`, `race`, `once`, `hyperpose`, `with-mutex`), clause indexing that scales matching to millions of atoms, a flat interned knowledge base with a worker-thread parallel matcher, and a JavaScript interop layer (`js-atom`, `js-dot`, `js-list`, `js-dict`) that calls into the host runtime directly.
 
-The whole thing is pure TypeScript. The core builds to a single ESM bundle (~23 KB gzipped) that runs in Node and the browser with no native addon and no WASM.
+The language engine is pure TypeScript. The core builds to a single ESM bundle
+(~23 KB gzipped) that runs in Node and the browser with no native addon and no
+required WASM. Optional host adapters are separate packages: Pyodide and
+SWI-WASM are only pulled into browser bundles that import their adapter subpaths.
 
 ```bash
 pnpm install
@@ -202,19 +265,20 @@ node packages/node/dist/cli.js examples/factorial.metta
 
 ## Packages
 
-| Package                                       | What it is                                                                                                 |
-| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| [`@metta-ts/core`](packages/core)             | The interpreter, parser, type system, and standard library. Zero platform dependencies.                    |
-| [`@metta-ts/hyperon`](packages/hyperon)       | A TypeScript class API over the core, modeled on Python's `hyperon`.                                       |
-| [`@metta-ts/edsl`](packages/edsl)             | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template.                  |
-| [`@metta-ts/node`](packages/node)             | The `metta-ts` CLI, file `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher.              |
-| [`@metta-ts/browser`](packages/browser)       | Browser entry point with an in-memory virtual file system for `import!`.                                   |
-| [`@metta-ts/py`](packages/py)                 | Optional Python interop: PeTTa's `py-call` and Hyperon's `py-atom` over a caller-supplied pythonia bridge. |
-| [`@metta-ts/das-client`](packages/das-client) | Optional client to SingularityNET's Distributed AtomSpace via a Connect gateway.                           |
+| Package                                       | What it is                                                                                    |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| [`@metta-ts/core`](packages/core)             | The interpreter, parser, type system, and standard library. Zero platform dependencies.       |
+| [`@metta-ts/hyperon`](packages/hyperon)       | A TypeScript class API over the core, modeled on Python's `hyperon`.                          |
+| [`@metta-ts/edsl`](packages/edsl)             | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template.     |
+| [`@metta-ts/node`](packages/node)             | The `metta-ts` CLI, file `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher. |
+| [`@metta-ts/browser`](packages/browser)       | Browser entry point with an in-memory virtual file system for `import!`.                      |
+| [`@metta-ts/py`](packages/py)                 | Optional Python interop: PeTTa's `py-call` and Hyperon's `py-atom`, over pythonia or Pyodide. |
+| [`@metta-ts/prolog`](packages/prolog)         | Optional Prolog interop: PeTTa-compatible predicate calls over SWI-Prolog or SWI-WASM.        |
+| [`@metta-ts/das-client`](packages/das-client) | Optional client to SingularityNET's Distributed AtomSpace via a Connect gateway.              |
 
 ## Performance
 
-Pure TypeScript throughout, no escape to native code. The interpreter uses a precomputed-ground short-circuit, structural sharing in substitution, a cons-list instruction stack, and Prolog-style clause indexing (by head functor and by every ground-leaf argument position). A functor-and-argument-keyed query over a 1,000,000-atom knowledge base resolves in about 0.2 to 1.4 ms. See [`packages/node/bench/RESULTS.md`](packages/node/bench/RESULTS.md) for the full benchmark log.
+The pure-MeTTa path stays TypeScript throughout, with no escape to native code. The interpreter uses a precomputed-ground short-circuit, structural sharing in substitution, a cons-list instruction stack, and Prolog-style clause indexing (by head functor and by every ground-leaf argument position). A functor-and-argument-keyed query over a 1,000,000-atom knowledge base resolves in about 0.2 to 1.4 ms. See [`packages/node/bench/RESULTS.md`](packages/node/bench/RESULTS.md) for the full benchmark log.
 
 ### Head-to-head with PeTTa
 
@@ -261,6 +325,7 @@ The last holdouts fell in order. `permutations` is a 28-relation conjunctive `(l
 
 - **Semantics:** [hyperon-experimental](https://github.com/trueagi-io/hyperon-experimental), pinned to commit `3f76dc4`.
 - **Verified spec and differential oracle:** [LeaTTa](https://github.com/MesTTo/LeaTTa) (Lean 4).
+- **Host interop surfaces:** PeTTa-compatible Python and Prolog call forms where they do not depend on PeTTa's evaluator.
 - **Distributed AtomSpace:** optional client to SingularityNET DAS via a Connect gateway (Node), reachable from the browser.
 
 ## License

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { sym, variable, expr, gint, metaType, atomEq, type Atom } from "./atom";
+import { sym, variable, expr, gint, gfloat, metaType, atomEq, type Atom } from "./atom";
 
 describe("atom constructors", () => {
   it("interns symbols to reference identity", () => {
@@ -23,6 +23,8 @@ describe("atom constructors", () => {
     expect(atomEq(expr([sym("a")]), expr([sym("b")]))).toBe(false);
     expect(atomEq(gint(1), gint(1))).toBe(true);
     expect(atomEq(gint(1), gint(2))).toBe(false);
+    expect(atomEq(gint(1), gfloat(1))).toBe(true);
+    expect(atomEq(gfloat(Number.NaN), gfloat(Number.NaN))).toBe(false);
   });
 
   it("every variant shares the same hidden-class field set", () => {

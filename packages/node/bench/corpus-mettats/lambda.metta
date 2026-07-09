@@ -6,9 +6,7 @@
 ; Adapted from PeTTa examples/lambda.metta for MeTTa-TS (Hyperon) conventions.
 ;
 ; The later tests partially apply a function ((myfunc 42)) and a lambda (((|-> ($x $y) ...) 43) 44),
-; which rely on currying. That is a PeTTa execution-model feature offered in @metta-ts as the opt-in
-; `curry` module (core stays Hyperon-faithful).
-!(import! &self curry)
+; which rely on partial application.
 
 ;fake lambda (works in H-E MeTTa too):
 (: apply (-> Expression %Undefined% %Undefined%))

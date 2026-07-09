@@ -38,6 +38,10 @@ export {
   MeTTa,
   IncorrectArgumentError,
   standardTokenizer,
+  asyncOperationReturnToReduceResult,
+  type AsyncOperationEffect,
+  type AsyncOperationResult,
+  type AsyncOperationReturn,
 } from "./base";
 export { registerJsonModule, SpaceValue } from "./modules/json";
 export { registerCatalogModule, ModuleCatalog } from "./modules/catalog";

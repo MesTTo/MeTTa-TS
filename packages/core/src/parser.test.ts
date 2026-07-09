@@ -34,6 +34,49 @@ describe("parser", () => {
     expect(atoms[1]!.bang).toBe(true);
   });
 
+  it("keeps semicolons inside variable tokens", () => {
+    expect(format(parse("$foo;bar", tk())!)).toBe("$foo;bar");
+  });
+
+  it("still treats semicolons after word tokens as comments", () => {
+    const atoms = parseAll("foo;bar\nbaz", tk()).map((top) => format(top.atom));
+    expect(atoms).toEqual(["foo", "baz"]);
+  });
+
+  it("keeps quotes inside word tokens after the first character", () => {
+    expect(format(parse('foo"bar"', tk())!)).toBe('foo"bar"');
+  });
+
+  it("does not split a top-level bang-prefixed quoted word into a query", () => {
+    const [top] = parseAll('!foo"bar"', tk());
+    expect(top!.bang).toBe(false);
+    expect(format(top!.atom)).toBe('!foo"bar"');
+  });
+
+  it("keeps a top-level bang-prefixed word as a symbol", () => {
+    const [top] = parseAll("!foo", tk());
+    expect(top!.bang).toBe(false);
+    expect(format(top!.atom)).toBe("!foo");
+  });
+
+  it("keeps a double-bang-prefixed word as a symbol", () => {
+    const [top] = parseAll("!!foo", tk());
+    expect(top!.bang).toBe(false);
+    expect(format(top!.atom)).toBe("!!foo");
+  });
+
+  it("still treats a top-level bang-prefixed string as a query", () => {
+    const [top] = parseAll('!"hello"', tk());
+    expect(top!.bang).toBe(true);
+    expect(format(top!.atom)).toBe('"hello"');
+  });
+
+  it("still treats a top-level bang-prefixed expression as a query", () => {
+    const [top] = parseAll("!(foo)", tk());
+    expect(top!.bang).toBe(true);
+    expect(format(top!.atom)).toBe("(foo)");
+  });
+
   it("round-trips a type declaration", () => {
     const src = "(: if (-> Bool Atom Atom $t))";
     expect(format(parse(src, tk())!)).toBe(src);

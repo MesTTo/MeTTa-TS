@@ -15,6 +15,11 @@ export function ease(t: number): number {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
+/** How long one reduction step's morph runs (ms) unless a host retimes it with setTraceDuration. Long
+ *  enough that a rewrite reads as one part flowing into the next at the default playback pace, and the
+ *  GIF exporters derive their frame counts from the same span, so an export glides like the live view. */
+export const DEFAULT_TRACE_MS = 550;
+
 /** A point along a gentle arc from (ax,ay) to (bx,by), bowed to the side, so a moving part curves into its
  *  place rather than sliding straight, the way an equation's terms rotate when it is rearranged. The bow is
  *  zero at both ends and capped so long moves do not swing wildly. */

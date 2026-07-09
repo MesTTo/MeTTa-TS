@@ -15,12 +15,12 @@ import type { Viewport } from "./viewport";
 import { colorFor, roleOf, lerpColor } from "./color";
 import { NODE_H, displayText, nodeWidth } from "./measure";
 import { variableLinks } from "./variables";
-import { ease, arcPoint, lerp } from "./anim";
+import { ease, arcPoint, lerp, DEFAULT_TRACE_MS } from "./anim";
 import { shapePoints, pointsAttr } from "./shapes";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PORT_R = 4;
-const TRACE_DURATION = 380; // ms, a step-through morph
+const TRACE_DURATION = DEFAULT_TRACE_MS; // ms, a step-through morph (the GIF exporters pace off the same span)
 const SHAPE_N = 40; // boundary points per node for the shape morph (divisible by 4 to keep diamond corners)
 
 /** A per-node evaluation label to show beneath it. */

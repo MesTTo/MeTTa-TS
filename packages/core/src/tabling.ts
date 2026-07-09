@@ -33,6 +33,7 @@ export const IMPURE_OPS: ReadonlySet<string> = new Set([
   "race",
   "once",
   "with-mutex",
+  "with_mutex",
   "superpose",
   "hyperpose",
   "collapse",
@@ -50,6 +51,7 @@ export const IMPURE_OPS: ReadonlySet<string> = new Set([
   "register-module!",
   "get-type",
   "get-type-space",
+  "check-types",
   "get-doc",
   "empty",
 ]);

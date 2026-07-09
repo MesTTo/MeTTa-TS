@@ -3,19 +3,19 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# LeaTTa as a secondary oracle: usage, divergences, and the improvements list
+# LeaTTa as the core oracle: usage, open gaps, and the improvements list
 
 LeaTTa (`/home/user/Dev/LeaTTa`, the user's own Lean 4 formalization of MeTTa, version 1.0.6) is a
-total, machine-checked minimal-MeTTa semantics that passes Hyperon's own 270-assertion oracle. We use
-its binary as a secondary differential oracle when settling a semantic question the 270-test Hyperon
-oracle does not already pin down, for example whether `superpose` evaluates its tuple argument as a
-cross-product.
+total, machine-checked `MettaHyperonFull` semantics that passes Hyperon's own 270-assertion oracle.
+We use its binary as the core differential oracle when settling evaluator behavior, for example
+whether `superpose` evaluates its tuple argument as a cross-product and how empty collapsed bags are
+represented.
 
-Priority order stays: real Hyperon (`hyperon-experimental`) first, the written spec second, LeaTTa
-third. LeaTTa is total and proved, but it models the *minimal* interpreter and is not a drop-in for the
-full Hyperon runtime, so where it is silent or less complete than Hyperon we defer to Hyperon. This
-file records what LeaTTa agrees with us on (which confirms a behaviour is Hyperon-faithful), where
-LeaTTa itself diverges, and how its "Improvements over Hyperon" list maps onto MeTTa-TS.
+Priority order for this branch is LeaTTa first, LeaTTa source second, Hyperon Experimental and the
+conformance corpus as regression evidence third, and PeTTa for compatibility and optimization ideas.
+PeTTa is not a semantic authority. This file records the decisions we have checked against LeaTTa, the
+open MeTTa-TS gaps that still need alignment, and how LeaTTa's "Improvements over Hyperon" list maps
+onto MeTTa-TS.
 
 ## Running the binary
 
@@ -34,39 +34,36 @@ reduces a MeTTaIL term. Two usage notes:
 - There is no `--help`. An unknown flag falls through to the default case and is evaluated as
   minimal-MeTTa source, so `--help` parses as a program and prints `[]`.
 
-## Output-format divergences (cosmetic, not semantic)
-
-These show up as text differences in a naive diff but carry no semantic weight. Normalize them before
-comparing.
+## Output conventions
 
 - Results are wrapped in `[...]`; multiple nondeterministic results are comma-joined inside, e.g.
   `!(superpose (1 2 3))` prints `[1, 2, 3]`.
 - A collapsed / tuple Expression is printed with a leading `,`: `!(collapse (match &self (foo $x) $x))`
-  prints `[(, 1 2 3 1)]` where MeTTa-TS prints `[(1 2 3 1)]`. The `,` is LeaTTa's printer marking an
-  Expression-as-data; the elements are identical.
-- The empty tuple / unit prints as `(,)`.
+  prints `[(, 1 2 3 1)]`. MeTTa-TS now uses the same visible comma-tuple convention for collapsed
+  nondeterministic bags.
+- The empty collapsed bag prints as `(,)`. The unit atom still prints as `()`.
 
-## Semantic divergence: LeaTTa does not arity-check
+## Open semantic target: arity no-reduce
 
 LeaTTa checks argument *types* but not argument *count*. A typed function or grounded op applied to the
-wrong number of arguments is left unreduced instead of erroring. MeTTa-TS matches Hyperon here (it
-errors), so this is a place LeaTTa is the one that diverges.
+wrong number of arguments is left unreduced instead of erroring. Older MeTTa-TS behavior and some
+Hyperon conformance YAML files expect `IncorrectNumberOfArguments`. Under the current authority order,
+those cases are implementation targets for a later LeaTTa-alignment slice unless a more specific
+LeaTTa source rule says otherwise.
 
-| Input | LeaTTa | MeTTa-TS / Hyperon |
+| Input | LeaTTa | Current MeTTa-TS / Hyperon-style behavior |
 | --- | --- | --- |
 | `(if True 1)` | `(if True 1)` (unreduced) | `(Error (if True 1) IncorrectNumberOfArguments)` |
-| `(+ 1)` | `(+ 1)` (unreduced) | `(Error (+ 1) IncorrectNumberOfArguments)` |
+| `(+ 1)` | `(+ 1)` (unreduced) | `(partial + (1))` |
 | `(+ 1 2 3)` | `(+ 1 2 3)` (unreduced) | `(Error (+ 1 2 3) IncorrectNumberOfArguments)` |
 | `(if 5 a b)` | `(Error (if 5 a b) (BadArgType 1 Bool Number))` | same |
 
-Hyperon's `if` is typed `(-> Bool Atom Atom $t)` (`stdlib.metta:511`), so `(if True 1)` is a 2-of-3
-arity error. The last row shows the contrast: a *type* mismatch on the right number of arguments is
-caught by both (`BadArgType`), only the *count* mismatch is missed by LeaTTa.
+The last row shows the contrast: a *type* mismatch on the right number of arguments is caught by both
+(`BadArgType`), while count mismatch is a no-reduce case in LeaTTa.
 
-## Agreements that confirm MeTTa-TS is Hyperon-faithful
+## Decisions already adopted
 
-Each of these was a question we settled by running LeaTTa; in every case LeaTTa produced the same
-result as MeTTa-TS, confirming the behaviour is Hyperon-correct and not a MeTTa-TS bug.
+Each of these was settled by running LeaTTa and is now a MeTTa-TS contract.
 
 - **`superpose` evaluates its tuple argument as a cross-product.** `!(collapse (superpose ((1 (superpose
   (a b))) (2 (superpose (c d))))))` gives `{a,b}x{c,d}` flattened, and `!(collapse (superpose (4
@@ -75,6 +72,15 @@ result as MeTTa-TS, confirming the behaviour is Hyperon-correct and not a MeTTa-
   `range` built from `(superpose ($K (range (+ $K 1) $N)))` streams `1..N` while Hyperon/LeaTTa/MeTTa-TS
   yield nothing once the `(empty)` base case empties the product. Same root as the `spaces2` note.
 - **Argument type errors agree** (`BadArgType` on `(if 5 a b)`, `get-type` results, `(== 1 1.0)` = `False`).
+- **Unresolved symbolic numeric arguments no-reduce.** `!(> 4 (+ ln 2))` and `!(> 4 (+ $x 2))` remain
+  unreduced when there is no incompatible declared type. With `(: ln LN)`, `!(== 4 (+ ln 2))` reports
+  `(Error (+ ln 2) (BadArgType 1 Number LN))`.
+- **`add-atom` evaluates its atom argument.** Storing `(color (+ 2 3) red)` stores `(color 5 red)`.
+  Use `(quote ...)` to store the literal expression.
+- **`Empty` is observable.** `! Empty`, `superpose Empty`, failed `unify` with `Empty`, and `switch`
+  no-match cases surface `Empty` where LeaTTa surfaces it.
+- **Explicit `eval` no-rule keeps the application.** `!(eval foo)` returns `(eval foo)`, not
+  `NotReducible`.
 - **Return-type-`Atom` inertness.** A function declared `(: f (-> Number Atom))` has its result left
   inert: `(f 1)` with `(= (f $x) (g $x))` stays `(g 1)`, it is not reduced to `(g 1)`'s value, whereas
   the same body under a `Number` return type evaluates through. This is LeaTTa improvement #1 (below),

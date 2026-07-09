@@ -1,6 +1,9 @@
 # @metta-ts/py
 
-Python interop for MeTTa TS. It gives a MeTTa program PeTTa's `py-call` surface and Hyperon's `py-atom` family, over the same TypeScript engine. Python runs in a separate CPython process and MeTTa talks to it over IPC, so the interpreter you already have stays pure TypeScript. The package has no Python dependency of its own: you pass in a bridge, the way `MeTTaGrapher` takes a GIF encoder. The reference bridge wraps [pythonia](https://www.npmjs.com/package/pythonia).
+Python interop for MeTTa TS. It gives a MeTTa program PeTTa's `py-call`
+surface and Hyperon's `py-atom` family, over the same TypeScript engine. The
+root package is runtime-agnostic: use `@metta-ts/py/pythonia` for Node CPython
+or `@metta-ts/py/pyodide` for browsers. A normal MeTTa run never loads Python.
 
 The Python ops are asynchronous, because a call crosses a process boundary, so you run programs with `runAsync`.
 
@@ -16,7 +19,8 @@ npm install @metta-ts/py pythonia
 
 ```ts
 import { MeTTa } from "@metta-ts/hyperon";
-import { registerPyInterop, pythoniaBridge } from "@metta-ts/py";
+import { registerPyInterop } from "@metta-ts/py";
+import { pythoniaBridge } from "@metta-ts/py/pythonia";
 import { python } from "pythonia";
 
 const metta = new MeTTa();
@@ -82,9 +86,38 @@ Three things diverge from PeTTa on purpose, and `py-atom` follows these too rath
 
 `metta-ts --py program.metta` runs a file with interop wired over pythonia. It needs `pythonia` installed and `python3` on the path. Without `--py`, the CLI never loads Python.
 
+## Browser Pyodide
+
+Use `@metta-ts/py/pyodide` when Python should run in the browser through
+Pyodide. The root package stays runtime-agnostic; importing the Pyodide subpath
+is the opt-in that loads the Pyodide package.
+
+```ts
+import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
+import { createPyodideInterop } from "@metta-ts/py/pyodide";
+
+const files = new Map([["math.py", "def add(a, b):\n    return a + b\n"]]);
+const loadText = createBrowserTextLoader({ files, baseUrl: import.meta.url });
+const py = await createPyodideInterop({ loadText });
+const runner = createBrowserRunner({ files, interops: [py] });
+
+const results = await runner.run(`
+  !(import! &self "math.py")
+  !(py-call (math.add 40 2))
+`);
+
+await runner.dispose();
+```
+
+For responsive applications, run the browser runner and Pyodide inside a Web
+Worker. The main-thread adapter is useful for simple pages and tests, but Python
+startup and long Python calls can block rendering.
+
 ## Testing
 
 The unit and property tests run with no Python, against an in-process fake bridge. Two suites reach a real interpreter and are gated:
 
 - `PY_LIVE=1 pnpm vitest run packages/py` runs the pythonia end-to-end tests and the byte-parity differential against a live PeTTa checkout (`PETTA_DIR`, default `/home/user/Dev/PeTTa`).
 - `HYPERON_LIVE=1 pnpm vitest run packages/py` runs the differential against pip `hyperon`. Set one up with `uv venv --python 3.11 .venv-hyperon && uv pip install -p .venv-hyperon hyperon` (override the interpreter with `HYPERON_PY`).
+- `PYODIDE_LIVE=1 pnpm vitest run packages/py/src/pyodide.test.ts`
+  starts real Pyodide and checks `.py` import plus `py-call`.

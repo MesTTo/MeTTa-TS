@@ -30,6 +30,14 @@ describe("parseAllSpanned", () => {
     expect(spanned.map((n) => format(n.atom))).toEqual(["(= (f $x) (+ $x 1))", "(f 2)"]);
   });
 
+  it("matches plain parser token boundaries for semicolon variables and quote words", () => {
+    const src = '(Test $foo;bar foo"bar")';
+    const spanned = parseAllSpanned(src, standardTokenizer());
+    const plain = parseAll(src, standardTokenizer());
+    expect(spanned.map((n) => format(n.atom))).toEqual(plain.map((t) => format(t.atom)));
+    expect(spanned.map((n) => format(n.atom))).toEqual(['(Test $foo;bar foo"bar")']);
+  });
+
   it("spans a string literal including its quotes", () => {
     const src = '(greet "hi")';
     const [top] = parseAllSpanned(src, standardTokenizer());
@@ -57,6 +65,33 @@ describe("parseCst — editor CST", () => {
     expect(src.slice(top!.bangSpan!.start, top!.bangSpan!.end)).toBe("!");
     expect(src.slice(top!.span.start, top!.span.end)).toBe("(f 2)");
     expect(format(top!.atom)).toBe("(f 2)");
+  });
+
+  it("keeps a bang-prefixed quoted word as a non-query word token", () => {
+    const src = '!foo"bar"';
+    const [top] = parseCst(src, standardTokenizer()).nodes;
+    expect(top!.bang).toBeUndefined();
+    expect(format(top!.atom)).toBe(src);
+  });
+
+  it("keeps a bang-prefixed word as a non-query word token", () => {
+    const src = "!foo";
+    const [top] = parseCst(src, standardTokenizer()).nodes;
+    expect(top!.bang).toBeUndefined();
+    expect(format(top!.atom)).toBe(src);
+  });
+
+  it("still treats a bang-prefixed expression as a query", () => {
+    const [top] = parseCst("!(foo)", standardTokenizer()).nodes;
+    expect(top!.bang).toBe(true);
+    expect(format(top!.atom)).toBe("(foo)");
+  });
+
+  it("keeps a bang-prefixed string as a query string", () => {
+    const src = '!"hello"';
+    const [top] = parseCst(src, standardTokenizer()).nodes;
+    expect(top!.bang).toBe(true);
+    expect(format(top!.atom)).toBe('"hello"');
   });
 
   it("records open and close paren spans on an expression", () => {

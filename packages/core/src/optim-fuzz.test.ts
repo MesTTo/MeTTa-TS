@@ -44,6 +44,12 @@ function runAgg(src: string, on: boolean): string[][] {
   }
 }
 
+function tuplePayloadLength(a: Atom): number {
+  if (a.kind !== "expr") return 0;
+  const head = a.items[0];
+  return head?.kind === "sym" && head.name === "," ? a.items.length - 1 : a.items.length;
+}
+
 /** Compiled vs interpreted, with `St` threaded across the whole program so side effects accumulate. Returns
  *  the result atoms per query (for alpha comparison) and the final fresh-variable counter. */
 function runMode(src: string, compiled: boolean): { out: Atom[][]; counter: number } {
@@ -124,8 +130,7 @@ describe("count-aggregate differential (fast-check)", () => {
         const src = `${setup}${adds}\n!(collapse (match ${space} ${pat} ${pat}))\n!(length (collapse (match ${space} ${pat} ${pat})))`;
         const r = runProgram(src, FUEL);
         const collapsed = r[r.length - 2]!.results;
-        const truth =
-          collapsed.length === 1 && collapsed[0]!.kind === "expr" ? collapsed[0]!.items.length : 0;
+        const truth = collapsed.length === 1 ? tuplePayloadLength(collapsed[0]!) : 0;
         return Number(format(r[r.length - 1]!.results[0]!)) === truth;
       }),
       { numRuns: 1000 },

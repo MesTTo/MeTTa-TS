@@ -10,7 +10,7 @@
 // so a language server can keep offering features while the user is mid-edit.
 import { type Atom, expr } from "./atom";
 import { type Tokenizer } from "./tokenizer";
-import { isDelim, leafAtom, MAX_DEPTH, readStringAt } from "./parser";
+import { isBangQueryPrefixAt, isWordBodyDelim, leafAtom, MAX_DEPTH, readStringAt } from "./parser";
 
 export interface Span {
   readonly start: number;
@@ -165,14 +165,17 @@ export function parseCst(src: string, tk: Tokenizer): Cst {
     }
     // A top-level `!` prefixes the next form as a query (parser.ts's readTop), so mark it pending. Inside an
     // expression `!` is an ordinary word character, matching the plain reader.
-    if (ch === "!" && stack.length === 0 && bang === null) {
+    if (ch === "!" && stack.length === 0 && bang === null && isBangQueryPrefixAt(src, pos)) {
       bang = { start: pos, end: pos + 1 };
       pos++;
       continue;
     }
     const start = pos;
-    while (pos < src.length && !isDelim(src[pos]!)) pos++;
-    const word = src.slice(start, pos);
+    let word = "";
+    while (pos < src.length && !isWordBodyDelim(src[pos]!, word)) {
+      word += src[pos]!;
+      pos++;
+    }
     if (word.length === 0) {
       // `)` is the only non-whitespace delimiter reachable here and it is handled above; guard anyway so a
       // future delimiter cannot spin the loop.

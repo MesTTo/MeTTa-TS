@@ -7,7 +7,11 @@ SPDX-License-Identifier: MIT
 
 MeTTa TS is a pure-TypeScript implementation of **MeTTa** (Meta Type Talk), the language of the OpenCog Hyperon project. MeTTa is a multi-paradigm language for computing over knowledge graphs: a program is a set of atoms living in a space, and you compute by rewriting and matching those atoms. It mixes facts, rules, functional code, and types in one self-reflective system.
 
-What makes this implementation different is where it runs. Every other MeTTa lives behind a native or WASM boundary: Rust (hyperon-experimental, MORK), Prolog (PeTTa, MeTTaLog), the JVM (JETTA), or Python (the reference bindings). MeTTa TS is written in TypeScript and runs wherever TypeScript runs, with nothing to compile and nothing native to install. You can import it into a web page, a serverless function, or a TypeScript AI agent and start evaluating MeTTa immediately.
+What makes this implementation different is where it runs. Every other MeTTa lives behind a native or WASM boundary: Rust (hyperon-experimental, MORK), Prolog (PeTTa, MeTTaLog), the JVM (JETTA), or Python (the reference bindings). The MeTTa TS engine is written in TypeScript and runs wherever TypeScript runs, with nothing to compile and nothing native to install. You can import it into a web page, a serverless function, or a TypeScript AI agent and start evaluating MeTTa immediately.
+
+When you do want another host language, you opt in explicitly. Python and
+Prolog adapters plug into the same evaluator through `py-call`, `prolog-call`,
+and `import!`, but they do not create a second MeTTa mode.
 
 For the language itself, the official home is [metta-lang.dev](https://metta-lang.dev). Start there: its [Learn MeTTa](https://metta-lang.dev/docs/learn/learn.html) tutorials are the canonical introduction, and the Learn track in these docs follows them closely.
 

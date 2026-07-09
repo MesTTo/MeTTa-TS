@@ -90,7 +90,7 @@ const editor = new MeTTaGrapher(document.getElementById("app")!, { source: "(+ 1
 | `stopTrace()` | `void` | leave the playthrough and return to the editable program |
 | `isTracing()` | `boolean` | whether a playthrough is on |
 | `traceInfo()` | `{ index, total } \| null` | position in the trace |
-| `setTraceDuration(ms)` | `void` | how long each step's morph takes, so a host's speed control can slow the animation itself |
+| `setTraceDuration(ms)` | `void` | how long each step's morph takes (default 550), so a host's speed control can slow the animation itself; GIF exports pace off the same span |
 | `uiState()` | object | a snapshot of view mode, tracing, and control availability, for mirroring into a host UI |
 
 ### Blocks view
@@ -108,7 +108,7 @@ const editor = new MeTTaGrapher(document.getElementById("app")!, { source: "(+ 1
 const blob = await editor.exportReductionGif(await import("gifenc"), { width: 720, holdMs: 260 });
 ```
 
-`exportReductionGif(encoder, opts?)` returns an `image/gif` `Blob` (or `null` if there is nothing to animate). `GifOptions` covers `width`, `framesPerStep`, `maxFrames`, and `holdMs` (how long to hold each settled state, which a host maps from its playback speed).
+`exportReductionGif(encoder, opts?)` returns an `image/gif` `Blob` (or `null` if there is nothing to animate). `GifOptions` covers `width`, `morphMs` (how long one step's morph spans; the editor fills it in with its current trace duration, so the GIF glides exactly like the live view), `framesPerStep` (an explicit frame count that overrides `morphMs`), `maxFrames`, and `holdMs` (how long to hold each settled state, which a host maps from its playback speed).
 
 ### Events and lifecycle
 

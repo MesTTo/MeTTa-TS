@@ -90,29 +90,32 @@ const noSucc: readonly string[] = [];
  *  overflow, and 3-colours each variable so it is visited once: O(vars + total value size), like Hyperon's
  *  bitset walk. `atomVars` is cached by object identity, so a DAG-shared value is scanned once. */
 export function hasLoop(b: Bindings): boolean {
-  let anyVal = false;
+  let needsGraph = false;
   for (const r of b) {
     if (r.tag === "eq") {
       if (r.x === r.y) return true;
     } else {
-      anyVal = true;
       if (r.a.kind === "var" && r.a.name === r.x) return true;
+      if (!r.a.ground) needsGraph = true;
     }
   }
-  if (!anyVal) return false;
+  if (!needsGraph) return false;
+  const vals = new Map<string, Atom>();
+  for (const r of b) if (r.tag === "val" && !vals.has(r.x)) vals.set(r.x, r.a);
   // 3-colour iterative DFS over the variable graph. A variable's successors are the distinct variables in
   // its bound value; a grey (on the current path) revisit is a back-edge, i.e. a cycle. color: 1 = grey
   // (on path), 2 = black (done); absent = white (unvisited).
   const color = new Map<string, 1 | 2>();
   const succ = (x: string): readonly string[] => {
-    const v = lookupVal(b, x);
+    const v = vals.get(x);
     return v === undefined || v.ground ? noSucc : atomVars(v);
   };
   const stack: Array<{ v: string; kids: readonly string[]; i: number }> = [];
-  for (const r of b) {
-    if (r.tag !== "val" || color.get(r.x) === 2) continue;
-    color.set(r.x, 1);
-    stack.push({ v: r.x, kids: succ(r.x), i: 0 });
+  for (const [x, a] of vals) {
+    if (a.ground) continue;
+    if (color.get(x) === 2) continue;
+    color.set(x, 1);
+    stack.push({ v: x, kids: succ(x), i: 0 });
     while (stack.length > 0) {
       const top = stack[stack.length - 1]!;
       if (top.i >= top.kids.length) {

@@ -16,6 +16,9 @@
     "types": "tsx types.ts",
     "js-interop": "tsx js-interop.ts",
     "python-interop": "tsx python-interop.ts",
+    "prolog-interop": "tsx prolog-interop.ts",
+    "browser-interop": "tsx browser-interop/smoke.ts",
+    "browser-interop:bundle-check": "node browser-interop/check-pure-bundle.mjs",
     "json-module": "tsx json-module.ts",
     "custom-matching": "tsx custom-matching.ts",
     "concurrency": "tsx concurrency.ts",
@@ -25,16 +28,21 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@metta-ts/browser": "workspace:*",
     "@metta-ts/core": "workspace:*",
     "@metta-ts/edsl": "workspace:*",
     "@metta-ts/grapher": "workspace:*",
     "@metta-ts/hyperon": "workspace:*",
     "@metta-ts/node": "workspace:*",
+    "@metta-ts/prolog": "workspace:*",
     "@metta-ts/py": "workspace:*",
+    "pyodide": "314.0.2",
     "pythonia": "^1.2.6",
+    "swipl-wasm": "8.0.3",
     "ws": "^7.5.10"
   },
   "devDependencies": {
+    "esbuild": "0.27.7",
     "tsx": "^4.19.2",
     "typescript": "^5.0.0"
   }

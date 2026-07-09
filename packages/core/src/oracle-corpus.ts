@@ -18,7 +18,8 @@ import type { QueryResult } from "./runner";
 
 export const ORACLE_CORPUS = resolve(process.cwd(), "corpus");
 
-// LeaTTa's 22 oracle files. c2_spaces_kb is an import target, not a test; f1_imports is excluded.
+// LeaTTa MettaHyperonFull's 22 oracle files. c2_spaces_kb is an import target, not a test;
+// f1_imports is excluded.
 export const ORACLE_FILES = [
   "a1_symbols",
   "a2_opencoggy",

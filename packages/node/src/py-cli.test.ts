@@ -8,20 +8,12 @@
 // needed for that one).
 import { describe, it, expect } from "vitest";
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
-import { join, dirname } from "node:path";
-import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { cliPath, mettaFixture } from "./cli-test-utils";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const CLI = join(here, "..", "dist", "cli.js");
-
-function fixture(content: string): string {
-  const dir = mkdtempSync(join(tmpdir(), "py-cli-"));
-  const f = join(dir, "p.metta");
-  writeFileSync(f, content);
-  return f;
-}
+const CLI = cliPath(import.meta.url);
+const fixture = (content: string): string => mettaFixture("py-cli-", content);
 
 const LIVE = process.env.PY_LIVE === "1";
 const d = LIVE ? describe : describe.skip;
@@ -40,6 +32,22 @@ d("metta-ts --py (live)", () => {
       [CLI, "--py", fixture("!((py-atom operator.add) 40 2)\n")],
       { timeout: 120_000 },
     ).toString();
+    expect(out).toContain("[42]");
+  });
+
+  it("loads PeTTa-style Python modules through import!", () => {
+    const file = fixture(`
+!(import! &self "py_import_fixture.py")
+!(py-call (py_import_fixture.add 40 2))
+`);
+    writeFileSync(
+      join(dirname(file), "py_import_fixture.py"),
+      "def add(a, b):\n    return a + b\n",
+    );
+    const out = execFileSync(process.execPath, [CLI, "--py", file], {
+      timeout: 120_000,
+    }).toString();
+    expect(out).toContain("[()]");
     expect(out).toContain("[42]");
   });
 });

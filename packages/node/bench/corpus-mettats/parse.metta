@@ -8,8 +8,7 @@
 !(test (parse "A") A)
 !(test (parse "(R A B)") (R A B))
 !(test (parse "(R A (S B C))") (R A (S B C)))
-; @metta-ts's parse returns the parsed atom as plain data, so a parsed call evaluates in the test's
-; actual position: (parse "(* 2 21)") gives (* 2 21), which reduces to 42. (PeTTa auto-quotes parse
-; output to hold it as data.) The expected side reduces the same way, so the test stays meaningful.
-!(test (parse "(* 2 21)") (* 2 21))
+; `parse` returns the parsed atom as data. `noeval` keeps a callable expression from reducing while the
+; test compares the parsed value.
+!(test (parse "(* 2 21)") (noeval (* 2 21)))
 !(test (parse "\"42\"") "42")

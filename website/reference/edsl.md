@@ -16,10 +16,14 @@ npm install @metta-ts/edsl
 ```ts
 type Term = Atom | Name | number | string | boolean | bigint | object | null | undefined;
 type Var<T = unknown> = VariableAtom & { __varType?: T };
-type Name = ((...args: Term[]) => ExpressionAtom) & { /* branded with its head symbol */ };
+type Name = ((...args: Term[]) => ExpressionAtom) & {
+  /* branded with its head symbol */
+};
 
 function names<K extends string = string>(): Record<K, Name>; // symbols + functors, minted per key
-function vars<T extends Record<string, unknown> = Record<string, unknown>>(): { [K in keyof T]: Var<T[K]> };
+function vars<T extends Record<string, unknown> = Record<string, unknown>>(): {
+  [K in keyof T]: Var<T[K]>;
+};
 
 function ground(x: Term): Atom; //          atoms pass through, a bare Name grounds to its symbol, JS values grounded
 function patternVars(atom: Atom): Var[]; // the free variables of a pattern (what query infers keys from)
@@ -73,7 +77,7 @@ function mAll(strings: TemplateStringsArray, ...values: Term[]): Atom[]; // seve
 function parseSource(src: string): Atom; //                                one atom from a plain string
 ```
 
-`m\`...\`` parses MeTTa source with `${...}` holes auto-grounded; it throws if the template is not exactly one atom (use `mAll` for several).
+`m\`...\``parses MeTTa source with`${...}`holes auto-grounded; it throws if the template is not exactly one atom (use`mAll` for several).
 
 ## The runner
 
@@ -116,3 +120,42 @@ type SourceRow<S extends string> = { [K in SourceVars<S>]: unknown }; // $-vars 
 ```
 
 `query` runs `match &self` and returns one row per match (keys inferred from the pattern, or typed by an explicit `vars` map). `q` does the same from a source string with the row keys extracted from the source's `$`-variables at compile time. `fn`/`fns`/`asyncFn` register plain typed functions (args auto-unwrapped, result auto-grounded); `op`/`asyncOp` give raw atom control. `call` and `import` call MeTTa functions back from TypeScript. Pass a schema to `mettaDB<Schema>()` to type all of these; both an `interface` and a `type` work.
+
+## Optional host interop builders
+
+The `@metta-ts/edsl/py` and `@metta-ts/edsl/prolog` subpaths build atoms for
+optional host runtimes. They do not import the runtime packages themselves.
+
+```ts
+// @metta-ts/edsl/py
+function pyCall(path: string, ...args: Term[]): ExpressionAtom; // (py-call (<path> ...args))
+function pyCall(spec: Term): ExpressionAtom; //                 (py-call <spec>)
+const pyEval: (source: Term) => ExpressionAtom; //              (py-eval source)
+const pyImport: (moduleOrPath: Term) => ExpressionAtom; //      (py-import module-or-path)
+function pyAtom(path: string | Term, type?: Term): ExpressionAtom;
+function pyDot(object: Term, attr: string | Term, type?: Term): ExpressionAtom;
+function pyList(items: readonly Term[] | Term): ExpressionAtom;
+function pyTuple(items: readonly Term[] | Term): ExpressionAtom;
+function pyDict(pairs: ReadonlyArray<readonly [Term, Term]> | Term): ExpressionAtom;
+function pyChain(items: readonly Term[] | Term): ExpressionAtom;
+```
+
+```ts
+// @metta-ts/edsl/prolog
+type PrologGoal = Term | readonly Term[];
+const prologCall: (goal: PrologGoal) => ExpressionAtom;
+const Predicate: (goal: PrologGoal) => ExpressionAtom;
+const callPredicate: (goal: PrologGoal) => ExpressionAtom;
+const assertaPredicate: (goal: PrologGoal) => ExpressionAtom;
+const assertzPredicate: (goal: PrologGoal) => ExpressionAtom;
+const retractPredicate: (goal: PrologGoal) => ExpressionAtom;
+const prologMatch: (goal: PrologGoal, template: Term) => ExpressionAtom;
+const prologFunction: (name: Term, args: readonly Term[] | Term) => ExpressionAtom;
+const importPrologFunction: (name: Term) => ExpressionAtom;
+const prologConsult: (path: Term) => ExpressionAtom;
+const importPrologFunctionsFromFile: (path: Term, names: readonly Term[] | Term) => ExpressionAtom;
+```
+
+Strings in Prolog goal arrays are treated as Prolog atoms, so
+`prologCall(["edge", "alice", x])` builds `(prolog-call (edge alice $x))`.
+Pass `ground("text")` when a Prolog string is required.

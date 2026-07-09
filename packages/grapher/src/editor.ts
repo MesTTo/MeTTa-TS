@@ -17,6 +17,7 @@ import { evaluateHead, loadProgram } from "./evaluate";
 import { completionsFor } from "./completions";
 import { reduceTrace } from "./reduce";
 import { withSilhouettes } from "./skeleton";
+import { DEFAULT_TRACE_MS } from "./anim";
 import { layout } from "./layout";
 import { BlockView } from "./block/view";
 import { type GifEncoderLib, type GifOptions } from "./block/gif";
@@ -508,9 +509,13 @@ export class MeTTaGrapher implements ControllerHost {
     this.showTraceStep();
   }
 
+  /** The live morph span, mirrored here so the GIF exporters pace their frames off what the screen plays. */
+  private traceMs = DEFAULT_TRACE_MS;
+
   /** How long each step's morph takes (ms). Lower it to speed the animation up, raise it to slow it down so
-   *  the reduction is easy to follow. */
+   *  the reduction is easy to follow. The GIF exporters default to the same span. */
   setTraceDuration(ms: number): void {
+    this.traceMs = Math.max(1, ms);
     this.renderer.setTraceDuration(ms);
   }
 
@@ -638,24 +643,31 @@ export class MeTTaGrapher implements ControllerHost {
   }
 
   /** Encode the current query's reduction as an animated GIF of the block view, using a caller-supplied
-   *  encoder (gifenc) so the package carries no GIF dependency. Returns null when there is no reduction. */
+   *  encoder (gifenc) so the package carries no GIF dependency. The morph pacing defaults to the live
+   *  trace duration, so the GIF plays what the screen plays. Returns null when there is no reduction. */
   async exportReductionGif(lib: GifEncoderLib, opts?: GifOptions): Promise<Blob | null> {
     const states = this.traceStates();
-    return states === null ? null : this.block.exportGif(states, lib, opts);
+    return states === null
+      ? null
+      : this.block.exportGif(states, lib, { morphMs: this.traceMs, ...opts });
   }
 
   /** Encode the current reduction as a GIF of the node-graph view alone (companion to the block GIF; stack
-   *  the two to show both). Returns null when there is nothing to animate. */
+   *  the two to show both). Paced like the live view. Returns null when there is nothing to animate. */
   async exportGraphReductionGif(lib: GifEncoderLib, opts?: GifOptions): Promise<Blob | null> {
     const states = this.traceStates();
-    return states === null ? null : graphReductionGif(states, lib, opts);
+    return states === null
+      ? null
+      : graphReductionGif(states, lib, { morphMs: this.traceMs, ...opts });
   }
 
   /** Export the current reduction as one GIF that plays it in the graph and the block views side by side.
-   *  Returns null when there is nothing to animate. */
+   *  Paced like the live view. Returns null when there is nothing to animate. */
   async exportSideBySideGif(lib: GifEncoderLib, opts?: GifOptions): Promise<Blob | null> {
     const states = this.traceStates();
-    return states === null ? null : this.block.exportSideBySideGif(states, lib, opts);
+    return states === null
+      ? null
+      : this.block.exportSideBySideGif(states, lib, { morphMs: this.traceMs, ...opts });
   }
 
   private readonly blockCbs = new Set<() => void>();
