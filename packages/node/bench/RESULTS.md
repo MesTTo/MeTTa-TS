@@ -5,14 +5,14 @@ Run: `pnpm bench` (builds core, then deopt-aware mitata).
 
 ## Hot paths (mitata)
 
-| benchmark | time/iter |
-|-----------|-----------|
-| `matchAtoms` symbol mismatch | ~9.5 ns |
-| `matchAtoms` nested, binds 2 vars | ~8.2 ns |
-| `match` over a 1000-atom space (functor-indexed) | ~6.3 µs |
-| `fib(15)` (~1.2k calls, interpreter) | ~18.1 ms |
-| stdlib load + `(+ 1 2)` | ~233 µs |
-| full 270-assertion oracle corpus | ~66 ms |
+| benchmark                                        | time/iter |
+| ------------------------------------------------ | --------- |
+| `matchAtoms` symbol mismatch                     | ~9.5 ns   |
+| `matchAtoms` nested, binds 2 vars                | ~8.2 ns   |
+| `match` over a 1000-atom space (functor-indexed) | ~6.3 µs   |
+| `fib(15)` (~1.2k calls, interpreter)             | ~18.1 ms  |
+| stdlib load + `(+ 1 2)`                          | ~233 µs   |
+| full 270-assertion oracle corpus                 | ~66 ms    |
 
 Detailed sections below are historical, each measured when its optimization landed (some on a Ryzen 9 9950X). The corpus head-to-head against PeTTa is in [`RESULTS-corpus.md`](RESULTS-corpus.md).
 
@@ -37,15 +37,16 @@ indexed by head functor at insert time (Prolog-style clause indexing): a functor
 variable-headed query still scans everything. Built once at `addAtomToEnv`, so it is free per query.
 
 Two levels: by **head functor**, and by **functor + argument position + value** for every ground-leaf
-argument (so a single huge relation is queryable by *any* key). A query picks the most selective bound
+argument (so a single huge relation is queryable by _any_ key). A query picks the most selective bound
 argument position; a fully-unbound (variable-headed) query scans everything.
 
 Measured:
+
 - `match (Parent $x Bob)` over a **1,000,000-atom** KB (diverse functors): **~0.5 ms** (skips the 1M
   unrelated-functor atoms).
 - `match (edge 500000 $y)` over **1,000,000** atoms that all share the `edge` functor:
   **~75 ms → ~1.4 ms** (~50x; the argument index jumps to the keyed row).
-- `match (edge $x 7)` over the same 1M (query by the *second* argument): **~152 ms → ~0.2 ms** (every
+- `match (edge $x 7)` over the same 1M (query by the _second_ argument): **~152 ms → ~0.2 ms** (every
   position is indexed, not just the first).
 - 1000-atom-space match bench: **~190 µs → ~64 µs (functor) → ~3.6 µs (first-arg)**.
 - full 270-assertion oracle: **~46 ms → ~22.5 ms** (~2x; the index also skips the ~130 prelude/stdlib
@@ -63,14 +64,15 @@ their share with plain reads (an immutable shared region is data-race-free). Res
 the single-threaded `FlatKB.match` (differential-tested).
 
 Measured (8 workers, AMD Ryzen 9 9950X, Node 22):
+
 - **Scan-bound, few results** — `(rec $x rare)` over **4,000,000** atoms (~4000 matches): single-thread
   ~175 ms → parallel **~111 ms (1.57x)**. The scan parallelises and little is marshalled back.
 - **Result-heavy** — a query matching ~285k of 2,000,000: single-thread ~130 ms → parallel ~253 ms
   (**0.5x, slower**). Returning hundreds of thousands of matches from workers costs more than the saved
   scan.
 
-So this is a **niche** tool, worth it only for a *large KB* scanned by a
-*non-selective* query whose *result set is small* (a needle in a haystack, a count). A keyed query is
+So this is a **niche** tool, worth it only for a _large KB_ scanned by a
+_non-selective_ query whose _result set is small_ (a needle in a haystack, a count). A keyed query is
 already ~constant-time via the in-memory argument index (above) — do not parallelise that. Node-first;
 the same Int32 layout ports to Web Workers + SAB under cross-origin isolation (COOP/COEP) later.
 
@@ -91,6 +93,7 @@ frequent; higher `refCost` prunes marginal patterns).
 
 Measured (`(obs <i> (kind road) (region north))` rows, two heavy subterms per fact, AMD Ryzen 9 9950X,
 Node 22, min of 3):
+
 - **10,000** facts: top-5 in **~13 ms**.
 - **100,000** facts: top-5 in **~113 ms**.
 - **1,000,000** facts (~9M subterm visits): top-5 in **~1.4 s**, correctly surfacing both
@@ -119,17 +122,32 @@ The table store uses structural token keys in a token trie, not recursive `forma
 
 Direct active variant re-entry promotes to local-linear completion. Non-cyclic calls keep exact ordered-bag memoization. Cyclic direct variants use canonical answer-set growth until a fixed point, with per-entry caps that return `TableResourceLimit` instead of growing without bound. This is not Picat-style answer subsumption and not a full SLG suspension engine.
 
+Completed and active tables share the default ceiling: 50,000 entries, 1,000,000 answers, 1,000,000 retained atom cells, 100,000 cells per entry, and 250,000 interner leaves. Completed tables are LRU-evictable. Active tables return `TableResourceLimit` if no bounded allocation remains.
+
 Measured by `node packages/node/bench/perf.mjs`, ours (in-process eval, warmed, Node v22, single core):
 
-| program | default engine |
-|---------|---------------:|
-| `fib(25)` | 1.5 ms |
-| `fib(28)` | 1.4 ms |
-| `fib(90)` exact value | 0.9 ms |
-| `factorial(100)` | 0.9 ms |
-| `ackermann(2,3)` | 0.7 ms |
+| program               | default engine |
+| --------------------- | -------------: |
+| `fib(25)`             |         1.5 ms |
+| `fib(28)`             |         1.4 ms |
+| `fib(90)` exact value |         0.9 ms |
+| `factorial(100)`      |         0.9 ms |
+| `ackermann(2,3)`      |         0.7 ms |
 
 The speedup is not "table everything." `fib` gets bounded table reuse because it has overlapping subproblems. `factorial` runs fast because the compiler keeps linear recursion off the table path.
+
+### Reported nondeterministic workloads
+
+`pnpm bench:nondeterminism` runs four query shapes reported by Patrick Hammer through PeTTa and MeTTa TS as subprocesses, then validates the actual result counts or embedded assertions. These are five-run medians from 2026-07-10 and include startup:
+
+| program                          |     PeTTa |  MeTTa TS | speedup |
+| -------------------------------- | --------: | --------: | ------: |
+| filtered `matespacefast` matches | 5738.1 ms | 3344.2 ms |   1.72x |
+| 22^4 `superpose` cross product   |  388.7 ms |  148.5 ms |   2.62x |
+| nondeterministic tabled `fib(7)` |  180.1 ms |   99.6 ms |   1.81x |
+| duplicate-heavy `TupleConcat`    |  178.8 ms |  101.1 ms |   1.77x |
+
+MeTTa TS uses its normal CLI evaluator for all four. The cross product still emits and validates all 234,256 results in order. A closed pure choice plan removes general binding allocation from that path. `unique-atom(collapse(...))` can retain first-seen choice answers or memoize a supported pure recurrence while it evaluates, but an ordinary `collapse` keeps exact order and multiplicity. Nested runtime-fact indexing and dead-result removal handle the two filtered-match shapes without changing a consumed match.
 
 ### Versus PeTTa (MeTTa-on-SWI-Prolog/WAM)
 
@@ -137,13 +155,13 @@ Current standing (2026-07-09): MeTTa TS is faster than PeTTa on **all 98** share
 
 PeTTa numbers are full wall-clock (`time sh run.sh`, including its MeTTa-to-Prolog translation). Startup baselines: swipl 6 ms, node 45 ms.
 
-| benchmark | PeTTa | ours |
-|-----------|-------|------|
-| naive `fib(25)` (PeTTa default) | 0.198 s | 1.5 ms eval (auto-tabled) |
-| naive `fib(30)` (PeTTa default) | 0.466 s | ~2 ms eval (auto-tabled) |
-| naive `fib(33)` (PeTTa default) | 1.378 s | ~2 ms eval (auto-tabled) |
+| benchmark                                 | PeTTa   | ours                                    |
+| ----------------------------------------- | ------- | --------------------------------------- |
+| naive `fib(25)` (PeTTa default)           | 0.198 s | 1.5 ms eval (auto-tabled)               |
+| naive `fib(30)` (PeTTa default)           | 0.466 s | ~2 ms eval (auto-tabled)                |
+| naive `fib(33)` (PeTTa default)           | 1.378 s | ~2 ms eval (auto-tabled)                |
 | tabled `fib(30)` (manual `!(tabled ...)`) | 0.160 s | ~2 ms eval (~50 ms total w/ node start) |
-| tabled `fib(90)` | 0.170 s | 0.9 ms eval |
+| tabled `fib(90)`                          | 0.170 s | 0.9 ms eval                             |
 
 Three honest readings:
 
@@ -159,20 +177,20 @@ This closes the per-call constant-factor gap tabling alone could not: the recurs
 
 Historical landing measurement (eval-only on a prebuilt environment, warmed, Node v22), compiled core on:
 
-| program | untabled interp | tabled interp | compiled |
-|---------|-----------------|---------------|----------|
-| `fib(25)` | 2513 ms | 2.3 ms | 0.3 ms |
-| `fib(28)` | ~12 s (extrapolated) | 1.9 ms | 0.2 ms |
-| `fib(90)` | infeasible | 2.8 ms | 0.2 ms |
-| `ackermann(3,6) = 509` | — | — | 0.9 ms |
-| `factorial(100)` (exact bigint) | — | 4.0 ms | 0.2 ms |
+| program                         | untabled interp      | tabled interp | compiled |
+| ------------------------------- | -------------------- | ------------- | -------- |
+| `fib(25)`                       | 2513 ms              | 2.3 ms        | 0.3 ms   |
+| `fib(28)`                       | ~12 s (extrapolated) | 1.9 ms        | 0.2 ms   |
+| `fib(90)`                       | infeasible           | 2.8 ms        | 0.2 ms   |
+| `ackermann(3,6) = 509`          | —                    | —             | 0.9 ms   |
+| `factorial(100)` (exact bigint) | —                    | 4.0 ms        | 0.2 ms   |
 
 Versus PeTTa:
 
-| benchmark | PeTTa | ours (compiled) |
-|-----------|-------|-----------------|
-| naive `fib(33)` (PeTTa default, exponential) | 1.378 s | 0.4 ms eval |
-| tabled `fib(90)` (PeTTa manual `!(tabled ...)`) | 0.170 s total | 0.2 ms eval |
+| benchmark                                       | PeTTa         | ours (compiled) |
+| ----------------------------------------------- | ------------- | --------------- |
+| naive `fib(33)` (PeTTa default, exponential)    | 1.378 s       | 0.4 ms eval     |
+| tabled `fib(90)` (PeTTa manual `!(tabled ...)`) | 0.170 s total | 0.2 ms eval     |
 
 On PeTTa's own naive default this was about 3000x on eval and the gap grows without bound with `n`; even against PeTTa manually tabled we are competitive-to-faster on total wall-clock, with no manual annotation required. Use the automatic-tabling section above for the current end-to-end `runProgram` recursion snapshot.
 

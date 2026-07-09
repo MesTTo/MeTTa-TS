@@ -29,4 +29,13 @@ describe("das-gateway wire format", () => {
       ),
     ).toBe(true);
   });
+
+  it.each(["", "   ", "chimp monkey", "("])(
+    "rejects malformed binding atom source %j",
+    (source) => {
+      expect(() => decodeBindings({ bindings: [[["s", source]]] })).toThrow(
+        'decodeBindings: binding "s" must contain one MeTTa atom',
+      );
+    },
+  );
 });

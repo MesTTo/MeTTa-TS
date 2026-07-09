@@ -7,6 +7,7 @@
 // replaying it preserves order and multiplicity exactly. "Pure" here is conservative: no world or
 // state mutation, no I/O, no type/space read, and no nondeterminism-introducing op.
 import { type Atom } from "./atom";
+import { isTableSafeGroundedOp } from "./builtins";
 import { type MinEnv } from "./eval";
 
 /** Ops that read or write mutable state, do I/O, read types/spaces, or introduce nondeterminism.
@@ -68,6 +69,17 @@ export const MODED_IMPURE_OPS: ReadonlySet<string> = new Set(
   [...IMPURE_OPS].filter((op) => op !== "empty"),
 );
 
+/** A named grounded operation is table-safe only when it is an unchanged built-in on the pure list. */
+export function isTablingImpureHead(
+  env: MinEnv,
+  name: string,
+  impureOps: ReadonlySet<string> = IMPURE_OPS,
+): boolean {
+  if (impureOps.has(name) || env.agt.has(name)) return true;
+  const grounded = env.gt.get(name);
+  return grounded !== undefined && !isTableSafeGroundedOp(name, grounded);
+}
+
 /** Every symbol that heads a subexpression of `a`, collected recursively. */
 function headSymbols(a: Atom, out: Set<string>): Set<string> {
   if (a.kind === "expr" && a.items.length > 0) {
@@ -106,7 +118,7 @@ export function analyzePurity(
   const impure = new Set<string>();
   for (const [k, s] of deps) {
     for (const h of s)
-      if (impureOps.has(h)) {
+      if (isTablingImpureHead(env, h, impureOps)) {
         impure.add(k);
         break;
       }

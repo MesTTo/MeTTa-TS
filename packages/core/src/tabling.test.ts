@@ -2,7 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 import { describe, it, expect } from "vitest";
-import { buildEnv } from "./eval";
+import {
+  buildEnv,
+  initSt,
+  mettaEval,
+  registerAsyncGroundedOperation,
+  registerGroundedOperation,
+} from "./eval";
 import { stdTable } from "./builtins";
 import { parseAll } from "./parser";
 import { standardTokenizer, preludeAtoms, runProgram } from "./runner";
@@ -43,6 +49,74 @@ describe("purity analysis", () => {
     const pure = analyzePurity(env);
     expect(pure.has("a")).toBe(false);
     expect(pure.has("b")).toBe(false);
+  });
+
+  it("treats custom sync and async grounded operations as impure by default", () => {
+    const gt = stdTable();
+    gt.set("host-tick", () => ({ tag: "ok", results: [gint(1)] }));
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...atoms("(= (through-sync) (host-tick))\n(= (through-async) (host-wait))"),
+      ],
+      gt,
+    );
+    env.agt.set("host-wait", async () => ({ tag: "ok", results: [gint(1)] }));
+
+    const pure = analyzePurity(env);
+    expect(pure.has("through-sync")).toBe(false);
+    expect(pure.has("through-async")).toBe(false);
+  });
+
+  it("excludes effectful standard grounded operations transitively", () => {
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...atoms(
+          "(= (clocked) (current-time))\n" +
+            '(= (decoded) (json-decode "{\\"a\\": 1}"))\n' +
+            "(= (freshened $x) (sealed () $x))",
+        ),
+      ],
+      stdTable(),
+    );
+
+    const pure = analyzePurity(env);
+    expect(pure.has("clocked")).toBe(false);
+    expect(pure.has("decoded")).toBe(false);
+    expect(pure.has("freshened")).toBe(false);
+  });
+
+  it("invalidates cached analysis when a host operation is registered", () => {
+    const env = buildEnv([...preludeAtoms()], stdTable());
+    env.tableSpace = new TableSpace();
+    env.tablingDirty = false;
+    env.pureFunctors = new Set(["host-wait"]);
+    env.compiled = new Map();
+    env.compileDirty = false;
+    const key = env.tableSpace.key("ground", expr([sym("cached")]), 0);
+    env.tableSpace.rememberCompleted(key, 0, [gint(1)]);
+
+    registerAsyncGroundedOperation(env, "host-wait", async () => ({
+      tag: "ok",
+      results: [gint(1)],
+    }));
+
+    expect(env.tablingDirty).toBe(true);
+    expect(env.tableSpace.stats()).toEqual({ entries: 0, answers: 0, approxCells: 0 });
+    expect(env.compiled).toBeUndefined();
+    expect(env.compileDirty).toBeUndefined();
+  });
+
+  it("re-evaluates a ground call after its host operation is registered", () => {
+    const env = buildEnv([...preludeAtoms()], stdTable());
+    const call = expr([sym("late-host-op")]);
+    const [before, state] = mettaEval(env, 10_000, initSt(), [], call);
+    expect(before.map((pair) => format(pair[0]))).toEqual(["(late-host-op)"]);
+
+    registerGroundedOperation(env, "late-host-op", () => ({ tag: "ok", results: [gint(7)] }));
+    const [after] = mettaEval(env, 10_000, state, [], call);
+    expect(after.map((pair) => format(pair[0]))).toEqual(["7"]);
   });
 
   it("table-worth analysis admits branching recursion and rejects linear recursion", () => {

@@ -25,6 +25,8 @@ const bindings = await queryDas(transport, "&self", pattern);
 
 Querying a DAS involves network I/O, so the gateway's query API is async. Pair it with the async evaluation path in `@metta-ts/core` to call it from MeTTa source.
 
+Each returned binding value must contain exactly one MeTTa atom. `decodeBindings` throws a deterministic error for blank, malformed, bang-prefixed, or multi-atom values instead of returning a partial binding.
+
 ## License
 
 [MIT](https://github.com/MesTTo/Meta-TypeScript-Talk/blob/main/LICENSE).

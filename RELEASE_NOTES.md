@@ -1,148 +1,152 @@
-# MeTTa TS 1.1.2
+# MeTTa TS 1.1.3
 
-A pure-TypeScript implementation of [MeTTa](https://metta-lang.dev), the
-OpenCog Hyperon language. The core engine runs in the browser, Node, Deno, Bun,
-edge runtimes, and TypeScript-based agents with no native addon and no required
-WASM. Optional host adapters can load Python or Prolog runtimes when a program
-asks for them.
+MeTTa TS 1.1.3 improves nondeterministic evaluation and bounds every automatic
+table allocation. The default evaluator is faster than PeTTa on the four
+reported nondeterministic workloads while preserving Hyperon semantics. There
+is no benchmark mode, PeTTa mode, curry mode, or manually selected fast path.
 
 ## Tested on Linux
 
 This release is prepared on Linux with Node 22 and pnpm 11. The release gate
 builds every package, typechecks the workspace, runs the full Vitest suite,
-builds the GitHub Pages documentation, runs the oracle checks, and runs the
-benchmark suite before tagging. Optional Python, Pyodide, SWI-Prolog, and
-SWI-WASM adapters are built and covered by their available tests, with live
-runtime checks depending on the host tools installed in the release
-environment.
+builds the GitHub Pages documentation, runs the Hyperon oracle, runs the scale
+proof, and runs the benchmark suite before tagging.
 
-The current conformance rerun reports Core/ST at 431 passed, 77 failed, 60
-expected failures, and 0 skipped. Full/ST with `fileio,json,random` reports 470
-passed, 174 failed, 4 expected failures, and 26 skipped. The remaining gaps are
-the tracked parser/directive, kernel, typing, stdlib, feature, and concurrency
-divergences, so this release should not be described as full Hyperon
+The final suite passed 109 test files and 1,063 tests, with 38 optional live
+integration tests skipped. The checked 270-assertion oracle passed all 23
+corpus files.
+
+The external Core/ST conformance result is unchanged from the untouched 1.1.2
+baseline: 431 passed, 77 failed, 60 manifest expected failures, and 0 skipped.
+The remaining failures are existing parser, directive, kernel, typing, and
+stdlib contract differences. This release does not claim full specification
 conformance.
 
-## What's new
+## Nondeterministic execution
 
-### Integrated host interop release train
+The new checked benchmark keeps four query shapes reported by Patrick Hammer
+as ordinary `.metta` files. Five-run subprocess medians include startup:
 
-This release includes the full local host-interop train that followed 1.1.0:
-browser host adapters, Python and Prolog runtime splits, SWI-WASM, Pyodide,
-source runners, async effects, CLI checks, and the eDSL host builders.
+| Program                          |     PeTTa |  MeTTa TS | Speedup |
+| -------------------------------- | --------: | --------: | ------: |
+| filtered `matespacefast` matches | 5738.1 ms | 3344.2 ms |   1.72x |
+| 22^4 `superpose` cross product   |  388.7 ms |  148.5 ms |   2.62x |
+| nondeterministic tabled `fib(7)` |  180.1 ms |   99.6 ms |   1.81x |
+| duplicate-heavy `TupleConcat`    |  178.8 ms |  101.1 ms |   1.77x |
 
-### Browser Python and Prolog
+The harness validates 234,256 cross-product results, 196 distinct Fibonacci
+answers, the exact `TupleConcat` sequence, and the embedded matespace
+assertion. Run it with `pnpm bench:nondeterminism`.
 
-`@metta-ts/browser/host` composes optional host runtimes into the browser
-runner. A browser app can now run the same `.metta` program shape as Node:
+A slot-based choice evaluator handles closed pure `let`, `let*`, `superpose`,
+integer arithmetic, comparisons, `if`, and constructor tuples. Unsupported,
+redefined, ill-typed, async, or executable-grounded forms stay on the normal
+interpreter path. Result order and multiplicity are unchanged.
 
-```metta
-!(import! &self "math.py")
-!(py-call (math.add 40 2))
+`unique-atom(collapse(call))` can evaluate a supported static pure integer
+recurrence as a first-seen answer set. Closed pure choice products also retain
+first-seen answers as they emit instead of materializing a duplicate bag first.
+An ordinary `collapse(call)` still returns its exact ordered bag with duplicate
+derivations. Ground answer deduplication uses structural hashes with equality
+checks instead of a quadratic scan.
 
-!(import! &self "facts.pl")
-!(prolog-call (edge alice $x))
-```
+## Bounded automatic tabling
 
-Python runs through `@metta-ts/py/pyodide`. Prolog runs through
-`@metta-ts/prolog/swi-wasm`. The base `@metta-ts/browser` package stays
-runtime-agnostic; Pyodide and SWI-WASM are only included when their adapter
-subpaths are imported.
+Automatic table admission remains conservative. The whole rule dependency
+graph must be pure, the call key must be safe, and the recursive component must
+branch back into itself at least twice. Linear recursion stays on the normal
+compiled path.
 
-### Prolog interop package
+The policy does not assume that every recursive program is safe to memoize and
+does not let admitted tables grow until the process runs out of memory. It
+combines the static overlap test with one global runtime budget. Exceeding the
+active-state budget returns `TableResourceLimit`; it does not continue toward
+an out-of-memory failure.
 
-`@metta-ts/prolog` is now part of the release. The root package contains the
-generic bridge and MeTTa-side helper source. Runtime adapters live on subpaths:
+Completed and active tables now share these default ceilings:
 
-- `@metta-ts/prolog/swi-node` talks to a local `swipl` executable.
-- `@metta-ts/prolog/swi-wasm` runs through `swipl-wasm`.
+- 50,000 entries
+- 1,000,000 answers
+- 1,000,000 retained atom cells
+- 100,000 cells in one entry
+- 250,000 interned leaves
 
-The supported surface follows PeTTa where the operation is a host Prolog bridge:
-`Predicate`, `callPredicate`, `assertaPredicate`, `assertzPredicate`,
-`retractPredicate`, `prolog-call`, `prolog-consult`, and
-`import_prolog_function`.
+Completed tables are removed in least-recently-used order. Active tables are
+not evicted while their producer runs, so they return `TableResourceLimit` when
+the shared budget cannot fit more state. The consumer-directed recurrence memo
+uses the same entry, answer, cell, and per-entry limits. Interner generations
+prevent stale tail-call keys from writing after a reset.
 
-MeTTa TS keeps Hyperon-style evaluation. There is no PeTTa mode and no curry
-mode. Plain `.pl` imports and predicate calls are host capabilities, not a
-second evaluator.
+Direct active variant recursion still uses local-linear fixed-point completion.
+Non-cyclic calls preserve exact ordered bags. The evaluator does not infer
+Picat-style `min` or `max` answer subsumption.
 
-### Runtime adapter split
+## Matching and scale
 
-The Python and Prolog roots no longer import runtime backends from their package
-roots. Node-specific adapters are explicit subpaths:
+Ground runtime facts now have a nested argument-functor index. A pattern such
+as `(num (M $x))` selects the `M` bucket instead of scanning every `num` fact.
+The matcher falls back to complete candidates when a non-ground fact could
+unify.
 
-- `@metta-ts/py/pythonia`
-- `@metta-ts/prolog/swi-node`
+A finite in-memory match whose result is discarded by a standard
+`let ... (empty)` is removed before enumeration. The optimization declines for
+custom grounded matchers, mutable state handles, changed standard forms, and
+non-memory spaces.
 
-Browser adapters are explicit subpaths:
+The 30,000-fact scale gate also runs larger actual MeTTa workloads:
 
-- `@metta-ts/py/pyodide`
-- `@metta-ts/prolog/swi-wasm`
+| Program                    |                  Checked result |     Time |
+| -------------------------- | ------------------------------: | -------: |
+| 24^4 pure choice product   |                 331,776 answers |  81.2 ms |
+| duplicate tuple product    | 50 values from 500,000 branches |  30.8 ms |
+| nondeterministic `fib(10)` |          2,817 distinct answers |  73.4 ms |
+| nested runtime match       |                  30,000 answers | 647.3 ms |
 
-That keeps default imports browser-clean and leaves optional dependencies behind
-their adapter subpaths.
+## Correctness fixes
 
-### eDSL host helpers
-
-`@metta-ts/edsl/py` and `@metta-ts/edsl/prolog` provide dependency-free builders
-for the host interop forms. They build ordinary atoms such as `py-call`,
-`py-atom`, `prolog-call`, `Predicate`, and `import_prolog_function`. They do
-not load Python, Prolog, Pyodide, SWI-WASM, or Node adapters.
-
-```ts
-import { vars } from "@metta-ts/edsl";
-import { pyCall } from "@metta-ts/edsl/py";
-import { prologCall } from "@metta-ts/edsl/prolog";
-
-const { x } = vars();
-
-pyCall("math.add", 40, 2); // (py-call (math.add 40 2))
-prologCall(["edge", "alice", x]); // (prolog-call (edge alice $x))
-```
-
-### Bounded structural tabling
-
-Automatic tabling now uses structural token keys and a bounded table space
-instead of recursive printed-form keys. Pure overlapping-recursive calls can be
-memoized without table growth being unbounded:
-
-- completed pure entries are capped and LRU-evictable;
-- interner resets invalidate old opaque table keys;
-- runtime rules are version-keyed;
-- impure, meta, state, import, `match`, `collapse`, and concurrency paths stay
-  outside the table cache;
-- direct active variant recursion uses local-linear completion for finite answer
-  sets;
-- non-cyclic calls keep exact ordered-bag memoization.
-
-The stale-key path reported during release review is covered by a regression:
-old tail-call pending keys cannot write into a new interner generation after a
-table-space reset.
+- `superpose` in the choice evaluator now strips a collapsed bag's leading
+  comma marker. The recursive `supercollapse` corpus case remains empty as
+  Hyperon requires.
+- Choice planning now respects application type errors, expression-headed
+  rewrite rules, and replaced sync or async grounded operations.
+- Nested indexing no longer changes candidate enumeration when a pattern has
+  no nested-head constraint.
+- Active table entries and answers count against the same global resource
+  budget as completed entries.
+- The purity firewall now treats custom sync and async grounded operations as
+  effectful unless they are the unchanged implementation of a known-pure
+  built-in. File, catalog, random, time, output, fresh-identity, and host calls
+  cannot enter automatic tables transitively.
+- File handles can be closed immediately with `file-close!` and are also closed
+  when their grounded atom is collected. Dictionary spaces and file records use
+  weak-key storage instead of lifetime-unbounded global maps. Grounded behavior
+  and non-default grounded types remain on the lossless atomspace path.
+- Grounded-operation registration invalidates evaluated terms, table analyses,
+  and compiled closures that may encode the previous dispatch behavior.
+- DAS gateway binding responses must contain exactly one MeTTa atom per value.
+  Malformed or multi-atom wire values now fail at the decode boundary.
+- Git imports pass an end-of-options marker before the repository path.
+- The unused `streamEmit`, `tableBackchain`, and `trieSpace` experimental
+  options have been removed. They never selected an implementation.
 
 ## Install
 
 ```bash
-npm install @metta-ts/core
-npm install -g @metta-ts/node
-npm install @metta-ts/py pythonia
-npm install @metta-ts/prolog
+npm install @metta-ts/core@1.1.3
+npm install -g @metta-ts/node@1.1.3
 ```
 
-Browser projects that use optional host runtimes should also install the runtime
-adapter they import:
+Optional host packages use the same version:
 
 ```bash
-npm install pyodide swipl-wasm
+npm install @metta-ts/py@1.1.3 pythonia
+npm install @metta-ts/prolog@1.1.3
 ```
 
 ## Provenance
 
 - Semantics: [hyperon-experimental](https://github.com/trueagi-io/hyperon-experimental).
-- Python interop surface: PeTTa's `py-call` and Hyperon's
-  [`py-atom`](https://trueagi-io.github.io/hyperon-experimental/reference/atoms/)
-  family.
-- Prolog interop surface: PeTTa-compatible predicate bridge forms where they do
-  not depend on PeTTa's evaluator.
-- Verified spec and differential oracle:
-  [LeaTTa](https://github.com/MesTTo/LeaTTa).
+- Verified differential semantics: [LeaTTa](https://github.com/MesTTo/LeaTTa).
+- Host compatibility: PeTTa-compatible Python and Prolog bridge forms where
+  they do not depend on PeTTa's evaluator.
 - License: [MIT](LICENSE).

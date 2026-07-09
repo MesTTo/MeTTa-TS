@@ -166,8 +166,9 @@ const DEFAULT_TABLE_BUDGET: TableBudget = {
 
 const DOMAIN_GROUND = -1;
 const DOMAIN_MODED = -2;
+const DOMAIN_GROUND_DISTINCT = -3;
 
-export type TableKeyKind = "ground" | "moded";
+export type TableKeyKind = "ground" | "ground-distinct" | "moded";
 
 export class TableSpace {
   interner = new Interner();
@@ -181,13 +182,24 @@ export class TableSpace {
   private answers = 0;
   private cells = 0;
   private activeCount = 0;
+  private activeAnswers = 0;
+  private activeCells = 0;
 
   constructor(private readonly budget: TableBudget = DEFAULT_TABLE_BUDGET) {}
 
   key(kind: TableKeyKind, call: Atom, runtimeVersion: number): EncodedAtomKey {
     this.maybeResetInterner();
-    const encoded = encodeVariantKey(call, this.interner);
-    const domain = kind === "ground" ? DOMAIN_GROUND : DOMAIN_MODED;
+    let encoded = encodeVariantKey(call, this.interner);
+    if (this.interner.size > this.budget.maxInternerLeaves && this.activeCount === 0) {
+      this.resetInternerAndTables();
+      encoded = encodeVariantKey(call, this.interner);
+    }
+    const domain =
+      kind === "ground"
+        ? DOMAIN_GROUND
+        : kind === "ground-distinct"
+          ? DOMAIN_GROUND_DISTINCT
+          : DOMAIN_MODED;
     return {
       tokens: [domain, this.generation, runtimeVersion, ...encoded.tokens],
       generation: this.generation,
@@ -235,15 +247,21 @@ export class TableSpace {
     this.maybeResetInterner();
   }
 
-  beginActive(key: TableKey, numCallVars: number): ActiveTableEntry | undefined {
+  beginActive(key: TableKey, numCallVars: number): ActiveTableEntry | null | undefined {
     if (!this.isCurrentKey(key)) return undefined;
     if (this.active.get(key.tokens) !== undefined) return undefined;
+    const approxCells = 1 + numCallVars;
+    if (
+      this.interner.size > this.budget.maxInternerLeaves ||
+      !this.makeRoomForActive(1, 0, approxCells)
+    )
+      return null;
     const entry: MutableActiveTableEntry = {
       tokens: [...key.tokens],
       numCallVars,
       results: [],
       answerCount: 0,
-      approxCells: 1 + numCallVars,
+      approxCells,
       answerKeys: new TokenTrie(),
       cyclic: false,
       overBudget: false,
@@ -251,6 +269,7 @@ export class TableSpace {
     this.active.set(entry.tokens, entry);
     this.activeStack.push(entry);
     this.activeCount += 1;
+    this.activeCells += approxCells;
     return entry;
   }
 
@@ -273,9 +292,16 @@ export class TableSpace {
     let added = 0;
     for (const result of results) {
       const key = encodeExactAnswerKey(result, this.interner);
+      if (this.interner.size > this.budget.maxInternerLeaves) {
+        active.overBudget = true;
+        break;
+      }
       if (active.answerKeys.get(key) !== undefined) continue;
       const cost = atomSize(result);
-      if (active.approxCells + cost > this.budget.maxEntryCells) {
+      if (
+        active.approxCells + cost > this.budget.maxEntryCells ||
+        !this.makeRoomForActive(0, 1, cost)
+      ) {
         active.overBudget = true;
         break;
       }
@@ -283,6 +309,8 @@ export class TableSpace {
       active.results.push(result);
       active.answerCount += 1;
       active.approxCells += cost;
+      this.activeAnswers += 1;
+      this.activeCells += cost;
       added += 1;
     }
     return added;
@@ -295,17 +323,14 @@ export class TableSpace {
       const i = this.activeStack.lastIndexOf(entry);
       if (i >= 0) this.activeStack.splice(i, 1);
       this.activeCount -= 1;
+      this.activeAnswers -= entry.answerCount;
+      this.activeCells -= entry.approxCells;
       this.maybeResetInterner();
     }
   }
 
   clear(): void {
-    this.resetTables();
-    this.active.clear();
-    this.activeStack.length = 0;
-    this.activeCount = 0;
-    this.interner = new Interner();
-    this.generation += 1;
+    this.resetInternerAndTables();
   }
 
   private resetTables(): void {
@@ -319,6 +344,14 @@ export class TableSpace {
 
   stats(): { entries: number; answers: number; approxCells: number } {
     return { entries: this.entries, answers: this.answers, approxCells: this.cells };
+  }
+
+  entryCellLimit(): number {
+    return this.budget.maxEntryCells;
+  }
+
+  resourceBudget(): TableBudget {
+    return this.budget;
   }
 
   private entryCost(numCallVars: number, results: readonly Atom[]): number {
@@ -360,9 +393,9 @@ export class TableSpace {
 
   private evict(): void {
     while (
-      this.entries > this.budget.maxCompletedEntries ||
-      this.answers > this.budget.maxCompletedAnswers ||
-      this.cells > this.budget.maxApproxCells
+      this.entries + this.activeCount > this.budget.maxCompletedEntries ||
+      this.answers + this.activeAnswers > this.budget.maxCompletedAnswers ||
+      this.cells + this.activeCells > this.budget.maxApproxCells
     ) {
       const victim = this.tail;
       if (victim === undefined) return;
@@ -370,13 +403,33 @@ export class TableSpace {
     }
   }
 
-  private maybeResetInterner(): void {
-    if (this.interner.size <= this.budget.maxInternerLeaves || this.activeCount > 0) return;
+  private makeRoomForActive(entries: number, answers: number, cells: number): boolean {
+    while (
+      this.entries + this.activeCount + entries > this.budget.maxCompletedEntries ||
+      this.answers + this.activeAnswers + answers > this.budget.maxCompletedAnswers ||
+      this.cells + this.activeCells + cells > this.budget.maxApproxCells
+    ) {
+      const victim = this.tail;
+      if (victim === undefined) return false;
+      this.remove(victim);
+    }
+    return true;
+  }
+
+  private resetInternerAndTables(): void {
     this.resetTables();
     this.active.clear();
     this.activeStack.length = 0;
+    this.activeCount = 0;
+    this.activeAnswers = 0;
+    this.activeCells = 0;
     this.interner = new Interner();
     this.generation += 1;
+  }
+
+  private maybeResetInterner(): void {
+    if (this.interner.size <= this.budget.maxInternerLeaves || this.activeCount > 0) return;
+    this.resetInternerAndTables();
   }
 }
 

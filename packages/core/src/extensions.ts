@@ -89,6 +89,7 @@ export const CATALOG_MODULE_SRC = `
 export const FILEIO_MODULE_SRC = `
   (: FileHandle Type)
   (: file-open! (-> String String FileHandle))
+  (: file-close! (-> FileHandle (->)))
   (: file-read-to-string! (-> FileHandle String))
   (: file-read-exact! (-> FileHandle Number String))
   (: file-write! (-> FileHandle String (->)))
@@ -107,6 +108,12 @@ export const FILEIO_MODULE_SRC = `
     (@params (
       (@param "Filehandle")))
     (@return "File's content"))
+
+  (@doc file-close!
+    (@desc "Closes a filehandle immediately. Dropped filehandles are also closed automatically.")
+    (@params (
+      (@param "Filehandle")))
+    (@return "Unit atom"))
 
   (@doc file-write!
     (@desc "Function takes filehandle provided by file-open!, content to be written string atom and puts content into file associated with filehandle")

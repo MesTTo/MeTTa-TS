@@ -8,7 +8,7 @@
 // server-side and exposes request/response query over HTTP (Connect over HTTP/1.1).
 // This module defines the wire shape and async query helper; Connect server/client and live
 // `das-client` integration need running DAS. See README.
-import { type Atom, type Bindings, format, parse, standardTokenizer } from "@metta-ts/core";
+import { type Atom, type Bindings, format, parseAll, standardTokenizer } from "@metta-ts/core";
 
 /** Gateway query payloads use MeTTa source strings on the wire. */
 export interface QueryRequest {
@@ -25,7 +25,15 @@ export const encodePattern = (a: Atom): string => format(a);
 export const decodeBindings = (resp: QueryResponse): Bindings[] => {
   const tk = standardTokenizer();
   return resp.bindings.map((sol) =>
-    sol.map(([x, src]) => ({ tag: "val" as const, x, a: parse(src, tk)!, y: undefined })),
+    sol.map(([x, src]) => {
+      try {
+        const parsed = parseAll(src, tk);
+        if (parsed.length !== 1 || parsed[0]!.bang) throw new Error("invalid atom count");
+        return { tag: "val" as const, x, a: parsed[0]!.atom, y: undefined };
+      } catch {
+        throw new Error(`decodeBindings: binding ${JSON.stringify(x)} must contain one MeTTa atom`);
+      }
+    }),
   );
 };
 

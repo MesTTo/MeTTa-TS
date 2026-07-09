@@ -9,9 +9,9 @@ A naive `match` over a space is a linear scan, which does not scale. MeTTa TS ha
 
 ## Clause indexing (automatic)
 
-The in-memory matcher indexes `&self` atoms as you add them: by head functor, and by every ground argument at every position. A query then jumps to the most selective bound position instead of scanning. This is automatic; you do nothing.
+The in-memory matcher indexes `&self` atoms as you add them: by head functor, by every ground argument at every position, and by the functor of a nested ground argument. A query then jumps to the most selective bound position instead of scanning. This is automatic; you do nothing.
 
-The effect over a 1,000,000-atom knowledge base: a functor-selective query like `(Parent $x Bob)` skips the unrelated-functor atoms; a query keyed on any ground argument, like `(edge 500000 $y)` or `(edge $x 7)`, resolves in roughly 0.2 to 1.4 ms instead of a full scan. A fully unbound, variable-headed query still scans everything, by necessity.
+The effect over a 1,000,000-atom knowledge base: a functor-selective query like `(Parent $x Bob)` skips the unrelated-functor atoms; a query keyed on any ground argument, like `(edge 500000 $y)` or `(edge $x 7)`, resolves in roughly 0.2 to 1.4 ms instead of a full scan. A nested query such as `(num (M $x))` scans only `num` facts whose first argument starts with `M`. A fully unbound, variable-headed query still scans everything, by necessity.
 
 ```ts
 import { runProgram, format } from "@metta-ts/core";
@@ -23,17 +23,21 @@ console.log(res.at(-1)!.results.map(format)); // [ '150001' ] — the index jump
 
 ## The compact runtime `&self` store
 
-Runtime additions to `&self`, such as atoms inserted with `add-atom` or loaded with `import!`, use the compact flat atomspace by default. It stores compactable atoms as interned term ids in typed-array chunks and decodes tree atoms only when an observable operation needs them. If a batch contains a grounded atom with an executor or custom matcher, that world's runtime additions fall back to the materialising log so grounded behavior stays unchanged.
+Runtime additions to `&self`, such as atoms inserted with `add-atom` or loaded with `import!`, use the compact flat atomspace by default. It stores compactable atoms as interned term ids in typed-array chunks and decodes tree atoms only when an observable operation needs them. If a batch contains a grounded atom with an executor, custom matcher, or non-default type, that world's runtime additions fall back to the materialising log so grounded behavior and type metadata stay unchanged.
 
 ## Automatic tabling
 
 Recursive pure functions use automatic tabling only when the rule graph predicts overlapping work. A recursive strongly connected component must branch back into itself at least twice, so Fibonacci-style overlap is tabled while single-tail recursion such as factorial stays on the normal compiled path.
 
-The memo store uses structural token keys and a token trie, not recursive pretty-printed strings. It is bounded by entry count, answer count, retained atom cells, maximum entry size, and shared interner leaves. Runtime rules are keyed by a whole-world rule version, so a cached answer is not reused after a runtime equation changes. Calls that carry an embedded space read, state operation, import, or other impure expression are not tabled.
+The memo store uses structural token keys and a token trie, not recursive pretty-printed strings. Runtime rules are keyed by a whole-world rule version, so a cached answer is not reused after a runtime equation changes. Calls that carry an embedded space read, state operation, import, or other impure expression are not tabled. Registered sync and async grounded operations are treated as effectful unless they are the unchanged implementation of a known-pure built-in.
+
+Completed and active tables share fixed default ceilings: 50,000 entries, 1,000,000 answers, 1,000,000 retained atom cells, 100,000 cells in one entry, and 250,000 interned leaves. Completed entries are removed in least-recently-used order when space is needed. Active entries cannot be removed while their producer is running, so the evaluator returns `TableResourceLimit` if an active computation cannot fit. Stale keys carry an interner generation and cannot write into tables created after a reset.
 
 If a non-ground tabled call directly re-enters the same active variant, MeTTa TS switches that call to local-linear completion. It replays the active table's known answers, re-runs the pure producer until no new canonical answers are added, and returns the fixed-point answer set once. Non-cyclic calls still preserve ordered bags and duplicate answers.
 
-This is deliberately not Picat-style mode-directed tabling. Picat can keep only `min`, `max`, or other selected answers for a mode declaration. MeTTa TS does not infer that semantic choice automatically.
+An idempotent consumer permits one narrower optimization. In `unique-atom(collapse(call))`, duplicate derivations cannot affect the result, so a supported static pure integer recurrence can memoize first-seen answers instead of its full duplicate bag. Closed pure choice products also deduplicate while they emit. The temporary recurrence memo uses the same entry, answer, cell, and per-entry ceilings. An ordinary `collapse(call)` still returns the exact ordered bag with every duplicate.
+
+This is not Picat-style mode-directed tabling. Picat can keep only `min`, `max`, or other selected answers for a mode declaration. MeTTa TS does not infer that semantic choice automatically. There is one default evaluator. Admission and fallback happen inside it, with no tabling mode needed for normal execution or benchmarks.
 
 ## The flat interned KB
 
@@ -68,7 +72,7 @@ console.log(heavy.map((h) => `${format(h.pattern)} x${h.count} (gain ${h.gain})`
 
 ## The worker-thread parallel matcher
 
-When you have a *large* KB and a *non-selective* query whose *result set is small* (a needle in a haystack), `ParallelFlatMatcher` (from `@metta-ts/node`) puts the flat KB's tokens in a `SharedArrayBuffer` and scans them across a pool of `worker_threads`, claiming work via an `Atomics` counter:
+When you have a _large_ KB and a _non-selective_ query whose _result set is small_ (a needle in a haystack), `ParallelFlatMatcher` (from `@metta-ts/node`) puts the flat KB's tokens in a `SharedArrayBuffer` and scans them across a pool of `worker_threads`, claiming work via an `Atomics` counter:
 
 ```ts
 import { FlatKB, sym, expr, gint, variable, type Atom } from "@metta-ts/core";

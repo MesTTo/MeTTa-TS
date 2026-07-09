@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 // First-order syntactic unification, a faithful port of LeaTTa `Core/Unification.lean`.
-// Returns a most-general unifier when one exists, else null. Used by the matcher's
-// consistency check (addVarBinding); grounded custom matching is handled in match.ts.
+// Returns a most-general unifier when one exists, else null. Matching has its own one-sided
+// consistency path in match.ts; this module backs the public symmetric unification API.
 import { type Atom, atomSize, atomEq } from "./atom";
 import { type Subst, applySubst, extendSubst, occurs, variable } from "./substitution";
 

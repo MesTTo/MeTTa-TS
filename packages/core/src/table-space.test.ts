@@ -28,6 +28,18 @@ describe("table-space structural keys", () => {
     const distinct = encodeVariantKey(atom("(same $x $y)"), interner);
     expect(repeated.tokens).not.toEqual(distinct.tokens);
   });
+
+  it("keeps ordered-bag and distinct-answer tables in separate domains", () => {
+    const tables = new TableSpace();
+    const call = atom("(fib 7)");
+    const bag = tables.key("ground", call, 0);
+    const distinct = tables.key("ground-distinct", call, 0);
+
+    tables.rememberCompleted(bag, 0, [gint(1), gint(1)]);
+    tables.rememberCompleted(distinct, 0, [gint(1)]);
+    expect(tables.getCompleted(bag)?.results).toHaveLength(2);
+    expect(tables.getCompleted(distinct)?.results).toHaveLength(1);
+  });
 });
 
 describe("table-space completed table budget", () => {
@@ -68,7 +80,7 @@ describe("table-space completed table budget", () => {
     expect(tables.stats()).toEqual({ entries: 0, answers: 0, approxCells: 0 });
   });
 
-  it("resets completed tables when the shared interner crosses its leaf budget", () => {
+  it("resets completed tables and re-encodes the current key across the interner budget", () => {
     const tables = new TableSpace({
       maxCompletedEntries: 10,
       maxCompletedAnswers: 100,
@@ -84,8 +96,8 @@ describe("table-space completed table budget", () => {
     tables.rememberCompleted(overBudget, 0, [gint(2)]);
 
     expect(tables.getCompleted(retained)).toBeUndefined();
-    expect(tables.getCompleted(overBudget)).toBeUndefined();
-    expect(tables.stats()).toEqual({ entries: 0, answers: 0, approxCells: 0 });
+    expect(tables.getCompleted(overBudget)?.results).toEqual([gint(2)]);
+    expect(tables.stats()).toEqual({ entries: 1, answers: 1, approxCells: 2 });
   });
 
   it("ignores completed-table writes through stale keys after an interner reset", () => {
@@ -106,7 +118,8 @@ describe("table-space completed table budget", () => {
 
     tables.rememberCompleted(stale, 0, [gint(99)]);
     expect(tables.getCompleted(stale)).toBeUndefined();
-    expect(tables.stats()).toEqual({ entries: 0, answers: 0, approxCells: 0 });
+    expect(tables.getCompleted(trigger)?.results).toEqual([gint(2)]);
+    expect(tables.stats()).toEqual({ entries: 1, answers: 1, approxCells: 2 });
 
     const current = tables.key("ground", atom("(f alpha)"), 0);
     tables.rememberCompleted(current, 0, [gint(3)]);
@@ -147,5 +160,40 @@ describe("table-space completed table budget", () => {
     expect(tables.addActiveAnswers(active, [atom("(%0 %1)"), atom("(%0 %1)")])).toBe(1);
     expect(tables.addActiveAnswers(active, [atom("(%1 %0)")])).toBe(1);
     expect(active.results).toHaveLength(2);
+  });
+
+  it("shares the global entry budget between completed and active tables", () => {
+    const tables = new TableSpace({
+      maxCompletedEntries: 1,
+      maxCompletedAnswers: 100,
+      maxApproxCells: 100,
+      maxEntryCells: 100,
+      maxInternerLeaves: 100,
+    });
+    const completed = tables.key("ground", atom("(f 1)"), 0);
+    tables.rememberCompleted(completed, 0, [gint(1)]);
+
+    const activeKey = tables.key("moded", atom("(p $x)"), 0);
+    expect(tables.beginActive(activeKey, 1)).toBeDefined();
+    expect(tables.getCompleted(completed)).toBeUndefined();
+
+    const second = tables.key("moded", atom("(q $x)"), 0);
+    expect(tables.beginActive(second, 1)).toBeNull();
+  });
+
+  it("shares the global answer budget across active tables", () => {
+    const tables = new TableSpace({
+      maxCompletedEntries: 2,
+      maxCompletedAnswers: 1,
+      maxApproxCells: 100,
+      maxEntryCells: 100,
+      maxInternerLeaves: 100,
+    });
+    const first = tables.beginActive(tables.key("moded", atom("(p $x)"), 0), 1)!;
+    const second = tables.beginActive(tables.key("moded", atom("(q $x)"), 0), 1)!;
+
+    expect(tables.addActiveAnswers(first, [atom("(%0 a)")])).toBe(1);
+    expect(tables.addActiveAnswers(second, [atom("(%0 b)")])).toBe(0);
+    expect(second.overBudget).toBe(true);
   });
 });

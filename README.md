@@ -302,6 +302,21 @@ A representative slice (wall-clock, subprocess including startup; `speedup` = Pe
 
 The full per-program table is in [`RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md).
 
+Patrick Hammer also supplied four adversarial nondeterministic programs that were slow or exhausted memory in an older build. [`packages/node/bench/nondeterminism.mjs`](packages/node/bench/nondeterminism.mjs) keeps those query shapes as a separate checked benchmark. Five-run subprocess medians, including startup:
+
+| Program                          |     PeTTa |  MeTTa TS |   Speedup |
+| -------------------------------- | --------: | --------: | --------: |
+| filtered `matespacefast` matches | 5738.1 ms | 3344.2 ms | **1.72x** |
+| 22^4 `superpose` cross product   |  388.7 ms |  148.5 ms | **2.62x** |
+| nondeterministic tabled `fib(7)` |  180.1 ms |   99.6 ms | **1.81x** |
+| duplicate-heavy `TupleConcat`    |  178.8 ms |  101.1 ms | **1.77x** |
+
+The benchmark validates all 234,256 cross-product results, all 196 distinct Fibonacci answers, the exact `TupleConcat` result, and the embedded matespace assertion. MeTTa TS uses the same default evaluator as the CLI. No benchmark, PeTTa, curry, or tabling mode is selected.
+
+Automatic tabling does not memoize every recursive function. Admission requires transitive purity and a recursive strongly connected component that branches back into itself at least twice. Linear recursion such as factorial stays on the compiled path. Custom host operations and space, state, file, random, time, import, and output operations are excluded.
+
+Completed and active tables share hard entry, answer, retained-cell, per-entry, and interner limits. Completed entries are LRU-evictable. Active entries cannot be evicted while their producer runs, so a call that cannot fit returns `TableResourceLimit` instead of continuing toward process exhaustion. See [Scaling to millions of atoms](website/advanced/scaling.md#automatic-tabling) for the current limits and completion policy.
+
 That speed comes from general engine work:
 
 - an O(1)-stack reduce-loop trampoline;
@@ -310,7 +325,10 @@ That speed comes from general engine work:
 - an O(1)-stack worklist for nondeterminism;
 - ground-atom type memoisation;
 - an exact-match ground-fact index;
-- bounded automatic tabling of pure overlapping-recursive functions, with structural token keys and runtime rule-versioned entries;
+- nested argument-functor indexing for ground runtime facts such as `(num (M $x))`;
+- bounded automatic tabling of pure overlapping-recursive functions, with structural token keys, runtime rule-versioned entries, and one shared budget for completed and active tables;
+- consumer-directed distinct memoization and streaming choice deduplication only where `unique-atom(collapse(...))` makes duplicate derivations unobservable, while ordinary `collapse` keeps its exact ordered bag;
+- a slot-based evaluator for closed pure `let` and `superpose` products that preserves result order and multiplicity without allocating general binding frames;
 - a native-code compiler for the pure deterministic int/bool/tuple subset, with tail-recursion compiled to loops and PeTTa-style **higher-order specialisation** so a function passed as an argument (e.g. `iterate`'s `$step`) is bound and compiled rather than interpreted;
 - a compiler for **nondeterministic `let*`-chain functions** (the backward-chainer class): a multi-equation function whose clause bodies chain space matches and recursive calls compiles to a clause-major depth-first search, the same fragment PeTTa hands to Prolog's clause alternatives;
 - a compiler for **add-atom saturation loops**: the add-if-absent idiom becomes one exact-membership probe plus append, and a single-branch `case` over a space match becomes a snapshot-and-thread loop with Empty-pruned branches.

@@ -5,6 +5,7 @@
 import {
   type Atom,
   type Ground,
+  atomEq,
   groundType,
   gnd,
   expr,
@@ -83,17 +84,17 @@ export function canCompactAtom(a: Atom): boolean {
     case "var":
       return true;
     case "gnd":
-      return a.exec === undefined && a.match === undefined;
+      return a.exec === undefined && a.match === undefined && atomEq(a.typ, groundType(a.value));
     case "expr":
       return a.items.every(canCompactAtom);
   }
 }
 
-// Thrown by the insert walk on a non-compactable grounded atom and caught in `appendAll`, which
-// reports the batch as not flat-storable. Checking compactability inside the one insert walk saves
-// the separate canCompactAtom pre-walk every append paid. Terms and facts interned before the bail
-// stay in the table but no version's ranges cover the facts, so they are never visible.
-const NOT_COMPACT = new Error("flat-atomspace: atom has an executor or custom matcher");
+// Thrown by the insert walk on grounded behavior or type metadata that the flat encoding cannot preserve.
+// `appendAll` catches it and reports the batch as not flat-storable. Checking compactability inside the
+// one insert walk saves the separate canCompactAtom pre-walk every append paid. Terms and facts interned
+// before the bail stay in the table but no version's ranges cover the facts, so they are never visible.
+const NOT_COMPACT = new Error("flat-atomspace: grounded metadata is not compactable");
 
 class FlatAtomSpaceTable {
   readonly termKind = new Int32Chunks();
@@ -120,6 +121,9 @@ class FlatAtomSpaceTable {
   private readonly groundByKey = new Map<string, number>();
   private readonly varByName = new Map<string, number>();
   private readonly termFacts = new Map<TermId, FactId[]>();
+  // Ground fact ids keyed by root functor, argument position, and that argument expression's functor.
+  // This is the first useful level of Prolog-style deep indexing: `(num (M $x))` selects only `M` facts.
+  private readonly nestedHeadFacts = new Map<string, FactId[]>();
   private readonly symbols: string[] = [];
   private readonly grounds: Ground[] = [];
   private readonly vars: string[] = [];
@@ -140,10 +144,23 @@ class FlatAtomSpaceTable {
   insertFact(atom: Atom): FactId {
     const root = this.insertAtom(atom);
     const id = this.factRoot.push(root);
-    this.factHeadSym.push(this.headSymOf(root));
+    const rootHead = this.headSymOf(root);
+    this.factHeadSym.push(rootHead);
     const facts = this.termFacts.get(root);
     if (facts === undefined) this.termFacts.set(root, [id]);
     else facts.push(id);
+    if (rootHead !== ABSENT && this.isTermGround(root) && this.termKind.get(root) === TERM_EXPR) {
+      const start = this.termStart.get(root);
+      const len = this.termLen.get(root);
+      for (let position = 1; position < len; position++) {
+        const nestedHead = this.headSymOf(this.termData.get(start + position));
+        if (nestedHead === ABSENT) continue;
+        const key = nestedHeadKey(rootHead, position, nestedHead);
+        const indexed = this.nestedHeadFacts.get(key);
+        if (indexed === undefined) this.nestedHeadFacts.set(key, [id]);
+        else indexed.push(id);
+      }
+    }
     return id;
   }
 
@@ -175,7 +192,7 @@ class FlatAtomSpaceTable {
           true,
         );
       case "gnd": {
-        if (atom.exec !== undefined || atom.match !== undefined) throw NOT_COMPACT;
+        if (!canCompactAtom(atom)) throw NOT_COMPACT;
         const key = groundKey(atom.value);
         return this.internLeaf(
           TERM_GND,
@@ -286,6 +303,31 @@ class FlatAtomSpaceTable {
 
   lookupHeadSym(name: string): number | undefined {
     return this.symByName.get(name);
+  }
+
+  factsForNestedPattern(pattern: Atom): readonly FactId[] | undefined {
+    if (pattern.kind !== "expr" || pattern.items.length === 0 || pattern.items[0]!.kind !== "sym")
+      return undefined;
+    let rootHead: number | undefined;
+    let best: readonly FactId[] | undefined;
+    let indexed = false;
+    for (let position = 1; position < pattern.items.length; position++) {
+      const argument = pattern.items[position]!;
+      if (
+        argument.kind !== "expr" ||
+        argument.items.length === 0 ||
+        argument.items[0]!.kind !== "sym"
+      )
+        continue;
+      indexed = true;
+      rootHead ??= this.lookupHeadSym(pattern.items[0]!.name);
+      if (rootHead === undefined) return [];
+      const nestedHead = this.lookupHeadSym(argument.items[0]!.name);
+      if (nestedHead === undefined) return [];
+      const facts = this.nestedHeadFacts.get(nestedHeadKey(rootHead, position, nestedHead)) ?? [];
+      if (best === undefined || facts.length < best.length) best = facts;
+    }
+    return indexed ? (best ?? []) : undefined;
   }
 
   private internSym(name: string): number {
@@ -513,10 +555,18 @@ export class FlatAtomSpace {
     return count;
   }
 
-  *candidatesFor(patternHead: string | undefined): Iterable<Atom> {
+  *candidatesFor(patternHead: string | undefined, pattern?: Atom): Iterable<Atom> {
     if (patternHead === undefined) {
       for (const fact of this.visibleFactIds()) yield this.decodeFact(fact);
       return;
+    }
+    if (pattern !== undefined && this.nonGroundCount === 0) {
+      const nested = this.table.factsForNestedPattern(pattern);
+      if (nested !== undefined) {
+        for (const fact of nested)
+          if (this.factVisible(fact) && !this.dead.has(fact)) yield this.decodeFact(fact);
+        return;
+      }
     }
     const head = this.table.lookupHeadSym(patternHead);
     if (head === undefined) {
@@ -604,4 +654,8 @@ function appendRange(
   if (last !== undefined && last.end === start)
     return [...ranges.slice(0, -1), { start: last.start, end }];
   return [...ranges, { start, end }];
+}
+
+function nestedHeadKey(rootHead: number, position: number, nestedHead: number): string {
+  return `${rootHead}\u0000${position}\u0000${nestedHead}`;
 }

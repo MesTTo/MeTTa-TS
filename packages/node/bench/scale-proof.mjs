@@ -50,11 +50,109 @@ function runCorpusCase(file, expected, limitMs) {
   if (ms > limitMs) throw new Error(`${file}: ${fmtMs(ms)}ms exceeded ${limitMs}ms`);
 }
 
+function bagPayload(out, name) {
+  const results = out.at(-1)?.results ?? [];
+  const bag = results.length === 1 ? results[0] : undefined;
+  if (bag?.kind !== "expr" || bag.items[0]?.kind !== "sym" || bag.items[0].name !== ",")
+    throw new Error(`${name}: expected one collapsed result bag`);
+  return bag.items.slice(1);
+}
+
+function runBagCountCase(name, src, expectedCount, limitMs) {
+  const t0 = performance.now();
+  const out = runSource(src, FUEL);
+  const ms = performance.now() - t0;
+  const payload = bagPayload(out, name);
+  const ok = payload.length === expectedCount;
+  rows.push({ name, ms, limitMs, got: `${payload.length} items`, ok });
+  if (!ok) throw new Error(`${name}: expected ${expectedCount} items, got ${payload.length}`);
+  if (ms > limitMs) throw new Error(`${name}: ${fmtMs(ms)}ms exceeded ${limitMs}ms`);
+}
+
+function runBagValuesCase(name, src, expected, limitMs) {
+  const t0 = performance.now();
+  const out = runSource(src, FUEL);
+  const ms = performance.now() - t0;
+  const got = bagPayload(out, name).map(format);
+  const ok = JSON.stringify(got) === JSON.stringify(expected);
+  rows.push({ name, ms, limitMs, got: `${got.length} checked items`, ok });
+  if (!ok)
+    throw new Error(
+      `${name}: expected ${expected.slice(0, 20).join(" ")}, got ${got.slice(0, 20).join(" ")}`,
+    );
+  if (ms > limitMs) throw new Error(`${name}: ${fmtMs(ms)}ms exceeded ${limitMs}ms`);
+}
+
 function facts(n, f) {
   let out = "";
   for (let i = 0; i < n; i++) out += f(i) + "\n";
   return out;
 }
+
+const choiceWidth = 24;
+const choiceTuple = Array.from({ length: choiceWidth }, (_, index) => index + 1).join(" ");
+runBagCountCase(
+  "choice product 24^4",
+  `!(collapse
+      (let* (($T (${choiceTuple}))
+              ($X (superpose $T))
+              ($Y (superpose $T))
+              ($Z (superpose $T))
+              ($W (superpose $T)))
+        (+ $W (* (* $X $Y) $Z))))`,
+  choiceWidth ** 4,
+  8_000,
+);
+
+const tupleDistinct = 50;
+const tupleRepeats = 10;
+const duplicateTuple = Array.from({ length: tupleRepeats }, () =>
+  Array.from({ length: tupleDistinct }, (_, index) => index + 1),
+)
+  .flat()
+  .join(" ");
+runBagValuesCase(
+  "unique tuple product",
+  `(= (TupleConcat $left $right)
+      (unique-atom
+        (collapse (superpose ((superpose $left) (superpose $right))))))
+    !(TupleConcat (${duplicateTuple}) (${duplicateTuple}))`,
+  Array.from({ length: tupleDistinct }, (_, index) => String(index + 1)),
+  8_000,
+);
+
+const distinctFibMemo = new Map();
+function distinctFibAnswers(n) {
+  const known = distinctFibMemo.get(n);
+  if (known !== undefined) return known;
+  const out = [];
+  const seen = new Set();
+  const add = (value) => {
+    if (seen.has(value)) return;
+    seen.add(value);
+    out.push(value);
+  };
+  if (n < 2) add(n);
+  else
+    for (const left of distinctFibAnswers(n - 1))
+      for (const right of distinctFibAnswers(n - 2)) add(left + right);
+  add(42);
+  distinctFibMemo.set(n, out);
+  return out;
+}
+
+const distinctFibN = 10;
+runBagValuesCase(
+  "distinct fib(10)",
+  `(= (fib $n)
+      (if (< $n 2)
+          $n
+          (+ (fib (- $n 1)) (fib (- $n 2)))))
+    (= (fib $n) 42)
+    !(unique-atom (collapse (fib ${distinctFibN})))`,
+  distinctFibAnswers(distinctFibN).map(String),
+  8_000,
+);
 
 const mid = Math.floor(SIZE / 2);
 const staticSpace =
@@ -67,6 +165,13 @@ const runtimeSpace =
   facts(SIZE, (i) => `!(add-atom &self (rt ${i} ${i + 1}))`) +
   `!(collapse (match &self (rt ${mid} $y) $y))`;
 runCase("runtime arg-index", runtimeSpace, [`(, ${mid + 1})`], 12_000);
+
+// The result is consumed, so this measures nested-head candidate selection rather than dead-result removal.
+const nestedRuntimeSpace =
+  facts(SIZE, (i) => `!(add-atom &self (nested (M ${i})))`) +
+  facts(SIZE, (i) => `!(add-atom &self (nested (W ${i})))`) +
+  `!(length (collapse (match &self (nested (M $x)) $x)))`;
+runCase("runtime nested-head-index", nestedRuntimeSpace, [String(SIZE)], 15_000);
 
 const countAggregate =
   facts(SIZE, (i) => `(num ${i})`) + `!(length (collapse (match &self (num $x) $x)))`;

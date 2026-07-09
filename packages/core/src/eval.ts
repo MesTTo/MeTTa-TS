@@ -25,6 +25,7 @@ import {
   sym,
   variable,
 } from "./atom";
+import { dedupAlphaStable, ExactAtomSet } from "./atom-set";
 import {
   type AtomLog,
   emptyLog,
@@ -51,7 +52,9 @@ import {
 } from "./bindings";
 import {
   callGrounded,
+  type GroundFn,
   type GroundingTable,
+  isTableSafeGroundedOp,
   pettaOpNames,
   type ReduceEffect,
   type ReduceResult,
@@ -63,6 +66,8 @@ import {
   runCompiled,
   runCompiledEffectCount,
 } from "./compile";
+import { runChoicePlan, runDistinctChoicePlan, runDistinctChoicePlanBound } from "./choice-plan";
+import { runDistinctIntRelation } from "./distinct-int";
 import { readEnv } from "./env";
 import { FlatAtomSpace } from "./flat-atomspace";
 import { instantiate } from "./instantiate";
@@ -76,6 +81,7 @@ import {
   analyzeTableWorth,
   functorCallCount,
   IMPURE_OPS,
+  isTablingImpureHead,
   keyWellFormed,
   MODED_IMPURE_OPS,
 } from "./tabling";
@@ -372,6 +378,7 @@ function isDefinedHead(env: MinEnv, w: World, name: string): boolean {
     env.sigs.has(name) ||
     w.selfRules.has(name) ||
     env.gt.has(name) ||
+    env.agt.has(name) ||
     IMPURE_OPS.has(name)
   );
 }
@@ -488,6 +495,8 @@ export interface MinEnv {
   /** Automatic tabling storage: structural variant keys over token tries and bounded completed entries.
    *  `undefined` when tabling is disabled. */
   tableSpace?: TableSpace | undefined;
+  /** Positive only while an idempotent unique(collapse ...) consumer evaluates a proven-pure ground call. */
+  distinctGroundDepth?: number | undefined;
   /** Functor names proven tabling-safe by `analyzePurity`; recomputed when equations change. */
   pureFunctors?: Set<string>;
   /** Functor names proven safe for MODED tabling by `analyzePurity(env, MODED_IMPURE_OPS)` — a superset of
@@ -585,14 +594,41 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
   };
 }
 
-/** Static load (`addAtomToEnv`) added a `=` equation into `env.ruleIndex`, which the purity
- *  analysis does see, so clear the memo and re-derive purity. */
+const runtimePureCache = new Map<string, boolean>();
+const runtimeModedPureCache = new Map<string, boolean>();
+const runtimeTableWorthCache = new Map<string, boolean>();
+
+/** Static load (`addAtomToEnv`) changed rules or grounded-operation registration changed dispatch. */
 function invalidateTabling(env: MinEnv): void {
+  runtimePureCache.clear();
+  runtimeModedPureCache.clear();
+  runtimeTableWorthCache.clear();
+  if (env.compiled !== undefined) env.compileDirty = true;
   if (env.tableSpace !== undefined) {
     env.tableSpace.clear();
     env.tablingDirty = true;
-    env.compileDirty = true;
   }
+}
+
+function invalidateGroundedRegistration(env: MinEnv): void {
+  env.evaluatedAtoms = new WeakSet();
+  invalidateTabling(env);
+  // Compiled nodes inline the standard grounded arithmetic and comparison semantics. A host can replace
+  // those names, so this environment must stay on dispatch-aware interpretation after registration.
+  env.compiled = undefined;
+  env.compileDirty = undefined;
+}
+
+/** Register a sync grounded operation and invalidate analyses that may have classified its name. */
+export function registerGroundedOperation(env: MinEnv, name: string, op: GroundFn): void {
+  env.gt.set(name, op);
+  invalidateGroundedRegistration(env);
+}
+
+/** Register an async grounded operation and invalidate analyses that may have classified its name. */
+export function registerAsyncGroundedOperation(env: MinEnv, name: string, op: AsyncGroundFn): void {
+  env.agt.set(name, op);
+  invalidateGroundedRegistration(env);
 }
 
 // ---------- higher-order specialization (after PeTTa's src/specializer.pl) ----------
@@ -2034,7 +2070,7 @@ function* matchCandidates(env: MinEnv, w: World, pInst: Atom): CandidateSource {
     return; // pInst carries no state handle, so resolveAll would be a no-op
   }
   for (const atom of resolveAll(w, cands)) yield atom;
-  yield* runtimeCandidates(w, k);
+  yield* runtimeCandidates(w, k, pInst);
 }
 
 /** Apply state resolution to candidate atoms only when the world actually holds state. */
@@ -2042,9 +2078,9 @@ function resolveAll(w: World, atoms: Atom[]): readonly Atom[] {
   return w.store.size === 0 ? atoms : atoms.map((x) => resolveStates(w, x));
 }
 
-function* runtimeCandidates(w: World, k: string | undefined): Iterable<Atom> {
+function* runtimeCandidates(w: World, k: string | undefined, pattern?: Atom): Iterable<Atom> {
   if (w.flatSelfExtra !== undefined) {
-    for (const a of w.flatSelfExtra.candidatesFor(k)) yield resolveStates(w, a);
+    for (const a of w.flatSelfExtra.candidatesFor(k, pattern)) yield resolveStates(w, a);
   }
   for (const a of logToArray(w.selfExtra)) {
     if (k === undefined) yield resolveStates(w, a);
@@ -4084,8 +4120,6 @@ function collectHeadSyms(a: Atom, out: Set<string>): void {
 // and moded tabling (`MODED_IMPURE_OPS`, which treats `empty` as pure) each classify against their own set
 // with their OWN cache — the two must not share a map, since a call to one must never read a cached answer
 // the other computed for the same functor/version.
-const runtimePureCache = new Map<string, boolean>();
-const runtimeModedPureCache = new Map<string, boolean>();
 function runtimeFunctorPureWith(
   env: MinEnv,
   w: World,
@@ -4114,7 +4148,7 @@ function runtimeFunctorPureWith(
       const heads = new Set<string>();
       collectHeadSyms(rhs, heads);
       for (const h of heads) {
-        if (impureOps.has(h)) return false;
+        if (isTablingImpureHead(env, h, impureOps)) return false;
         if ((env.ruleIndex.has(h) || w.selfRules.has(h)) && !visit(h, seen)) return false;
       }
     }
@@ -4129,7 +4163,6 @@ const runtimeFunctorPure = (env: MinEnv, w: World, op: string): boolean =>
 const runtimeFunctorPureModed = (env: MinEnv, w: World, op: string): boolean =>
   runtimeFunctorPureWith(env, w, op, MODED_IMPURE_OPS, runtimeModedPureCache);
 
-const runtimeTableWorthCache = new Map<string, boolean>();
 function runtimeFunctorTableWorth(env: MinEnv, w: World, op: string, moded: boolean): boolean {
   const staticWorth = (moded ? env.modedTableWorth : env.tableWorth)?.has(op) ?? false;
   if (w.selfRules.size === 0) return staticWorth;
@@ -4147,11 +4180,57 @@ function runtimeFunctorTableWorth(env: MinEnv, w: World, op: string, moded: bool
 
 type CompletedTableKey = TableKey;
 
-function containsImpureHead(a: Atom, impureOps: ReadonlySet<string>): boolean {
+function containsImpureHead(env: MinEnv, a: Atom, impureOps: ReadonlySet<string>): boolean {
   if (a.kind !== "expr" || a.items.length === 0) return false;
   const h = a.items[0]!;
-  if (h.kind === "sym" && impureOps.has(h.name)) return true;
-  return a.items.some((it) => containsImpureHead(it, impureOps));
+  if (h.kind === "sym" && isTablingImpureHead(env, h.name, impureOps)) return true;
+  return a.items.some((it) => containsImpureHead(env, it, impureOps));
+}
+
+function groundTableVersionIfAdmissible(
+  env: MinEnv,
+  world: World,
+  op: string,
+  call: Atom,
+): number | undefined {
+  if (env.tableSpace === undefined || !call.ground || !keyWellFormed(call)) return undefined;
+  const runtimeRulesVisible = world.selfRules.size > 0 || world.selfVarRules.length > 0;
+  const runtimeVersion = runtimeRulesVisible ? world.selfRuleVersion : 0;
+  if (runtimeRulesVisible) {
+    return runtimeFunctorPure(env, world, op) &&
+      runtimeFunctorTableWorth(env, world, op, false) &&
+      !containsImpureHead(env, call, IMPURE_OPS)
+      ? runtimeVersion
+      : undefined;
+  }
+  return (env.pureFunctors?.has(op) ?? false) &&
+    (env.tableWorth?.has(op) ?? false) &&
+    !staticRuleSetChanged(world) &&
+    !containsImpureHead(env, call, IMPURE_OPS)
+    ? runtimeVersion
+    : undefined;
+}
+
+const DISTINCT_RESOURCE_LIMIT = Symbol("distinct-resource-limit");
+
+function distinctGroundEnabled(env: MinEnv): boolean {
+  return (env.distinctGroundDepth ?? 0) > 0;
+}
+
+function enforceDistinctLimit(env: MinEnv, count: number): void {
+  if (
+    distinctGroundEnabled(env) &&
+    env.tableSpace !== undefined &&
+    count > env.tableSpace.entryCellLimit()
+  )
+    throw DISTINCT_RESOURCE_LIMIT;
+}
+
+function dedupGroundPairs(pairs: readonly [Atom, Bindings][]): Array<[Atom, Bindings]> {
+  const seen = new ExactAtomSet();
+  const out: Array<[Atom, Bindings]> = [];
+  for (const pair of pairs) if (seen.add(pair[0])) out.push(pair);
+  return out;
 }
 
 function rememberGroundTable(env: MinEnv, key: CompletedTableKey, results: readonly Atom[]): void {
@@ -4624,6 +4703,203 @@ function canStreamStdlibCase(env: MinEnv, w: World): boolean {
   );
 }
 
+const CHOICE_PLAN_RULE_COUNTS: ReadonlyArray<readonly [string, number]> = [
+  ["collapse", 1],
+  ["let", 1],
+  ["let*", 1],
+  ["if", 2],
+  ["superpose", 0],
+  ["+", 0],
+  ["-", 0],
+  ["*", 0],
+  ["<", 0],
+  ["<=", 0],
+  [">", 0],
+  [">=", 0],
+  ["==", 0],
+  ["unique-atom", 0],
+];
+
+const CHOICE_PLAN_SIGNATURES: ReadonlyArray<readonly [string, readonly Atom[]]> = [
+  ["collapse", [sym("Atom"), sym("Atom")]],
+  ["let", [sym("Atom"), UNDEF, sym("Atom"), UNDEF]],
+  ["let*", [sym("Expression"), sym("Atom"), UNDEF]],
+  ["superpose", [sym("Expression"), UNDEF]],
+  ["+", [sym("Number"), sym("Number"), sym("Number")]],
+  ["-", [sym("Number"), sym("Number"), sym("Number")]],
+  ["*", [sym("Number"), sym("Number"), sym("Number")]],
+  ["if", [sym("Bool"), sym("Atom"), sym("Atom"), variable("t")]],
+  ["==", [variable("t"), variable("t"), sym("Bool")]],
+  ["<", [sym("Number"), sym("Number"), sym("Bool")]],
+  ["<=", [sym("Number"), sym("Number"), sym("Bool")]],
+  [">", [sym("Number"), sym("Number"), sym("Bool")]],
+  [">=", [sym("Number"), sym("Number"), sym("Bool")]],
+];
+
+const CHOICE_PLAN_GROUNDED_OPS = [
+  "+",
+  "-",
+  "*",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "==",
+  "superpose",
+  "unique-atom",
+];
+
+function canRunChoicePlan(env: MinEnv, w: World): boolean {
+  if (env.varRulesVar.length > 0 || w.selfVarRules.length > 0) return false;
+  for (const name of CHOICE_PLAN_GROUNDED_OPS) {
+    const grounded = env.gt.get(name);
+    if (grounded === undefined || env.agt.has(name) || !isTableSafeGroundedOp(name, grounded))
+      return false;
+  }
+  for (const [name, expectedRules] of CHOICE_PLAN_RULE_COUNTS) {
+    if ((env.ruleIndex.get(name)?.length ?? 0) !== expectedRules) return false;
+    if (w.selfRules.has(name) || staticRulesChangedFor(w, name)) return false;
+  }
+  if (env.sigs.has("unique-atom")) return false;
+  for (const [name, expected] of CHOICE_PLAN_SIGNATURES) {
+    const actual = env.sigs.get(name);
+    if (
+      actual === undefined ||
+      actual.length !== expected.length ||
+      actual.some((type, index) => !atomEq(type, expected[index]!))
+    )
+      return false;
+  }
+  return true;
+}
+
+const choicePlanConstructor =
+  (env: MinEnv, world: World) =>
+  (name: string): boolean =>
+    !isDefinedHead(env, world, name);
+
+const choicePlanDataExpression =
+  (env: MinEnv, world: World) =>
+  (atom: ExprAtom): boolean =>
+    candidatesW(env, world, atom).every(([lhs]) => !canMatchShallow(lhs, atom));
+
+const choicePlanApplication =
+  (env: MinEnv, world: World) =>
+  (name: string, args: readonly Atom[]): boolean =>
+    checkApplication(env, world, name, args) === null;
+
+function isClosedChoiceValue(env: MinEnv, world: World, atom: Atom): boolean {
+  if (!atom.ground) return false;
+  if (atom.kind !== "expr") return atom.kind !== "sym" || !isDefinedHead(env, world, atom.name);
+  if (atom.items.length === 0) return true;
+  const head = atom.items[0]!;
+  if (head.kind === "expr") return false;
+  if (head.kind === "sym" && isDefinedHead(env, world, head.name)) return false;
+  return atom.items.every((item) => isClosedChoiceValue(env, world, item));
+}
+
+const staticCustomMatcherCache = new WeakMap<
+  MinEnv,
+  { readonly atomCount: number; readonly hasCustomMatcher: boolean }
+>();
+
+function staticSpaceHasCustomMatcher(env: MinEnv): boolean {
+  const cached = staticCustomMatcherCache.get(env);
+  if (cached?.atomCount === env.atoms.length) return cached.hasCustomMatcher;
+  const hasCustomMatcher = env.atoms.some(atomHasCustomGrounded);
+  staticCustomMatcherCache.set(env, { atomCount: env.atoms.length, hasCustomMatcher });
+  return hasCustomMatcher;
+}
+
+function isDiscardedFiniteMatch(env: MinEnv, world: World, call: ExprAtom): boolean {
+  if (
+    opOf(call) !== "let" ||
+    call.items.length !== 4 ||
+    call.items[1]!.kind !== "var" ||
+    call.items[2]!.kind !== "expr" ||
+    opOf(call.items[2]!) !== "match" ||
+    call.items[2]!.items.length !== 4 ||
+    call.items[3]!.kind !== "expr" ||
+    opOf(call.items[3]!) !== "empty" ||
+    call.items[3]!.items.length !== 1 ||
+    (env.ruleIndex.get("let")?.length ?? 0) !== 1 ||
+    (env.ruleIndex.get("match")?.length ?? 0) !== 0 ||
+    (env.ruleIndex.get("empty")?.length ?? 0) !== 0 ||
+    env.varRulesVar.length > 0 ||
+    world.selfVarRules.length > 0 ||
+    world.selfRules.has("let") ||
+    world.selfRules.has("match") ||
+    world.selfRules.has("empty") ||
+    staticRulesChangedFor(world, "let") ||
+    staticRulesChangedFor(world, "match") ||
+    staticRulesChangedFor(world, "empty") ||
+    env.gt.has("let") ||
+    env.agt.has("let") ||
+    env.gt.has("match") ||
+    env.agt.has("match") ||
+    !env.gt.has("empty") ||
+    env.agt.has("empty") ||
+    !isTableSafeGroundedOp("empty", env.gt.get("empty")!) ||
+    world.store.size !== 0 ||
+    world.tokens.size !== 0
+  )
+    return false;
+  const match = call.items[2]! as ExprAtom;
+  const space = match.items[1]!;
+  if (space.kind !== "sym") return false;
+  if (atomHasCustomGrounded(match.items[2]!) || atomHasCustomGrounded(match.items[3]!))
+    return false;
+  if (space.name === "&self") {
+    if (staticSpaceHasCustomMatcher(env)) return false;
+    return !logToArray(world.selfExtra).some(atomHasCustomGrounded);
+  }
+  const named = world.spaces.get(space.name);
+  return named === undefined || !logToArray(named).some(atomHasCustomGrounded);
+}
+
+function tryFastUniqueChoiceFunction(
+  env: MinEnv,
+  world: World,
+  op: string,
+  args: readonly Atom[],
+): Atom[] | undefined {
+  if (env.sigs.has(op) || world.selfRules.has(op) || staticRulesChangedFor(world, op))
+    return undefined;
+  const rules = env.ruleIndex.get(op);
+  if (rules?.length !== 1) return undefined;
+  const [lhs, rhs] = rules[0]!;
+  if (
+    lhs.kind !== "expr" ||
+    lhs.items.length !== args.length + 1 ||
+    lhs.items[0]!.kind !== "sym" ||
+    lhs.items[0]!.name !== op ||
+    rhs.kind !== "expr" ||
+    opOf(rhs) !== "unique-atom" ||
+    rhs.items.length !== 2
+  )
+    return undefined;
+  const collapse = rhs.items[1]!;
+  if (collapse.kind !== "expr" || opOf(collapse) !== "collapse" || collapse.items.length !== 2)
+    return undefined;
+  if (!canRunChoicePlan(env, world) || !args.every((arg) => isClosedChoiceValue(env, world, arg)))
+    return undefined;
+  const bindings = new Map<string, Atom>();
+  for (let index = 0; index < args.length; index++) {
+    const parameter = lhs.items[index + 1]!;
+    if (parameter.kind !== "var" || bindings.has(parameter.name)) return undefined;
+    bindings.set(parameter.name, args[index]!);
+  }
+  const planned = runDistinctChoicePlanBound(
+    collapse.items[1]!,
+    bindings,
+    choicePlanConstructor(env, world),
+    choicePlanDataExpression(env, world),
+    choicePlanApplication(env, world),
+  );
+  if (planned === undefined) return undefined;
+  return [sym(","), ...planned];
+}
+
 function streamCaseSource(
   env: MinEnv,
   st: St,
@@ -4715,6 +4991,7 @@ function* reduceRulePairsG(
         out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
       }
     }
+    enforceDistinctLimit(env, out.length);
   }
   return [out, cur];
 }
@@ -4767,16 +5044,112 @@ function* mettaEvalG(
     let lw = w;
     const pendingKeys: CompletedTableKey[] = [];
     const flushReturn = (res: Array<[Atom, Bindings]>, stR: St): [Array<[Atom, Bindings]>, St] => {
-      if (pendingKeys.length > 0 && env.tableSpace !== undefined && res.every((p) => p[0].ground)) {
-        const prod = res.map((p) => p[0]);
+      const finalRes =
+        distinctGroundEnabled(env) && res.every((pair) => pair[0].ground)
+          ? dedupGroundPairs(res)
+          : res;
+      if (
+        pendingKeys.length > 0 &&
+        env.tableSpace !== undefined &&
+        finalRes.every((p) => p[0].ground)
+      ) {
+        const prod = finalRes.map((p) => p[0]);
         for (const k of pendingKeys) rememberGroundTable(env, k, prod);
       }
-      return [res, stR];
+      return [finalRes, stR];
     };
     reduceTrampoline: for (;;) {
       const op = (lw.items[0] as { name: string }).name;
       const args = lw.items.slice(1);
+      if (isDiscardedFiniteMatch(env, lst.world, lw)) return flushReturn([], lst);
+      const directUniqueChoice = tryFastUniqueChoiceFunction(env, lst.world, op, args);
+      if (directUniqueChoice !== undefined)
+        return flushReturn([[makeExpr(env, directUniqueChoice), lbnd]], lst);
+      if (
+        op === "unique-atom" &&
+        args.length === 1 &&
+        args[0]!.kind === "expr" &&
+        opOf(args[0]!) === "collapse" &&
+        args[0]!.items.length === 2 &&
+        canRunChoicePlan(env, lst.world)
+      ) {
+        const collapsedCall = args[0]!.items[1]!;
+        const planned = runDistinctChoicePlan(
+          collapsedCall,
+          choicePlanConstructor(env, lst.world),
+          choicePlanDataExpression(env, lst.world),
+          choicePlanApplication(env, lst.world),
+        );
+        if (planned !== undefined)
+          return flushReturn([[makeExpr(env, [sym(","), ...planned]), lbnd]], lst);
+        const collapsedOp = opOf(collapsedCall);
+        const tableVersion =
+          collapsedOp === undefined ||
+          collapsedCall.kind !== "expr" ||
+          checkApplication(env, lst.world, collapsedOp, collapsedCall.items.slice(1)) !== null
+            ? undefined
+            : groundTableVersionIfAdmissible(env, lst.world, collapsedOp, collapsedCall);
+        if (
+          collapsedOp !== undefined &&
+          tableVersion === 0 &&
+          lst.world.selfRules.size === 0 &&
+          lst.world.selfVarRules.length === 0 &&
+          !staticRuleSetChanged(lst.world) &&
+          env.tableSpace !== undefined &&
+          collapsedCall.kind === "expr"
+        ) {
+          const native = runDistinctIntRelation(
+            env,
+            collapsedOp,
+            collapsedCall.items.slice(1),
+            env.tableSpace.resourceBudget(),
+          );
+          if (native?.tag === "limit")
+            return flushReturn(
+              [[makeExpr(env, [sym("Error"), lw, sym("TableResourceLimit")]), lbnd]],
+              lst,
+            );
+          if (native?.tag === "ok") {
+            const unique = dedupAlphaStable([sym(","), ...native.answers]);
+            return flushReturn([[makeExpr(env, unique), lbnd]], lst);
+          }
+        }
+        if (collapsedOp !== undefined && collapsedCall.ground && tableVersion !== undefined) {
+          const previousDepth = env.distinctGroundDepth;
+          env.distinctGroundDepth = (previousDepth ?? 0) + 1;
+          try {
+            const [answers, distinctState] = yield* mettaEvalG(
+              env,
+              fuel - 1,
+              lst,
+              lbnd,
+              collapsedCall,
+            );
+            enforceDistinctLimit(env, answers.length);
+            const unique = dedupAlphaStable([sym(","), ...answers.map((answer) => answer[0])]);
+            return flushReturn([[makeExpr(env, unique), lbnd]], distinctState);
+          } catch (error) {
+            if (error !== DISTINCT_RESOURCE_LIMIT) throw error;
+            return flushReturn(
+              [[makeExpr(env, [sym("Error"), lw, sym("TableResourceLimit")]), lbnd]],
+              lst,
+            );
+          } finally {
+            env.distinctGroundDepth = previousDepth;
+          }
+        }
+      }
       if (op === "collapse" && args.length === 1) {
+        if (canRunChoicePlan(env, lst.world)) {
+          const planned = runChoicePlan(
+            args[0]!,
+            choicePlanConstructor(env, lst.world),
+            choicePlanDataExpression(env, lst.world),
+            choicePlanApplication(env, lst.world),
+          );
+          if (planned !== undefined)
+            return flushReturn([[makeExpr(env, [sym(","), ...planned]), lbnd]], lst);
+        }
         const match = matchInsideOnce(args[0]!);
         if (match !== undefined) {
           const namedMatch = tryFastNamedOnceMatch(env, lst, match, lbnd);
@@ -4901,13 +5274,13 @@ function* mettaEvalG(
             nextParts.push([[...accAtoms, inst(env, accB, ae)], accB]);
           }
         }
+        enforceDistinctLimit(env, nextParts.length);
         partials = nextParts;
       }
       // (2) reduce each combination
       const out: Array<[Atom, Bindings]> = [];
       let cur2 = cur;
       const tabling = env.tableSpace !== undefined && queryVars.length === 0;
-      const staticPure = env.pureFunctors?.has(op) ?? false;
       for (const [partAtoms, partB] of partials) {
         // error propagation: a type-directed-evaluated arg reduced to an error and changed
         let errFound: Atom | undefined;
@@ -4964,13 +5337,13 @@ function* mettaEvalG(
             modedTableAdmissible =
               runtimeFunctorPureModed(env, cur2.world, op) &&
               runtimeFunctorTableWorth(env, cur2.world, op, true) &&
-              !containsImpureHead(wApp, MODED_IMPURE_OPS);
+              !containsImpureHead(env, wApp, MODED_IMPURE_OPS);
           } else {
             modedTableAdmissible =
               !staticRuleSetChanged(cur2.world) &&
               (env.modedPureFunctors?.has(op) ?? false) &&
               (env.modedTableWorth?.has(op) ?? false) &&
-              !containsImpureHead(wApp, MODED_IMPURE_OPS);
+              !containsImpureHead(env, wApp, MODED_IMPURE_OPS);
           }
         }
         // compiled fast path: deterministic static functions, including the state-threaded impure subset.
@@ -5019,37 +5392,19 @@ function* mettaEvalG(
             continue;
           }
         }
-        // Ground tabling: memoise a pure call's ordered result bag under a structural token key. A functor
-        // with runtime rules is version-keyed (see runtimeFunctorPure); a purely-static functor uses
-        // version 0.
+        // Ground tabling uses separate domains for the normal ordered bag and a distinct answer set requested
+        // by unique(collapse ...). Runtime rules are version-keyed; purely static calls use version 0.
         let eligible = false;
         let key: CompletedTableKey | undefined;
         if (tabling && wApp.ground) {
-          const runtimeRulesVisible =
-            cur2.world.selfRules.size > 0 || cur2.world.selfVarRules.length > 0;
-          const runtimeVersion = runtimeRulesVisible ? cur2.world.selfRuleVersion : 0;
-          // Gate the O(size) keyWellFormed walk behind the O(1) purity test: a non-pure functor (the impure
-          // add-atom calls that carry a deep Peano term) is never tabled, so it never needs the walk. `&&` is
-          // commutative for the side-effect-free predicates, so this is byte-identical to checking it first.
-          if (runtimeRulesVisible) {
-            if (
-              runtimeFunctorPure(env, cur2.world, op) &&
-              runtimeFunctorTableWorth(env, cur2.world, op, false) &&
-              !containsImpureHead(wApp, IMPURE_OPS) &&
-              keyWellFormed(wApp)
-            ) {
-              eligible = true;
-              key = env.tableSpace!.key("ground", wApp, runtimeVersion);
-            }
-          } else if (
-            staticPure &&
-            (env.tableWorth?.has(op) ?? false) &&
-            !staticRuleSetChanged(cur2.world) &&
-            !containsImpureHead(wApp, IMPURE_OPS) &&
-            keyWellFormed(wApp)
-          ) {
+          const runtimeVersion = groundTableVersionIfAdmissible(env, cur2.world, op, wApp);
+          if (runtimeVersion !== undefined) {
             eligible = true;
-            key = env.tableSpace!.key("ground", wApp, runtimeVersion);
+            key = env.tableSpace!.key(
+              distinctGroundEnabled(env) ? "ground-distinct" : "ground",
+              wApp,
+              runtimeVersion,
+            );
           }
           if (eligible) {
             const hit = key === undefined ? undefined : env.tableSpace!.getCompleted(key)?.results;
@@ -5110,6 +5465,10 @@ function* mettaEvalG(
             active === undefined
               ? tableSpace.beginActive(encoded, encoded.varNames.length)
               : undefined;
+          if (started === null) {
+            out.push([makeExpr(env, [sym("Error"), wApp, sym("TableResourceLimit")]), partB]);
+            continue;
+          }
           if (started !== undefined) {
             modedEligible = true;
             modedKey = encoded;
@@ -5228,9 +5587,14 @@ function* mettaEvalG(
               opReturnsAtom,
             );
             cur2 = st4;
-            for (const r of reduced) out.push(r);
+            const producedPairs =
+              distinctGroundEnabled(env) && reduced.every((pair) => pair[0].ground)
+                ? dedupGroundPairs(reduced)
+                : reduced;
+            enforceDistinctLimit(env, producedPairs.length);
+            for (const r of producedPairs) out.push(r);
             if (eligible) {
-              const produced = out.slice(before).map((p) => p[0]);
+              const produced = producedPairs.map((p) => p[0]);
               if (key !== undefined && produced.every((a) => a.ground))
                 rememberGroundTable(env, key, produced);
             }

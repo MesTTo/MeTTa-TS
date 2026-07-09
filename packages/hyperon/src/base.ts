@@ -259,7 +259,7 @@ export class MeTTa {
    *  evaluator-applied effects such as adding/removing atoms or binding a token. A rejection becomes a
    *  MeTTa `(Error ...)` atom. Use it for I/O: fetch, a DAS query, a timer. */
   registerAsyncOperation(name: string, op: (args: Atom[]) => Promise<AsyncOperationReturn>): void {
-    this.env.agt.set(name, async (args) => {
+    core.registerAsyncGroundedOperation(this.env, name, async (args) => {
       try {
         const raw = await op(args.map(Atom.fromCAtom));
         return asyncOperationReturnToReduceResult(raw);
@@ -328,7 +328,7 @@ export class MeTTa {
    *  crashing the run. Throw {@link IncorrectArgumentError} to leave the expression unevaluated so other
    *  rewrite rules can try (MeTTa's multiple dispatch on a type mismatch). */
   registerOperation(name: string, op: (args: Atom[]) => Atom[]): void {
-    this.gt.set(name, (args) => {
+    core.registerGroundedOperation(this.env, name, (args) => {
       try {
         return { tag: "ok", results: op(args.map(Atom.fromCAtom)).map((a) => a.catom) };
       } catch (e) {

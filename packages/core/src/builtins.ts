@@ -8,6 +8,7 @@ import { alphaEq } from "./alpha";
 // ReduceResult. Numbers track int vs float; arithmetic on two ints stays int.
 import {
   type Atom,
+  type Ground,
   atomEq,
   atomVars,
   emptyExpr,
@@ -21,6 +22,7 @@ import {
   sym,
   variable,
 } from "./atom";
+import { dedupAlphaStable } from "./atom-set";
 import { matchAtoms } from "./match";
 import {
   addInt,
@@ -160,6 +162,7 @@ interface HostFs {
     position: number,
   ): number;
   fstatSync(fd: number): { readonly size: number | bigint };
+  closeSync(fd: number): void;
 }
 
 interface HostGitFs {
@@ -200,6 +203,7 @@ function isHostFs(value: unknown): value is HostFs {
     typeof fs.readSync === "function" &&
     typeof fs.writeSync === "function" &&
     typeof fs.fstatSync === "function" &&
+    typeof fs.closeSync === "function" &&
     fs.constants !== undefined
   );
 }
@@ -487,11 +491,6 @@ const removeFirst = (a: Atom, xs: readonly Atom[]): Atom[] => {
   const i = xs.findIndex((x) => atomEq(x, a));
   return i < 0 ? [...xs] : [...xs.slice(0, i), ...xs.slice(i + 1)];
 };
-const dedupAlpha = (xs: readonly Atom[]): Atom[] => {
-  const out: Atom[] = [];
-  for (const x of xs) if (!out.some((s) => alphaEq(s, x))) out.push(x);
-  return out;
-};
 const msIntersect = (lhs: readonly Atom[], rhs: readonly Atom[]): Atom[] => {
   let pool = [...rhs];
   const out: Atom[] = [];
@@ -581,22 +580,25 @@ const sortByFormat = (xs: readonly Atom[]): Atom[] =>
   [...xs].sort((a, b) => (format(a) < format(b) ? -1 : format(a) > format(b) ? 1 : 0));
 
 const DICT_SPACE_KIND = "dict-space";
-const dictSpaceRegistry = new Map<string, readonly Atom[]>();
+type ExtGround = Extract<Ground, { readonly g: "ext" }>;
+const dictSpaceEntriesByValue = new WeakMap<ExtGround, readonly Atom[]>();
 let dictSpaceCounter = 0;
 
 function makeDictSpace(entries: readonly Atom[]): Atom {
   const id = String(dictSpaceCounter++);
   const stored = [...entries];
-  dictSpaceRegistry.set(id, stored);
-  return gnd({ g: "ext", kind: DICT_SPACE_KIND, id }, sym("Grounded"), undefined, (other) =>
+  const value: ExtGround = { g: "ext", kind: DICT_SPACE_KIND, id };
+  const atom = gnd(value, sym("Grounded"), undefined, (other) =>
     stored.flatMap((entry) => matchAtoms(entry, other)),
   );
+  dictSpaceEntriesByValue.set(value, stored);
+  return atom;
 }
 
 function dictSpaceEntries(atom: Atom): readonly Atom[] | undefined {
   if (atom.kind !== "gnd" || atom.value.g !== "ext" || atom.value.kind !== DICT_SPACE_KIND)
     return undefined;
-  return dictSpaceRegistry.get(atom.value.id);
+  return dictSpaceEntriesByValue.get(atom.value);
 }
 
 function jsonToAtom(value: unknown): Atom {
@@ -696,12 +698,23 @@ const jsonEncodeOp: GroundFn = (args) => {
 
 const FILE_HANDLE_KIND = "file-handle";
 interface FileHandleRecord {
+  readonly fs: HostFs;
   readonly fd: number;
   readonly path: string;
   cursor: number;
   readonly append: boolean;
+  closed: boolean;
 }
-const fileHandleRegistry = new Map<string, FileHandleRecord>();
+const fileHandles = new WeakMap<ExtGround, FileHandleRecord>();
+const fileHandleFinalizer = new FinalizationRegistry<FileHandleRecord>((handle) => {
+  if (handle.closed) return;
+  handle.closed = true;
+  try {
+    handle.fs.closeSync(handle.fd);
+  } catch {
+    // Finalizers cannot report errors. Explicit file-close! returns an Error atom instead.
+  }
+});
 let fileHandleCounter = 0;
 
 function fileIoError(op: string, args: readonly Atom[], msg: string): ReduceResult {
@@ -755,13 +768,18 @@ function joinHostPath(baseDir: string, name: string): string {
 function fileHandle(atom: Atom): FileHandleRecord | undefined {
   if (atom.kind !== "gnd" || atom.value.g !== "ext" || atom.value.kind !== FILE_HANDLE_KIND)
     return undefined;
-  return fileHandleRegistry.get(atom.value.id);
+  const handle = fileHandles.get(atom.value);
+  return handle?.closed === false ? handle : undefined;
 }
 
-function makeFileHandle(fd: number, path: string, append: boolean): Atom {
+function makeFileHandle(fs: HostFs, fd: number, path: string, append: boolean): Atom {
   const id = `file-handle-${fileHandleCounter++}`;
-  fileHandleRegistry.set(id, { fd, path, cursor: 0, append });
-  return gnd({ g: "ext", kind: FILE_HANDLE_KIND, id }, sym("FileHandle"));
+  const value: ExtGround = { g: "ext", kind: FILE_HANDLE_KIND, id };
+  const atom = gnd(value, sym("FileHandle"));
+  const handle = { fs, fd, path, cursor: 0, append, closed: false };
+  fileHandles.set(value, handle);
+  fileHandleFinalizer.register(value, handle, value);
+  return atom;
 }
 
 function fileSize(fs: HostFs, fd: number): number | undefined {
@@ -822,7 +840,7 @@ const fileOpenOp: GroundFn = (args) => {
   const parsed = parseFileOpenFlags(fs, options);
   if ("error" in parsed) return fileIoError("file-open!", args, parsed.error);
   try {
-    return ok(makeFileHandle(fs.openSync(path, parsed.flags, 0o666), path, parsed.append));
+    return ok(makeFileHandle(fs, fs.openSync(path, parsed.flags, 0o666), path, parsed.append));
   } catch (err) {
     return fileIoError(
       "file-open!",
@@ -830,6 +848,35 @@ const fileOpenOp: GroundFn = (args) => {
       err instanceof Error
         ? `Failed to open file with provided path=${path} and options=${options}: ${err.message}`
         : `Failed to open file with provided path=${path} and options=${options}`,
+    );
+  }
+};
+
+const fileCloseOp: GroundFn = (args) => {
+  const fs = fileIoHost("file-close!", args);
+  if (!isHostFs(fs)) return fs;
+  const atom = args[0];
+  if (
+    args.length !== 1 ||
+    atom?.kind !== "gnd" ||
+    atom.value.g !== "ext" ||
+    atom.value.kind !== FILE_HANDLE_KIND
+  )
+    return ierr("file-close! expects one FileHandle");
+  const handle = fileHandles.get(atom.value);
+  if (handle === undefined || handle.closed)
+    return fileIoError("file-close!", args, "FileHandle is already closed");
+  try {
+    fs.closeSync(handle.fd);
+    handle.closed = true;
+    fileHandles.delete(atom.value);
+    fileHandleFinalizer.unregister(atom.value);
+    return ok(emptyExpr);
+  } catch (err) {
+    return fileIoError(
+      "file-close!",
+      args,
+      err instanceof Error ? `Failed to close file: ${err.message}` : "Failed to close file",
     );
   }
 };
@@ -968,7 +1015,7 @@ const gitImportOp: GroundFn = (args) => {
       );
     }
     host.fs.mkdirSync(baseDir, { recursive: true });
-    host.childProcess.execFileSync("git", ["clone", "--depth", "1", gitPath, localDir], {
+    host.childProcess.execFileSync("git", ["clone", "--depth", "1", "--", gitPath, localDir], {
       stdio: "pipe",
     });
     return ok(emptyExpr);
@@ -1014,6 +1061,7 @@ const stdEntries: Array<[string, GroundFn]> = [
   ["catalog-clear!", catalogClearOp],
   ["catalog-list!", catalogListOp],
   ["catalog-update!", catalogUpdateOp],
+  ["file-close!", fileCloseOp],
   ["file-get-size!", fileGetSizeOp],
   ["git-import!", gitImportOp],
   ["file-open!", fileOpenOp],
@@ -1118,7 +1166,7 @@ const stdEntries: Array<[string, GroundFn]> = [
     (args) => {
       const e = exprArgs(args);
       return e && e.length === 1
-        ? ok(expr(dedupAlpha(e[0]!)))
+        ? ok(expr(dedupAlphaStable(e[0]!)))
         : ierr("unique-atom expects one expression");
     },
   ],
@@ -1324,7 +1372,10 @@ const pettaEntries: Array<[string, GroundFn]> = [
   // PeTTa metta.pl: dedupe a tuple modulo alpha-equivalence (two atoms equal up to a consistent
   // renaming of variables count as one). Hyperon has no such op; this is the alpha-aware sibling of
   // unique-atom, used by lib functions that work over patterns with variables.
-  ["alpha-unique-atom", (a) => oneExpr("alpha-unique-atom", a, (it) => ok(expr(dedupAlpha(it))))],
+  [
+    "alpha-unique-atom",
+    (a) => oneExpr("alpha-unique-atom", a, (it) => ok(expr(dedupAlphaStable(it)))),
+  ],
   [
     "second-from-pair",
     (a) =>
@@ -1502,6 +1553,41 @@ const pettaEntries: Array<[string, GroundFn]> = [
 /** Names of the PeTTa-compat grounded ops. They yield to user `=` rules (PeTTa is rules-first, builtins as
  *  fallback), so a program that defines its own e.g. `sort`/`length` is not shadowed by the stdlib one. */
 export const pettaOpNames: ReadonlySet<string> = new Set(pettaEntries.map(([n]) => n));
+
+const TABLE_UNSAFE_GROUNDED_OPS: ReadonlySet<string> = new Set([
+  "catalog-clear!",
+  "catalog-list!",
+  "catalog-update!",
+  "current-time",
+  "dict-space",
+  "file-close!",
+  "file-get-size!",
+  "file-open!",
+  "file-read-exact!",
+  "file-read-to-string!",
+  "file-seek!",
+  "file-write!",
+  "git-import!",
+  "help!",
+  "json-decode",
+  "print!",
+  "println!",
+  "random-float",
+  "random-int",
+  "register-module!",
+  "sealed",
+  "test",
+]);
+
+const tableSafeGroundedFns = new Map<string, GroundFn>();
+for (const [name, fn] of [...mathEntries, ...coreEntries, ...stdEntries, ...pettaEntries])
+  if (!TABLE_UNSAFE_GROUNDED_OPS.has(name) && !tableSafeGroundedFns.has(name))
+    tableSafeGroundedFns.set(name, fn);
+
+/** True only for the unchanged built-in function registered under this name. */
+export function isTableSafeGroundedOp(name: string, fn: GroundFn): boolean {
+  return tableSafeGroundedFns.get(name) === fn;
+}
 
 /** The arithmetic / boolean / list-surgery / math grounding core every KB starts with. */
 export function baseTable(): GroundingTable {

@@ -97,6 +97,43 @@ describe("FlatAtomSpace runtime store", () => {
     expect([...store.candidatesFor("p")].map(format)).toEqual(["(p a)", "($h wild)", "(p c)"]);
   });
 
+  it("selects a nested argument functor from a ground store", () => {
+    const store = mustAppend(FlatAtomSpace.empty(), [
+      A(sym("num"), A(sym("M"), sym("a"))),
+      A(sym("num"), A(sym("W"), sym("b"))),
+      A(sym("other"), A(sym("M"), sym("c"))),
+      A(sym("num"), A(sym("M"), sym("d"))),
+    ]);
+    const pattern = A(sym("num"), A(sym("M"), variable("x")));
+
+    expect([...store.candidatesFor("num", pattern)].map(format)).toEqual([
+      "(num (M a))",
+      "(num (M d))",
+    ]);
+  });
+
+  it("keeps the ordinary candidate path when a pattern has no nested-head constraint", () => {
+    const store = mustAppend(FlatAtomSpace.empty(), [A(A(sym("g")), sym("a"))]);
+    const pattern = A(sym("unknown"), variable("x"));
+
+    // Expression-headed facts remain candidates for counter and unification semantics.
+    expect([...store.candidatesFor("unknown", pattern)].map(format)).toEqual(["((g) a)"]);
+  });
+
+  it("falls back to complete functor candidates when the store has a non-ground fact", () => {
+    const store = mustAppend(FlatAtomSpace.empty(), [
+      A(sym("num"), A(sym("M"), sym("a"))),
+      A(sym("num"), A(sym("W"), sym("b"))),
+      A(sym("num"), variable("wild")),
+    ]);
+    const pattern = A(sym("num"), A(sym("M"), variable("x")));
+    const matches = [...store.candidatesFor("num", pattern)].flatMap((candidate) =>
+      matchAtoms(pattern, candidate).map(() => format(candidate)),
+    );
+
+    expect(matches).toEqual(["(num (M a))", "(num $wild)"]);
+  });
+
   it("bails on a grounded executor and leaves the store usable", () => {
     const fact = A(sym("p"), sym("a"));
     const store = mustAppend(FlatAtomSpace.empty(), [fact]);

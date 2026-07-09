@@ -64,6 +64,8 @@ const pattern = parse("(Parent $x Bob)", standardTokenizer())!;
 const bindings = await queryDas(transport, "&self", pattern);
 ```
 
+The gateway accepts exactly one MeTTa atom in each returned binding value. Blank, malformed, bang-prefixed, and multi-atom values fail at the wire boundary.
+
 ## Testing without a server
 
 For tests and local development, `das-client` ships a `MockTransport` so you can exercise the query path without a running DAS. Use it to drive `DasSpace`/`DasLiveSpace` against canned answers, then swap in the real transport for deployment.

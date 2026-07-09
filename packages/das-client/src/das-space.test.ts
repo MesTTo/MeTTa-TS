@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { sym, variable, expr, instantiate, atomEq } from "@metta-ts/core";
+import { sym, variable, expr, gfloat, gint, instantiate, atomEq } from "@metta-ts/core";
 import { DasSpace } from "./das-space";
 import { MockTransport } from "./transport";
 
@@ -21,5 +21,12 @@ describe("DasSpace (over a mock transport)", () => {
 
     expect(space.remove(expr([sym("Similarity"), sym("human"), sym("chimp")]))).toBe(true);
     expect(space.query(expr([sym("Similarity"), sym("human"), variable("s")])).length).toBe(1);
+  });
+
+  it("removes atoms using MeTTa structural equality", () => {
+    const space = new DasSpace(new MockTransport([gint(3)]));
+
+    expect(space.remove(gfloat(3))).toBe(true);
+    expect(space.atoms()).toEqual([]);
   });
 });

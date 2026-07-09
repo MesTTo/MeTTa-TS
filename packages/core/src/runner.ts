@@ -18,6 +18,7 @@ import {
   initSt,
   mettaEval,
   mettaEvalAsync,
+  registerAsyncGroundedOperation,
 } from "./eval";
 import { stdTable } from "./builtins";
 import { analyzePurity, analyzeTableWorth, MODED_IMPURE_OPS } from "./tabling";
@@ -123,13 +124,10 @@ export interface RunOptions {
   readonly tabling?: boolean;
   readonly experimental?: {
     readonly hashCons?: boolean;
-    readonly streamEmit?: boolean;
-    readonly tableBackchain?: boolean;
-    readonly trieSpace?: boolean;
     // Compact interned runtime `&self` store (typed-array term columns + a decode cache): default on.
     // It lowers peak RSS on add-heavy runs and stays byte-identical to the plain AtomLog path. The `false`
     // value is kept for differential tests and profiling. Atoms that cannot be encoded (a grounded
-    // executor/matcher) fall back to the log automatically.
+    // executor, matcher, or non-default grounded type) fall back to the log automatically.
     readonly flatAtomspace?: boolean;
     // Trail-based zero-allocation conjunctive matching (eval.ts matchConjTrail). Byte-identical to the
     // immutable matcher, differential-gated; off by default.
@@ -268,7 +266,7 @@ export async function runProgramAsync(
   const parsed = parseAll(src, standardTokenizer());
   const env = buildDefaultEnv(imports, opts.tabling ?? false, opts);
   wireParallelEvaluation(env, parsed, opts);
-  for (const [k, v] of asyncOps) env.agt.set(k, v);
+  for (const [k, v] of asyncOps) registerAsyncGroundedOperation(env, k, v);
   const out: QueryResult[] = [];
   let st: St = initSt();
   if (opts.maxStackDepth !== undefined) st.world.maxStackDepth = opts.maxStackDepth;
