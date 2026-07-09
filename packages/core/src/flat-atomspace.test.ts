@@ -9,12 +9,15 @@ import fc from "fast-check";
 import { FlatAtomSpace } from "./flat-atomspace";
 import { type Atom, expr, gint, gstr, sym, variable } from "./atom";
 import { format, parseAll } from "./parser";
+import { matchAtoms } from "./match";
 import { ORACLE_FILES, readOracleFile } from "./oracle-corpus";
 import { standardTokenizer } from "./runner";
 
 const BENCH_CORPUS = resolve(process.cwd(), "packages/node/bench/corpus-mettats");
 
 const A = (...items: Atom[]): Atom => expr(items);
+const exprHead = (atom: Atom): string | undefined =>
+  atom.kind === "expr" && atom.items[0]?.kind === "sym" ? atom.items[0].name : undefined;
 
 // All-compactable appends in these tests must succeed; fail loudly if one bails.
 function mustAppend(store: FlatAtomSpace, atoms: Atom[]): FlatAtomSpace {
@@ -102,5 +105,50 @@ describe("FlatAtomSpace runtime store", () => {
     // The aborted batch stays invisible; the store keeps working.
     expect(store.toArray().map(format)).toEqual(["(p a)"]);
     expect(mustAppend(store, [A(sym("p"), sym("b"))]).size).toBe(2);
+  });
+
+  it("matches the materialised store for random append/remove/query sequences", () => {
+    const head = fc.constantFrom("p", "q", "r");
+    const leaf = fc.oneof(
+      fc.constantFrom("a", "b", "c").map(sym),
+      fc.integer({ min: 0, max: 5 }).map(gint),
+      fc.constantFrom("x", "y").map(variable),
+    );
+    const factArb = fc.tuple(head, fc.array(leaf, { minLength: 1, maxLength: 3 })).map(
+      ([h, args]) => A(sym(h), ...args),
+    );
+    const opArb = fc.oneof(
+      factArb.map((atom) => ({ tag: "add" as const, atom })),
+      factArb.map((atom) => ({ tag: "remove" as const, atom })),
+      fc
+        .tuple(head, fc.array(leaf, { minLength: 1, maxLength: 3 }))
+        .map(([h, args]) => ({ tag: "query" as const, atom: A(sym(h), ...args) })),
+    );
+
+    fc.assert(
+      fc.property(fc.array(opArb, { maxLength: 40 }), (ops) => {
+        let store = FlatAtomSpace.empty();
+        let plain: Atom[] = [];
+        for (const op of ops) {
+          if (op.tag === "add") {
+            store = mustAppend(store, [op.atom]);
+            plain.push(op.atom);
+          } else if (op.tag === "remove") {
+            store = store.removeOne(op.atom);
+            const i = plain.findIndex((atom) => format(atom) === format(op.atom));
+            if (i >= 0) plain = [...plain.slice(0, i), ...plain.slice(i + 1)];
+          } else {
+            const got = [...store.candidatesFor(exprHead(op.atom))].flatMap((atom) =>
+              matchAtoms(op.atom, atom).map(() => format(atom)),
+            );
+            const expected = plain.flatMap((atom) =>
+              matchAtoms(op.atom, atom).map(() => format(atom)),
+            );
+            expect(got).toEqual(expected);
+          }
+          expect(store.toArray().map(format)).toEqual(plain.map(format));
+        }
+      }),
+    );
   });
 });

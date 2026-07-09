@@ -177,7 +177,9 @@ interface Space { /* add, remove, atoms, query, ... */ }
 class InMemorySpace implements Space
 ```
 
-The default `&self` space is an `InMemorySpace`. For the class-style space API, see [`@metta-ts/hyperon`](/reference/hyperon).
+The class-style space API uses `InMemorySpace`, which keeps a symbol-head index for expression queries.
+The program runner uses indexed static atoms plus a compact runtime `&self` store for `add-atom` and
+`import!` effects. For the class-style space API, see [`@metta-ts/hyperon`](/reference/hyperon).
 
 ## Standard library and modules
 

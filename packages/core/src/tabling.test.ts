@@ -6,9 +6,10 @@ import { buildEnv } from "./eval";
 import { stdTable } from "./builtins";
 import { parseAll } from "./parser";
 import { standardTokenizer, preludeAtoms, runProgram } from "./runner";
-import { analyzePurity, tableKey, keyWellFormed } from "./tabling";
+import { analyzePurity, analyzeTableWorth, keyWellFormed } from "./tabling";
 import { expr, sym, gint, gfloat } from "./atom";
 import { format } from "./parser";
+import { TableSpace } from "./table-space";
 
 const atoms = (src: string) =>
   parseAll(src, standardTokenizer())
@@ -44,9 +45,30 @@ describe("purity analysis", () => {
     expect(pure.has("b")).toBe(false);
   });
 
-  it("tableKey is stable and keyWellFormed rejects floats", () => {
+  it("table-worth analysis admits branching recursion and rejects linear recursion", () => {
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...atoms(
+          "(= (fib $n) (if (< $n 2) $n (+ (fib (- $n 1)) (fib (- $n 2)))))\n" +
+            "(= (fact $n $acc) (if (< $n 2) $acc (fact (- $n 1) (* $acc $n))))",
+        ),
+      ],
+      stdTable(),
+    );
+    const pure = analyzePurity(env);
+    const worth = analyzeTableWorth(env, pure);
+    expect(worth.has("fib")).toBe(true);
+    expect(worth.has("fact")).toBe(false);
+  });
+
+  it("structural table keys are stable and keyWellFormed rejects floats", () => {
+    const tables = new TableSpace();
     const call = expr([sym("fib"), gint(30)]);
-    expect(tableKey(call)).toBe("(fib 30)");
+    expect(tables.key("ground", call, 0).tokens).toEqual(tables.key("ground", call, 0).tokens);
+    expect(tables.key("ground", call, 0).tokens).not.toEqual(
+      tables.key("ground", call, 1).tokens,
+    );
     expect(keyWellFormed(call)).toBe(true);
     expect(keyWellFormed(expr([sym("g"), gfloat(1.5)]))).toBe(false);
   });
@@ -71,22 +93,45 @@ describe("tabling end to end", () => {
     const tabled = runProgram(src, 100_000, new Map(), { tabling: true });
     expect(tabled[0]!.results.map(format)).toEqual(["30"]);
   });
+
+  it("linear recursion is not tabled automatically but still evaluates correctly", () => {
+    const src = "(= (fact $n $acc) (if (< $n 2) $acc (fact (- $n 1) (* $acc $n))))\n!(fact 8 1)";
+    const tabled = runProgram(src, 100_000, new Map(), { tabling: true });
+    const untabled = runProgram(src, 100_000, new Map(), { tabling: false });
+    expect(tabled[0]!.results.map(format)).toEqual(untabled[0]!.results.map(format));
+    expect(tabled[0]!.results.map(format)).toEqual(["40320"]);
+  });
 });
 
 describe("tabling invalidation", () => {
-  it("a runtime add-atom of a new equation does not serve a stale cached answer", () => {
+  it("runtime helper rule changes invalidate cached callers through the world rule version", () => {
     const src =
-      "(= (g $x) $x)\n" +
-      "!(g 1)\n" + // primes the cache with (g 1)
-      "!(add-atom &self (= (g 1) 99))\n" + // g's equations change at runtime
-      "!(g 1)";
+      "(= (fib $n) (if (< $n 2) (base) (+ (fib (- $n 1)) (fib (- $n 2)))))\n" +
+      "!(add-atom &self (= (base) 1))\n" +
+      "!(fib 3)\n" +
+      "!(remove-atom &self (= (base) 1))\n" +
+      "!(add-atom &self (= (base) 2))\n" +
+      "!(fib 3)";
     const tabled = runProgram(src, 100_000, new Map(), { tabling: true });
     const untabled = runProgram(src, 100_000, new Map(), { tabling: false });
     const lastT = tabled[tabled.length - 1]!.results.map(format);
     const lastU = untabled[untabled.length - 1]!.results.map(format);
-    // invalidation means the re-query matches the untabled oracle, not the stale cached answer
     expect(lastT).toEqual(lastU);
-    expect(lastT).not.toEqual(["1"]);
+    expect(lastT).toEqual(["6"]);
+  });
+
+  it("static rule removals do not reuse cached answers from the full static graph", () => {
+    const src =
+      "(= (base) 1)\n" +
+      "(= (fib $n) (if (< $n 2) (base) (+ (fib (- $n 1)) (fib (- $n 2)))))\n" +
+      "!(fib 3)\n" +
+      "!(remove-atom &self (= (base) 1))\n" +
+      "!(fib 3)";
+    const tabled = runProgram(src, 100_000, new Map(), { tabling: true });
+    const untabled = runProgram(src, 100_000, new Map(), { tabling: false });
+    expect(tabled.map((r) => r.results.map(format))).toEqual(
+      untabled.map((r) => r.results.map(format)),
+    );
   });
 });
 

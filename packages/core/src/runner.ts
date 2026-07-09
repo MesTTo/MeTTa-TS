@@ -20,11 +20,12 @@ import {
   mettaEvalAsync,
 } from "./eval";
 import { stdTable } from "./builtins";
-import { analyzePurity, MODED_IMPURE_OPS } from "./tabling";
+import { analyzePurity, analyzeTableWorth, MODED_IMPURE_OPS } from "./tabling";
 import { PRELUDE_SRC } from "./prelude";
 import { withBuiltinModules } from "./extensions";
 import { stdlibAtoms } from "./stdlib";
 import { pettaStdlibAtoms } from "./petta-stdlib";
+import { TableSpace } from "./table-space";
 
 /** The standard tokenizer: integer/float literals and the `True`/`False` grounded booleans. */
 export function standardTokenizer(): Tokenizer {
@@ -56,6 +57,34 @@ export interface QueryResult {
 
 export const DEFAULT_FUEL = 100_000;
 const DEFAULT_TABLING = true;
+const DEFAULT_FLAT_ATOMSPACE = true;
+
+function flatAtomspaceEnabled(opts: RunOptions): boolean {
+  return opts.experimental?.flatAtomspace ?? DEFAULT_FLAT_ATOMSPACE;
+}
+
+interface TablingAnalysis {
+  readonly pureFunctors: Set<string>;
+  readonly modedPureFunctors: Set<string>;
+  readonly tableWorth: Set<string>;
+  readonly modedTableWorth: Set<string>;
+}
+
+let defaultTablingAnalysis: TablingAnalysis | undefined;
+
+function baseTablingAnalysis(env: MinEnv): TablingAnalysis {
+  if (defaultTablingAnalysis === undefined) {
+    const pureFunctors = analyzePurity(env);
+    const modedPureFunctors = analyzePurity(env, MODED_IMPURE_OPS);
+    defaultTablingAnalysis = {
+      pureFunctors,
+      modedPureFunctors,
+      tableWorth: analyzeTableWorth(env, pureFunctors),
+      modedTableWorth: analyzeTableWorth(env, modedPureFunctors),
+    };
+  }
+  return defaultTablingAnalysis;
+}
 
 /** A fresh environment preloaded with the prelude and standard library, with `imports` seeded by the
  *  built-in extension modules (e.g. `concurrency`). The env is built once and extended per non-bang
@@ -75,13 +104,15 @@ function buildDefaultEnv(
   if (opts.hostImport !== undefined) env.hostImport = opts.hostImport;
   if (experimental?.hashCons === true) env.intern = createInternTable();
   if (experimental?.trail === true) env.useTrail = true;
-  if (experimental?.flatAtomspace === true) env.useFlatAtomspace = true;
+  if (flatAtomspaceEnabled(opts)) env.useFlatAtomspace = true;
   if (tabling) {
-    env.table = new Map();
-    env.modedTable = new Map();
-    env.modedInProgress = new Set();
-    env.pureFunctors = analyzePurity(env);
-    env.modedPureFunctors = analyzePurity(env, MODED_IMPURE_OPS);
+    env.tableSpace = new TableSpace();
+    const base = baseTablingAnalysis(env);
+    env.pureFunctors = base.pureFunctors;
+    env.modedPureFunctors = base.modedPureFunctors;
+    env.tableWorth = base.tableWorth;
+    env.modedTableWorth = base.modedTableWorth;
+    env.tablingDirty = false;
     env.compiled = new Map();
     env.compileDirty = true;
   }
@@ -95,11 +126,10 @@ export interface RunOptions {
     readonly streamEmit?: boolean;
     readonly tableBackchain?: boolean;
     readonly trieSpace?: boolean;
-    // Compact interned runtime `&self` store (typed-array term columns + a decode cache): about 3x
-    // lower peak RSS on add-heavy runs (matespacefast ~1.2GB -> ~0.4GB) for about 1.6x the wall time
-    // there, at parity elsewhere (peano). Byte-identical, differential-gated over the whole corpus.
-    // Off by default: the plain log is faster whenever memory fits. Atoms that cannot be encoded (a
-    // grounded executor/matcher) fall back to the log automatically.
+    // Compact interned runtime `&self` store (typed-array term columns + a decode cache): default on.
+    // It lowers peak RSS on add-heavy runs and stays byte-identical to the plain AtomLog path. The `false`
+    // value is kept for differential tests and profiling. Atoms that cannot be encoded (a grounded
+    // executor/matcher) fall back to the log automatically.
     readonly flatAtomspace?: boolean;
     // Trail-based zero-allocation conjunctive matching (eval.ts matchConjTrail). Byte-identical to the
     // immutable matcher, differential-gated; off by default.

@@ -13,7 +13,8 @@ import { parseAll, format } from "./parser";
 import { pettaStdlibAtoms } from "./petta-stdlib";
 import { preludeAtoms, standardTokenizer } from "./runner";
 import { stdlibAtoms } from "./stdlib";
-import { analyzePurity } from "./tabling";
+import { analyzePurity, analyzeTableWorth, MODED_IMPURE_OPS } from "./tabling";
+import { TableSpace } from "./table-space";
 import { importsForBaseDir } from "./oracle-corpus";
 
 const ROUTE_ENV = "METTA_COLLAPSE_ROUTE";
@@ -36,8 +37,12 @@ afterEach(() => {
 function buildDefaultTestEnv(imports: Map<string, Atom[]>) {
   const env = buildEnv([...preludeAtoms(), ...stdlibAtoms(), ...pettaStdlibAtoms()], stdTable());
   env.imports = withBuiltinModules(imports);
-  env.table = new Map();
+  env.tableSpace = new TableSpace();
   env.pureFunctors = analyzePurity(env);
+  env.modedPureFunctors = analyzePurity(env, MODED_IMPURE_OPS);
+  env.tableWorth = analyzeTableWorth(env, env.pureFunctors);
+  env.modedTableWorth = analyzeTableWorth(env, env.modedPureFunctors);
+  env.tablingDirty = false;
   env.compiled = new Map();
   env.compileDirty = true;
   return env;

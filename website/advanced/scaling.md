@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Scaling to millions of atoms
 
-A naive `match` over a space is a linear scan, which does not scale. MeTTa TS has three tools for large knowledge bases, in increasing specialization.
+A naive `match` over a space is a linear scan, which does not scale. MeTTa TS has five tools for large knowledge bases, in increasing specialization.
 
 ## Clause indexing (automatic)
 
@@ -20,6 +20,20 @@ const facts = Array.from({ length: 200_000 }, (_, i) => `(edge ${i} ${i + 1})`).
 const res = runProgram(`${facts}\n!(match &self (edge 150000 $y) $y)`);
 console.log(res.at(-1)!.results.map(format)); // [ '150001' ] — the index jumps to the keyed row
 ```
+
+## The compact runtime `&self` store
+
+Runtime additions to `&self`, such as atoms inserted with `add-atom` or loaded with `import!`, use the compact flat atomspace by default. It stores compactable atoms as interned term ids in typed-array chunks and decodes tree atoms only when an observable operation needs them. If a batch contains a grounded atom with an executor or custom matcher, that world's runtime additions fall back to the materialising log so grounded behavior stays unchanged.
+
+## Automatic tabling
+
+Recursive pure functions use automatic tabling only when the rule graph predicts overlapping work. A recursive strongly connected component must branch back into itself at least twice, so Fibonacci-style overlap is tabled while single-tail recursion such as factorial stays on the normal compiled path.
+
+The memo store uses structural token keys and a token trie, not recursive pretty-printed strings. It is bounded by entry count, answer count, retained atom cells, maximum entry size, and shared interner leaves. Runtime rules are keyed by a whole-world rule version, so a cached answer is not reused after a runtime equation changes. Calls that carry an embedded space read, state operation, import, or other impure expression are not tabled.
+
+If a non-ground tabled call directly re-enters the same active variant, MeTTa TS switches that call to local-linear completion. It replays the active table's known answers, re-runs the pure producer until no new canonical answers are added, and returns the fixed-point answer set once. Non-cyclic calls still preserve ordered bags and duplicate answers.
+
+This is deliberately not Picat-style mode-directed tabling. Picat can keep only `min`, `max`, or other selected answers for a mode declaration. MeTTa TS does not infer that semantic choice automatically.
 
 ## The flat interned KB
 
@@ -74,4 +88,4 @@ This is a niche tool: returning hundreds of thousands of matches from workers co
 
 ## Which to reach for
 
-Start with nothing: the clause index handles keyed queries over millions of atoms automatically. Use `FlatKB` when memory and scan speed over a mostly-ground KB matter, and `ParallelFlatMatcher` only for large, non-selective, small-result scans.
+Start with nothing: the evaluator uses indexed matching, bounded automatic tabling, and the compact runtime `&self` store automatically. Use `FlatKB` when you want an explicit read-heavy flat KB or William mining over a mostly-ground corpus, and `ParallelFlatMatcher` only for large, non-selective, small-result scans.

@@ -282,23 +282,23 @@ The pure-MeTTa path stays TypeScript throughout, with no escape to native code. 
 
 ### Head-to-head with PeTTa
 
-A reproducible benchmark ([`packages/node/bench/corpus-bench.mjs`](packages/node/bench/corpus-bench.mjs)) runs the PeTTa example corpus through both engines as subprocesses and checks each program's embedded `(test …)` assertions. On the Hyperon-faithful subset (host-FFI examples and PeTTa-only execution-model examples are excluded, with the reason recorded for each), MeTTa TS passes 97 of the shared programs and is **faster than PeTTa on all 97**, median ~2x, on SWI-Prolog's GMP-backed integers, from pure TypeScript.
+A reproducible benchmark ([`packages/node/bench/corpus-bench.mjs`](packages/node/bench/corpus-bench.mjs)) runs the PeTTa example corpus through both engines as subprocesses and checks each program's embedded `(test …)` assertions. On the Hyperon-faithful subset (host-FFI examples and PeTTa-only execution-model examples are excluded, with the reason recorded for each), MeTTa TS passes 98 of the shared programs and is **faster than PeTTa on all 98**, median 1.82x and geomean 1.85x, on SWI-Prolog's GMP-backed integers, from pure TypeScript. Both-pass totals are PeTTa 28.8s and MeTTa TS 15.9s.
 
 A representative slice (wall-clock, subprocess including startup; `speedup` = PeTTa / MeTTa TS):
 
 | Program            |   PeTTa | MeTTa TS |  Speedup |
 | ------------------ | ------: | -------: | -------: |
-| `peano`            | 1692 ms |   220 ms | **7.7×** |
-| `fib`              |  456 ms |    79 ms | **5.8×** |
-| `fibadd`           |  459 ms |    84 ms | **5.5×** |
-| `peanofast`        |  520 ms |   112 ms | **4.6×** |
-| `tilepuzzle`       | 1554 ms |   402 ms | **3.9×** |
-| `he_minimalmetta`  | 1807 ms |   484 ms |     3.7× |
-| `matespacefast`    | 4258 ms |  1890 ms |     2.3× |
-| `factorial`        |  166 ms |    76 ms |     2.2× |
-| `permutations`     |  889 ms |   451 ms |     2.0× |
-| `nilbc`            |  713 ms |   399 ms | **1.8×** |
-| `hyperpose_primes` | 1100 ms |  1009 ms |     1.1× |
+| `peano`            | 1588 ms |   306 ms | **5.19×** |
+| `fib`              |  454 ms |    88 ms | **5.14×** |
+| `fibadd`           |  451 ms |   100 ms | **4.53×** |
+| `peanofast`        |  516 ms |   114 ms | **4.52×** |
+| `tilepuzzle`       | 1602 ms |   426 ms | **3.76×** |
+| `permutations`     |  867 ms |   483 ms |     1.80× |
+| `factorial`        |  160 ms |    91 ms |     1.76× |
+| `he_minimalmetta`  | 1825 ms |  1065 ms |     1.71× |
+| `matespacefast`    | 4348 ms |  3043 ms |     1.43× |
+| `nilbc`            |  761 ms |   709 ms |     1.07× |
+| `hyperpose_primes` | 1116 ms |  1062 ms |     1.05× |
 
 The full per-program table is in [`RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md).
 
@@ -310,16 +310,16 @@ That speed comes from general engine work:
 - an O(1)-stack worklist for nondeterminism;
 - ground-atom type memoisation;
 - an exact-match ground-fact index;
-- automatic tabling of pure functions, including ones defined at runtime (via rule-set-versioned keys);
+- bounded automatic tabling of pure overlapping-recursive functions, with structural token keys and runtime rule-versioned entries;
 - a native-code compiler for the pure deterministic int/bool/tuple subset, with tail-recursion compiled to loops and PeTTa-style **higher-order specialisation** so a function passed as an argument (e.g. `iterate`'s `$step`) is bound and compiled rather than interpreted;
 - a compiler for **nondeterministic `let*`-chain functions** (the backward-chainer class): a multi-equation function whose clause bodies chain space matches and recursive calls compiles to a clause-major depth-first search, the same fragment PeTTa hands to Prolog's clause alternatives;
 - a compiler for **add-atom saturation loops**: the add-if-absent idiom becomes one exact-membership probe plus append, and a single-branch `case` over a space match becomes a snapshot-and-thread loop with Empty-pruned branches.
 
 Every one of these is verified against the 270-assertion Hyperon oracle and the LeaTTa differential; all are byte-identical except the nondeterministic compiler, whose results are alpha-equivalent (fresh variables get different gensym numbers, consistently renamed, deterministic run to run).
 
-The last holdouts fell in order. `permutations` is a 28-relation conjunctive `(length (collapse (match &self (, …) …)))`: MeTTa TS folds the worst-case-optimal join and counts each solution rather than materialising the ~360k answer atoms, which drops it from 3.6 s to 0.45 s, under PeTTa's 0.85 s. `hyperpose_primes` races `(once (hyperpose …))` across Node worker threads. `nilbc` is a dependently-typed backward chainer: compiling its clauses to a collect-all search with the interpreter's own unification takes it from 2.2 s to 0.40 s, under PeTTa's 0.71 s. `peano`, the final one, is an impure dedup-build loop: compiling its saturation step (a `case` over the space with add-if-absent branches) to membership probes on the exact-match index takes it from 2.7 s to 0.22 s, under PeTTa's 1.69 s. The remaining parity work (PLN/NARS library ports, PeTTa-only execution-model examples) is tracked in [`packages/node/bench/TODO-parity.md`](packages/node/bench/TODO-parity.md).
+The last holdouts fell in order. `permutations` is a 28-relation conjunctive `(length (collapse (match &self (, …) …)))`: MeTTa TS folds the worst-case-optimal join and counts each solution rather than materialising the ~360k answer atoms, which brings the current corpus run to 483 ms, under PeTTa's 867 ms. `hyperpose_primes` races `(once (hyperpose …))` across Node worker threads. `nilbc` is a dependently-typed backward chainer: compiling its clauses to a collect-all search with the interpreter's own unification brings the current run to 709 ms, just under PeTTa's 761 ms. `peano`, the final one, is an impure dedup-build loop: compiling its saturation step (a `case` over the space with add-if-absent branches) to membership probes on the exact-match index brings the current run to 306 ms, under PeTTa's 1588 ms. The remaining parity work (PLN/NARS library ports, PeTTa-only execution-model examples) is tracked in [`packages/node/bench/TODO-parity.md`](packages/node/bench/TODO-parity.md).
 
-`matespace`/`matespace2` are **PeTTa-specific** and excluded from the faithful subset. Their expected counts, 1063919 and 1297533, are produced only by PeTTa's compilation to Prolog: native backtracking over a globally-persistent atomspace, with duplicate adds pruned by failure, which is not minimal-MeTTa semantics. Run through `hyperon-experimental` itself, `(collapse (mate-space-demo K))` is empty, and LeaTTa agrees. PeTTa, real Hyperon, and MeTTa TS each compute a different result for the same program, so no Hyperon-faithful engine reproduces PeTTa's number. The faithful rewrite of the same workload is `matespacefast`, which uses deterministic tuple recursion instead of a `case`-driven non-deterministic build. MeTTa TS runs it about 2.0× faster than PeTTa, byte-identical.
+`matespace`/`matespace2` are **PeTTa-specific** and excluded from the faithful subset. Their expected counts, 1063919 and 1297533, are produced only by PeTTa's compilation to Prolog: native backtracking over a globally-persistent atomspace, with duplicate adds pruned by failure, which is not minimal-MeTTa semantics. Run through `hyperon-experimental` itself, `(collapse (mate-space-demo K))` is empty, and LeaTTa agrees. PeTTa, real Hyperon, and MeTTa TS each compute a different result for the same program, so no Hyperon-faithful engine reproduces PeTTa's number. The faithful rewrite of the same workload is `matespacefast`, which uses deterministic tuple recursion instead of a `case`-driven non-deterministic build. MeTTa TS runs it about 1.4× faster than PeTTa in the latest corpus run, byte-identical.
 
 ## Provenance
 

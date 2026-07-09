@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 // Moded (variant) tabling memoizes a PURE call that carries free variables — a backward-chaining search's
-// own output/existential variables, e.g. the subgoal `(obc n (: $f (→ $a $b)))` — keyed by the call's
-// alpha-canonical form, replaying cached answers with fresh auxiliary variables (see `ModedTableEntry` and
-// `freshenModedResult`). It is metta-ts's analogue of SLG/variant tabling and cuts the obc search's
+// own output/existential variables, e.g. the subgoal `(obc n (: $f (→ $a $b)))` — keyed by a structural
+// variant token key, replaying cached answers with fresh auxiliary variables (see `freshenModedResult`).
+// It is metta-ts's analogue of SLG/variant tabling and cuts the obc search's
 // repeated subgoals (measured 51% hit rate on the jarr goal).
 //
 // This is a DIFFERENTIAL test: it runs each program with tabling on and with tabling off and asserts the

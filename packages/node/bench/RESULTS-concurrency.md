@@ -6,11 +6,11 @@ PeTTa-compatible `with_mutex` wrapper, and Node worker-thread `once (hyperpose .
 
 | benchmark | runs | min ms | median ms |
 |---|---:|---:|---:|
-| core runProgramAsync (+ 1 2) | 21 | 0.13 | 0.18 |
-| node runSourceAsync (+ 1 2) | 21 | 0.65 | 1.05 |
-| par 4x resolved async op | 21 | 0.58 | 0.69 |
-| par 4x 2ms timer | 9 | 1.94 | 2.70 |
-| race slow/fast async op | 13 | 0.53 | 0.58 |
-| with-mutex 4x awaited sections | 9 | 4.63 | 4.99 |
-| with_mutex wrapper 4x awaited bodies | 9 | 1.75 | 2.03 |
-| once hyperpose 4 pure branches | 5 | 44.06 | 48.29 |
+| core runProgramAsync (+ 1 2) | 21 | 0.14 | 0.19 |
+| node runSourceAsync (+ 1 2) | 21 | 0.57 | 0.79 |
+| par 4x resolved async op | 21 | 0.67 | 1.09 |
+| par 4x 2ms timer | 9 | 2.12 | 2.80 |
+| race slow/fast async op | 13 | 0.56 | 0.60 |
+| with-mutex 4x awaited sections | 9 | 4.26 | 4.98 |
+| with_mutex wrapper 4x awaited bodies | 9 | 1.05 | 1.95 |
+| once hyperpose 4 pure branches | 5 | 45.21 | 48.81 |

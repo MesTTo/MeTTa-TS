@@ -26,6 +26,7 @@ export * from "./stdlib";
 export * from "./flat-kb";
 export * from "./flat-atomspace";
 export * from "./flat-william";
+export * from "./table-space";
 export { Trail, unifyTrail } from "./trail";
 // Static analyzer (diagnostics): source-anchored checks and rustc-style rendering, off the eval path.
 export * from "./diagnostic";

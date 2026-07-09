@@ -73,12 +73,13 @@ import { stdlibDocAtoms } from "./stdlib";
 import { applySubst, type Subst } from "./substitution";
 import {
   analyzePurity as analyzePurityRef,
+  analyzeTableWorth,
+  functorCallCount,
   IMPURE_OPS,
   keyWellFormed,
   MODED_IMPURE_OPS,
-  type ModedTableEntry,
-  tableKey,
 } from "./tabling";
+import { type ActiveTableEntry, TableSpace, type TableKey } from "./table-space";
 import { Trail, unifyTrail } from "./trail";
 import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 
@@ -484,25 +485,21 @@ export interface MinEnv {
   argIndex: Map<string, Atom[]>;
   nonGroundAtPos: Map<string, Atom[]>;
   varHeadedFacts: Atom[];
-  /** Automatic-tabling memo: a ground pure call's printed form maps to its ordered result bag.
+  /** Automatic tabling storage: structural variant keys over token tries and bounded completed entries.
    *  `undefined` when tabling is disabled. */
-  table?: Map<string, Atom[]>;
-  /** Automatic-tabling memo for pure calls that carry free variables (backward-chaining search's own
-   *  output/existential variables), keyed by the call's alpha-canonical form. See `ModedTableEntry`.
-   *  `undefined` when tabling is disabled. */
-  modedTable?: Map<string, ModedTableEntry>;
-  /** Canonical keys of moded calls currently being computed (on the active evaluation stack). A call
-   *  matching one of these is never cached: it may be part of a recursive cycle whose answer set is not
-   *  yet complete, and replaying an incomplete cache would be unsound. This is the only guard moded
-   *  tabling needs for safety — a cyclic call just never gets memoized, falling back to today's
-   *  (already-correct) uncached behavior, rather than risking a wrong answer. */
-  modedInProgress?: Set<string>;
+  tableSpace?: TableSpace | undefined;
   /** Functor names proven tabling-safe by `analyzePurity`; recomputed when equations change. */
   pureFunctors?: Set<string>;
   /** Functor names proven safe for MODED tabling by `analyzePurity(env, MODED_IMPURE_OPS)` — a superset of
    *  `pureFunctors` (only `empty`, which is genuinely pure, is treated more permissively); recomputed
    *  alongside it. */
   modedPureFunctors?: Set<string>;
+  /** Pure functors whose rule SCC has branching recursion, so ground tabling is likely useful. */
+  tableWorth?: Set<string>;
+  /** Pure functors whose rule SCC has branching recursion under the moded purity rules. */
+  modedTableWorth?: Set<string>;
+  /** Set when equations changed and the purity/profitability analysis must be refreshed before evaluation. */
+  tablingDirty?: boolean | undefined;
   /** Memo for `getTypes` of ground atoms: a ground atom's type is a pure function of the env's type tables,
    *  which only change via `addAtomToEnv` (where this is reset). Keyed by atom identity, so the recursion
    *  reuses the type of every shared subterm (a growing Peano/list term is the worst case otherwise). */
@@ -524,8 +521,8 @@ export interface MinEnv {
    *  default; byte-identical to the reference matcher (differential-gated), falling back to it per query for
    *  cases the trail cannot reproduce (custom grounded matchers). */
   useTrail?: boolean;
-  /** Opt-in compact runtime `&self` atomspace. Off by default; when on, runtime additions are stored as flat
-   *  term ids and decoded only when a query or observable operation needs tree atoms. */
+  /** Compact runtime `&self` atomspace. When on, runtime additions are stored as flat term ids and decoded
+   *  only when a query or observable operation needs tree atoms. */
   useFlatAtomspace?: boolean;
 }
 
@@ -591,12 +588,9 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
 /** Static load (`addAtomToEnv`) added a `=` equation into `env.ruleIndex`, which the purity
  *  analysis does see, so clear the memo and re-derive purity. */
 function invalidateTabling(env: MinEnv): void {
-  if (env.table !== undefined) {
-    env.table.clear();
-    env.modedTable?.clear();
-    env.pureFunctors = analyzePurityRef(env);
-    if (env.modedTable !== undefined)
-      env.modedPureFunctors = analyzePurityRef(env, MODED_IMPURE_OPS);
+  if (env.tableSpace !== undefined) {
+    env.tableSpace.clear();
+    env.tablingDirty = true;
     env.compileDirty = true;
   }
 }
@@ -725,28 +719,48 @@ function specializeHO(env: MinEnv): void {
   }
 }
 
+function ensureTablingAnalysis(env: MinEnv): void {
+  if (env.tableSpace === undefined) return;
+  if (
+    env.tablingDirty === false &&
+    env.pureFunctors !== undefined &&
+    env.tableWorth !== undefined &&
+    env.modedPureFunctors !== undefined &&
+    env.modedTableWorth !== undefined
+  )
+    return;
+  env.pureFunctors = analyzePurityRef(env);
+  env.tableWorth = analyzeTableWorth(env, env.pureFunctors);
+  env.modedPureFunctors = analyzePurityRef(env, MODED_IMPURE_OPS);
+  env.modedTableWorth = analyzeTableWorth(env, env.modedPureFunctors);
+  env.tablingDirty = false;
+}
+
 /** Re-run the deterministic-core compiler if an equation changed since the last query. */
 function ensureCompiled(env: MinEnv): void {
   if (env.compiled !== undefined && env.compileDirty) {
     specializeHO(env);
+    ensureTablingAnalysis(env);
     env.compiled = compileEnv(env);
     env.compileDirty = false;
+  } else {
+    ensureTablingAnalysis(env);
   }
 }
 
-/** Runtime `add-atom`/`import!` adds equations into the world's `selfExtra`, which the purity
- *  analysis (reading `env.ruleIndex`) does NOT see. Conservatively disable further tabling for the
- *  rest of this run; compiled static rewrites stay available but are gated at the call site when runtime
- *  rules can affect that operator. */
+/** Runtime `add-atom`/`import!` can add equations into `selfRules`, so clear static table state and let the
+ *  runtime versioned purity/worth gates decide whether those new rules can be memoised. */
 function disableTabling(env: MinEnv): void {
   env.evaluatedAtoms = new WeakSet();
   env.compiled = undefined;
   env.compileDirty = undefined;
-  if (env.table !== undefined) {
-    env.table.clear();
-    env.modedTable?.clear();
+  if (env.tableSpace !== undefined) {
+    env.tableSpace.clear();
     env.pureFunctors = new Set();
-    if (env.modedTable !== undefined) env.modedPureFunctors = new Set();
+    env.tableWorth = new Set();
+    env.modedPureFunctors = new Set();
+    env.modedTableWorth = new Set();
+    env.tablingDirty = false;
   }
 }
 
@@ -893,6 +907,10 @@ function staticRulesChangedFor(w: World, op: string): boolean {
   return w.removedStaticVarRules || w.removedStaticHeads.has(op);
 }
 
+function staticRuleSetChanged(w: World): boolean {
+  return logSize(w.removedStatic) > 0;
+}
+
 function staticRuleRemoved(w: World, lhs: Atom, rhs: Atom): boolean {
   if (w.removedStatic === null) return false;
   const k = headKey(lhs);
@@ -1019,6 +1037,10 @@ export interface World {
   // the difference between O(1) and O(n) when a program has added many ground facts.
   selfRules: Map<string, Array<[Atom, Atom]>>;
   selfVarRules: ReadonlyArray<[Atom, Atom]>;
+  // Monotone version for the whole runtime rule set. A static function can call a runtime-defined helper, so
+  // table keys and runtime purity caches must change when any runtime rule changes, not only the queried
+  // functor's own rule array.
+  selfRuleVersion: number;
   // Static atoms removed from `&self` in this world. Static program atoms live in `env`; this tombstone
   // keeps removal branch-local without mutating the shared env.
   removedStatic: AtomLog;
@@ -1035,6 +1057,11 @@ export interface St {
   counter: number;
   world: World;
 }
+let runtimeRuleSetVersionCounter = 0;
+function nextRuntimeRuleSetVersion(): number {
+  return ++runtimeRuleSetVersionCounter;
+}
+
 export const initSt = (): St => ({
   counter: 0,
   world: {
@@ -1045,6 +1072,7 @@ export const initSt = (): St => ({
     flatSelfExtra: undefined,
     selfRules: new Map(),
     selfVarRules: [],
+    selfRuleVersion: 0,
     removedStatic: emptyLog,
     removedStaticHeads: new Set(),
     removedStaticVarRules: false,
@@ -1060,6 +1088,7 @@ function cloneWorld(w: World): World {
     flatSelfExtra: w.flatSelfExtra,
     selfRules: new Map(w.selfRules),
     selfVarRules: w.selfVarRules,
+    selfRuleVersion: w.selfRuleVersion,
     removedStatic: w.removedStatic,
     removedStaticHeads: new Set(w.removedStaticHeads),
     removedStaticVarRules: w.removedStaticVarRules,
@@ -1131,6 +1160,7 @@ function mergeWorlds(base: World, branches: readonly World[]): World {
     flatSelfExtra: flat,
     selfRules: new Map(),
     selfVarRules: [],
+    selfRuleVersion: nextRuntimeRuleSetVersion(),
     removedStatic: staticRemovals.removedStatic,
     removedStaticHeads: staticRemovals.removedStaticHeads,
     removedStaticVarRules: staticRemovals.removedStaticVarRules,
@@ -2848,6 +2878,7 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
       flatSelfExtra,
       selfRules,
       selfVarRules,
+      selfRuleVersion: copiedRules ? nextRuntimeRuleSetVersion() : w0.selfRuleVersion,
       removedStatic: w0.removedStatic,
       removedStaticHeads: w0.removedStaticHeads,
       removedStaticVarRules: w0.removedStaticVarRules,
@@ -2862,6 +2893,7 @@ function reindexRuntimeSelfRules(w: World): void {
   w.selfRules = new Map();
   w.selfVarRules = [];
   indexSelfRules(w, runtimeAtoms(w));
+  w.selfRuleVersion = nextRuntimeRuleSetVersion();
 }
 
 function eraseSpace(env: MinEnv, w0: World, name: string, a: Atom): World {
@@ -4035,25 +4067,10 @@ function* reduceChildrenG(
 }
 
 // ---------- runtime-rule tabling (fibadd: a `(= (fib $N) ...)` added at runtime via add-atom) ----------
-// Static tabling keys a pure ground call by its printed form in the shared `env.table`, which is safe
-// because static rules never change. A RUNTIME rule lives in the per-world copy-on-write `selfRules`, so the
-// same printed call could mean different things in two worlds (a transaction that redefines it, then rolls
-// back). To table such calls without a per-world table, the key is suffixed with a VERSION of the functor's
-// rule-set: `selfRules` replaces the array on every change, so a different rule-set is a different array and
-// gets a different version. A stale entry (rules since changed, or another world's rules) then simply has a
-// different key and is never hit. env.table stays shared, correctness holds, and the cost is only some
-// dead entries lingering.
-let runtimeRuleVersionCounter = 0;
-const runtimeRuleVersions = new WeakMap<object, number>();
-function rulesVersion(rules: object | undefined): number {
-  if (rules === undefined) return 0;
-  let v = runtimeRuleVersions.get(rules);
-  if (v === undefined) {
-    v = ++runtimeRuleVersionCounter;
-    runtimeRuleVersions.set(rules, v);
-  }
-  return v;
-}
+// TableSpace keys pure calls structurally, not by formatting them. Runtime rules live in the per-world
+// copy-on-write `selfRules`, and a static function may call a runtime-defined helper. Runtime table keys
+// therefore use the whole world's `selfRuleVersion`, not just the queried functor's own rule array. A stale
+// entry simply has a different key and is never hit; the bounded table store evicts it later.
 function collectHeadSyms(a: Atom, out: Set<string>): void {
   if (a.kind === "expr" && a.items.length > 0) {
     if (a.items[0]!.kind === "sym") out.add((a.items[0] as { name: string }).name);
@@ -4077,11 +4094,16 @@ function runtimeFunctorPureWith(
   cache: Map<string, boolean>,
 ): boolean {
   // A variable-headed rule (e.g. the `|->` lambda applicator) can rewrite ANY call, so its mere presence
-  // makes tabling unsound. analyzePurity disables all static tabling for the same reason. Mirror that.
-  if (env.varRules.some(([lhs]) => isVariableHeaded(lhs)) || w.selfVarRules.length > 0)
+  // makes tabling unsound. Static rule removals are branch-local, so the static graph no longer matches the
+  // shared table's assumptions. In both cases, decline to table rather than versioning partial rule views.
+  if (
+    staticRuleSetChanged(w) ||
+    env.varRules.some(([lhs]) => isVariableHeaded(lhs)) ||
+    w.selfVarRules.length > 0
+  )
     return false;
   if (staticRulesChangedFor(w, op)) return false;
-  const ck = op + "@" + rulesVersion(w.selfRules.get(op));
+  const ck = op + "@" + w.selfRuleVersion;
   const cached = cache.get(ck);
   if (cached !== undefined) return cached;
   const visit = (f: string, seen: Set<string>): boolean => {
@@ -4107,7 +4129,45 @@ const runtimeFunctorPure = (env: MinEnv, w: World, op: string): boolean =>
 const runtimeFunctorPureModed = (env: MinEnv, w: World, op: string): boolean =>
   runtimeFunctorPureWith(env, w, op, MODED_IMPURE_OPS, runtimeModedPureCache);
 
-/** Freshen one cached moded-tabling answer (`ModedTableEntry`) for this call instance: substitute the
+const runtimeTableWorthCache = new Map<string, boolean>();
+function runtimeFunctorTableWorth(env: MinEnv, w: World, op: string, moded: boolean): boolean {
+  const staticWorth = (moded ? env.modedTableWorth : env.tableWorth)?.has(op) ?? false;
+  if (w.selfRules.size === 0) return staticWorth;
+  const ck = (moded ? "m:" : "g:") + op + "@" + w.selfRuleVersion;
+  const cached = runtimeTableWorthCache.get(ck);
+  if (cached !== undefined) return cached;
+  const targets = new Set([op]);
+  const directBranching = [...(env.ruleIndex.get(op) ?? []), ...(w.selfRules.get(op) ?? [])].some(
+    ([, rhs]) => functorCallCount(rhs, targets) >= 2,
+  );
+  const worth = staticWorth || directBranching;
+  runtimeTableWorthCache.set(ck, worth);
+  return worth;
+}
+
+type CompletedTableKey = TableKey;
+
+function containsImpureHead(a: Atom, impureOps: ReadonlySet<string>): boolean {
+  if (a.kind !== "expr" || a.items.length === 0) return false;
+  const h = a.items[0]!;
+  if (h.kind === "sym" && impureOps.has(h.name)) return true;
+  return a.items.some((it) => containsImpureHead(it, impureOps));
+}
+
+function rememberGroundTable(env: MinEnv, key: CompletedTableKey, results: readonly Atom[]): void {
+  env.tableSpace?.rememberCompleted(key, 0, results);
+}
+
+function rememberModedTable(
+  env: MinEnv,
+  key: CompletedTableKey,
+  numCallVars: number,
+  results: readonly Atom[],
+): void {
+  env.tableSpace?.rememberCompleted(key, numCallVars, results);
+}
+
+/** Freshen one cached moded-tabling answer for this call instance: substitute the
  *  call's own canonical placeholders (`%0`..`%(numCallVars-1)`) with `callVarNames` (this call's actual
  *  variable names, found the same way the cache key was — by canonicalizing it), and substitute every
  *  other placeholder (one the cached computation introduced itself, never part of the call) with a
@@ -4624,6 +4684,41 @@ function streamCaseSource(
 }
 
 // ---------- mettaEval (type-directed metta-call loop) ----------
+function* reduceRulePairsG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  queryVars: readonly string[],
+  partB: Bindings,
+  wApp: Atom,
+  pairs: readonly [Atom, Bindings][],
+  opReturnsAtom: boolean,
+): Gen<[Array<[Atom, Bindings]>, St]> {
+  const out: Array<[Atom, Bindings]> = [];
+  let cur = st;
+  for (const p of pairs) {
+    const pb = mergeRestrict(env, queryVars, partB, p[1]);
+    if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
+      // wApp did not reduce (a constructor application / data term). Cache a ground one so the next visit
+      // short-circuits instead of re-walking it.
+      if (wApp.ground) env.evaluatedAtoms.add(wApp);
+      out.push([wApp, partB]);
+    } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
+      out.push([p[0], pb]);
+    } else if (isStackOverflowAtom(p[0])) {
+      // Terminal depth-cut: keep it as the result; re-evaluating it would re-cut and grow.
+      out.push([p[0], pb]);
+    } else {
+      const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur, pb, p[0]);
+      cur = st4;
+      for (const m of more) {
+        out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
+      }
+    }
+  }
+  return [out, cur];
+}
+
 function* mettaEvalG(
   env: MinEnv,
   fuel: number,
@@ -4670,11 +4765,11 @@ function* mettaEvalG(
     let lbnd = bnd;
     let lst = st;
     let lw = w;
-    const pendingKeys: string[] = [];
+    const pendingKeys: CompletedTableKey[] = [];
     const flushReturn = (res: Array<[Atom, Bindings]>, stR: St): [Array<[Atom, Bindings]>, St] => {
-      if (pendingKeys.length > 0 && env.table !== undefined && res.every((p) => p[0].ground)) {
+      if (pendingKeys.length > 0 && env.tableSpace !== undefined && res.every((p) => p[0].ground)) {
         const prod = res.map((p) => p[0]);
-        for (const k of pendingKeys) env.table.set(k, prod);
+        for (const k of pendingKeys) rememberGroundTable(env, k, prod);
       }
       return [res, stR];
     };
@@ -4811,7 +4906,7 @@ function* mettaEvalG(
       // (2) reduce each combination
       const out: Array<[Atom, Bindings]> = [];
       let cur2 = cur;
-      const tabling = env.table !== undefined && queryVars.length === 0;
+      const tabling = env.tableSpace !== undefined && queryVars.length === 0;
       const staticPure = env.pureFunctors?.has(op) ?? false;
       for (const [partAtoms, partB] of partials) {
         // error propagation: a type-directed-evaluated arg reduced to an error and changed
@@ -4859,9 +4954,29 @@ function* mettaEvalG(
             out.push([value, mergeRestrict(env, queryVars, partB, rb)]);
           continue;
         }
+        let modedTableAdmissible = false;
+        let modedRuntimeVersion = 0;
+        if (env.tableSpace !== undefined && !wApp.ground && keyWellFormed(wApp)) {
+          const runtimeRulesVisible =
+            cur2.world.selfRules.size > 0 || cur2.world.selfVarRules.length > 0;
+          modedRuntimeVersion = runtimeRulesVisible ? cur2.world.selfRuleVersion : 0;
+          if (runtimeRulesVisible) {
+            modedTableAdmissible =
+              runtimeFunctorPureModed(env, cur2.world, op) &&
+              runtimeFunctorTableWorth(env, cur2.world, op, true) &&
+              !containsImpureHead(wApp, MODED_IMPURE_OPS);
+          } else {
+            modedTableAdmissible =
+              !staticRuleSetChanged(cur2.world) &&
+              (env.modedPureFunctors?.has(op) ?? false) &&
+              (env.modedTableWorth?.has(op) ?? false) &&
+              !containsImpureHead(wApp, MODED_IMPURE_OPS);
+          }
+        }
         // compiled fast path: deterministic static functions, including the state-threaded impure subset.
         if (
           env.compiled !== undefined &&
+          !modedTableAdmissible &&
           !cur2.world.selfRules.has(op) &&
           !staticRulesChangedFor(cur2.world, op) &&
           cur2.world.selfVarRules.length === 0
@@ -4904,26 +5019,40 @@ function* mettaEvalG(
             continue;
           }
         }
-        // tabling: memoise a ground pure call's ordered result bag (keyed by its printed form). A functor
-        // with runtime rules is version-keyed (see runtimeFunctorPure); a purely-static functor keeps the
-        // plain key and the original fast path unchanged.
+        // Ground tabling: memoise a pure call's ordered result bag under a structural token key. A functor
+        // with runtime rules is version-keyed (see runtimeFunctorPure); a purely-static functor uses
+        // version 0.
         let eligible = false;
-        let key = "";
+        let key: CompletedTableKey | undefined;
         if (tabling && wApp.ground) {
+          const runtimeRulesVisible =
+            cur2.world.selfRules.size > 0 || cur2.world.selfVarRules.length > 0;
+          const runtimeVersion = runtimeRulesVisible ? cur2.world.selfRuleVersion : 0;
           // Gate the O(size) keyWellFormed walk behind the O(1) purity test: a non-pure functor (the impure
           // add-atom calls that carry a deep Peano term) is never tabled, so it never needs the walk. `&&` is
           // commutative for the side-effect-free predicates, so this is byte-identical to checking it first.
-          if (cur2.world.selfRules.has(op)) {
-            if (runtimeFunctorPure(env, cur2.world, op) && keyWellFormed(wApp)) {
+          if (runtimeRulesVisible) {
+            if (
+              runtimeFunctorPure(env, cur2.world, op) &&
+              runtimeFunctorTableWorth(env, cur2.world, op, false) &&
+              !containsImpureHead(wApp, IMPURE_OPS) &&
+              keyWellFormed(wApp)
+            ) {
               eligible = true;
-              key = tableKey(wApp) + "@v" + rulesVersion(cur2.world.selfRules.get(op));
+              key = env.tableSpace!.key("ground", wApp, runtimeVersion);
             }
-          } else if (staticPure && !staticRulesChangedFor(cur2.world, op) && keyWellFormed(wApp)) {
+          } else if (
+            staticPure &&
+            (env.tableWorth?.has(op) ?? false) &&
+            !staticRuleSetChanged(cur2.world) &&
+            !containsImpureHead(wApp, IMPURE_OPS) &&
+            keyWellFormed(wApp)
+          ) {
             eligible = true;
-            key = tableKey(wApp);
+            key = env.tableSpace!.key("ground", wApp, runtimeVersion);
           }
           if (eligible) {
-            const hit = env.table!.get(key);
+            const hit = key === undefined ? undefined : env.tableSpace!.getCompleted(key)?.results;
             if (hit !== undefined) {
               for (const r of hit) out.push([r, partB]);
               continue;
@@ -4932,144 +5061,185 @@ function* mettaEvalG(
         }
         // moded tabling: memoise a PURE call that itself carries free variables (a backward-chaining
         // search's own output/existential variables, e.g. the proof term `$x` in `(obc $s (: $x $a))`),
-        // keyed by the call's alpha-canonical form (every free variable renamed to `%N` in first-occurrence
-        // order — see `ModedTableEntry`). Entirely separate from ground tabling just above: applies only
+        // keyed by the same structural variant token scheme as ground tabling. Entirely separate from
+        // ground tabling just above: applies only
         // when `wApp` is NOT ground (ground tabling already covers that case), independent of `queryVars`/
         // `tabling` (which require there be no query variables at all — the opposite of what this needs).
-        // A call whose canonical key is already in `env.modedInProgress` is left uneligible: it may be part
-        // of a recursive cycle whose answer set is not yet complete, so it falls back to plain, always-
-        // correct evaluation for this one call rather than risking a replay of an incomplete cache.
+        // A direct active variant re-entry replays the answers known so far and marks the active table
+        // cyclic. The producer below then re-runs until no new canonical answers appear. Non-top active hits
+        // remain conservative because mutual-recursive SCC completion needs producer state for every entry.
         let modedEligible = false;
-        let modedKey = "";
+        let modedKey: CompletedTableKey | undefined;
         let modedMap: Map<string, string> | undefined;
         let modedNumCallVars = 0;
-        if (env.modedTable !== undefined && !wApp.ground && keyWellFormed(wApp)) {
-          let modedPure = false;
-          let modedVersionSuffix = "";
-          if (cur2.world.selfRules.has(op)) {
-            if (runtimeFunctorPureModed(env, cur2.world, op)) {
-              modedPure = true;
-              modedVersionSuffix = "@v" + rulesVersion(cur2.world.selfRules.get(op));
+        let modedActive: ActiveTableEntry | undefined;
+        let modedCallVarNames: readonly string[] = [];
+        if (modedTableAdmissible) {
+          const tableSpace = env.tableSpace!;
+          const encoded = tableSpace.key("moded", wApp, modedRuntimeVersion);
+          const modedHit = tableSpace.getCompleted(encoded);
+          if (modedHit !== undefined) {
+            for (const cachedResult of modedHit.results) {
+              const [freshened, stF] = freshenModedResult(
+                cur2,
+                cachedResult,
+                encoded.varNames,
+                modedHit.numCallVars,
+              );
+              cur2 = stF;
+              out.push([freshened, partB]);
             }
-          } else if (
-            !staticRulesChangedFor(cur2.world, op) &&
-            (env.modedPureFunctors?.has(op) ?? false)
-          ) {
-            modedPure = true;
+            continue;
           }
-          if (modedPure) {
-            const map = new Map<string, string>();
-            const canonicalCall = canonicalize(wApp, map);
-            const candidateKey = tableKey(canonicalCall) + modedVersionSuffix;
-            if (!env.modedInProgress!.has(candidateKey)) {
-              modedEligible = true;
-              modedKey = candidateKey;
-              modedMap = map;
-              modedNumCallVars = map.size;
-              const modedHit = env.modedTable.get(modedKey);
-              if (modedHit !== undefined) {
-                const callVarNames = [...map.keys()];
-                for (const cachedResult of modedHit.results) {
-                  const [freshened, stF] = freshenModedResult(
-                    cur2,
-                    cachedResult,
-                    callVarNames,
-                    modedHit.numCallVars,
-                  );
-                  cur2 = stF;
-                  out.push([freshened, partB]);
-                }
-                continue;
-              }
-              env.modedInProgress!.add(modedKey);
+          const active = tableSpace.getActive(encoded);
+          if (active !== undefined && tableSpace.isTopActive(active)) {
+            tableSpace.markCyclic(active);
+            for (const cachedResult of active.results) {
+              const [freshened, stF] = freshenModedResult(
+                cur2,
+                cachedResult,
+                encoded.varNames,
+                active.numCallVars,
+              );
+              cur2 = stF;
+              out.push([freshened, partB]);
             }
+            continue;
+          }
+          const started =
+            active === undefined
+              ? tableSpace.beginActive(encoded, encoded.varNames.length)
+              : undefined;
+          if (started !== undefined) {
+            modedEligible = true;
+            modedKey = encoded;
+            modedMap = encoded.canonicalMap;
+            modedNumCallVars = encoded.varNames.length;
+            modedActive = started;
+            modedCallVarNames = encoded.varNames;
           }
         }
         const before = out.length;
         try {
-          const [pairs, st3] = yield* interpretLoopG(env, fuel, cur2, [
-            {
-              stack: atomToStack(makeExpr(env, [sym("eval"), wApp]), null),
-              bnd: lbnd,
-            },
-          ]);
-          cur2 = st3;
-          // Tail call: one ground call reducing to a single operator-headed continuation, with no branching
-          // (one partial, one pair) and no bindings to thread (queryVars empty). Loop on the continuation via
-          // reduceTrampoline instead of recursing into mettaEvalG, so the native stack stays flat down a deep
-          // tail-recursive chain. Defer this call's tabling key to pendingKeys: it shares the chain's normal
-          // form, so flushReturn caches it (and every key above it) once the chain terminates. Excluded when
-          // modedEligible: a moded answer is stored below (in this same try), not deferred, so it must not
-          // skip past that store via this early continue.
-          if (
-            partials.length === 1 &&
-            queryVars.length === 0 &&
-            pairs.length === 1 &&
-            !modedEligible
-          ) {
-            const p = pairs[0]!;
-            // A StackOverflow cut is terminal, never a tail-call continuation. Re-feeding it into the
-            // trampoline re-cuts at depth 1 and grows an (Error (eval …) StackOverflow) each iteration,
-            // looping forever (the trampoline does not decrement fuel).
-            if (isStackOverflowAtom(p[0]))
-              return flushReturn([[p[0], mergeRestrict(env, queryVars, partB, p[1])]], cur2);
-            const isData = atomEq(p[0], notReducibleA) || atomEq(p[0], wApp);
-            if (!isData && !(opReturnsAtom && !isEmbeddedOp(p[0])) && opOf(p[0]) !== undefined) {
-              const pb = mergeRestrict(env, queryVars, partB, p[1]);
-              if (eligible) pendingKeys.push(key);
-              la = p[0];
-              lbnd = pb;
-              lst = cur2;
-              // p[0] is operator-headed (opOf check) and instantiate preserves the head, so this stays an
-              // expression headed by a symbol, exactly what the loop top reads as `lw.items[0]`.
-              lw = inst(env, lbnd, la) as ExprAtom;
-              continue reduceTrampoline;
-            }
-          }
-          for (const p of pairs) {
-            const pb = mergeRestrict(env, queryVars, partB, p[1]);
-            if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
-              // wApp did not reduce (a constructor application / data term). Cache a ground one so the next
-              // visit short-circuits instead of re-walking it.
-              if (wApp.ground) env.evaluatedAtoms.add(wApp);
-              out.push([wApp, partB]);
-            } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
-              out.push([p[0], pb]);
-            } else if (isStackOverflowAtom(p[0])) {
-              // Terminal depth-cut: keep it as the result; re-evaluating it would re-cut and grow (see the
-              // trampoline tail-call above).
-              out.push([p[0], pb]);
+          const runProducerPass = function* (start: St): Gen<[Array<[Atom, Bindings]>, St]> {
+            const [pairs, st3] = yield* interpretLoopG(env, fuel, start, [
+              {
+                stack: atomToStack(makeExpr(env, [sym("eval"), wApp]), null),
+                bnd: lbnd,
+              },
+            ]);
+            return yield* reduceRulePairsG(
+              env,
+              fuel,
+              st3,
+              queryVars,
+              partB,
+              wApp,
+              pairs,
+              opReturnsAtom,
+            );
+          };
+          if (modedEligible) {
+            const active = modedActive!;
+            const start = cur2;
+            const map = modedMap!;
+            const [firstPass, firstState] = yield* runProducerPass(start);
+            cur2 = firstState;
+            const firstCanonical = firstPass.map((p) => canonicalize(p[0], map));
+            if (!active.cyclic) {
+              for (const p of firstPass) out.push(p);
+              rememberModedTable(env, modedKey!, modedNumCallVars, firstCanonical);
             } else {
-              const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur2, pb, p[0]);
-              cur2 = st4;
-              for (const m of more) {
-                out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
+              let added = env.tableSpace!.addActiveAnswers(active, firstCanonical);
+              let maxCounter = Math.max(start.counter, firstState.counter);
+              let rounds = 1;
+              while (added > 0 && !active.overBudget) {
+                if (rounds >= fuel) {
+                  out.push([makeExpr(env, [sym("Error"), wApp, sym("StackOverflow")]), partB]);
+                  added = 0;
+                  break;
+                }
+                const [pass, passState] = yield* runProducerPass(start);
+                maxCounter = Math.max(maxCounter, passState.counter);
+                added = env.tableSpace!.addActiveAnswers(
+                  active,
+                  pass.map((p) => canonicalize(p[0], map)),
+                );
+                rounds++;
+              }
+              cur2 = { counter: maxCounter, world: start.world };
+              if (active.overBudget) {
+                out.push([makeExpr(env, [sym("Error"), wApp, sym("TableResourceLimit")]), partB]);
+              } else if (out.length === before) {
+                rememberModedTable(env, modedKey!, modedNumCallVars, active.results);
+                for (const cachedResult of active.results) {
+                  const [freshened, stF] = freshenModedResult(
+                    cur2,
+                    cachedResult,
+                    modedCallVarNames,
+                    active.numCallVars,
+                  );
+                  cur2 = stF;
+                  out.push([freshened, partB]);
+                }
               }
             }
-          }
-          if (eligible) {
-            const produced = out.slice(before).map((p) => p[0]);
-            if (produced.every((a) => a.ground)) env.table!.set(key, produced);
-          }
-          if (modedEligible) {
-            // Store the call's whole answer bag canonically (continuing `modedMap` past the call's own
-            // variables, so an auxiliary metavariable the search introduced gets a `%N` with N >=
-            // numCallVars). A replay freshens those extra placeholders to new globals; the call's own
-            // `%0..%(numCallVars-1)` map back to the replaying call's actual variable names.
-            const produced = out.slice(before).map((p) => p[0]);
-            const map = modedMap!;
-            const canonicalResults = produced.map((r) => canonicalize(r, map));
-            env.modedTable!.set(modedKey, {
-              numCallVars: modedNumCallVars,
-              results: canonicalResults,
-            });
+          } else {
+            const [pairs, st3] = yield* interpretLoopG(env, fuel, cur2, [
+              {
+                stack: atomToStack(makeExpr(env, [sym("eval"), wApp]), null),
+                bnd: lbnd,
+              },
+            ]);
+            cur2 = st3;
+            // Tail call: one ground call reducing to a single operator-headed continuation, with no branching
+            // (one partial, one pair) and no bindings to thread (queryVars empty). Loop on the continuation
+            // via reduceTrampoline instead of recursing into mettaEvalG, so the native stack stays flat down a
+            // deep tail-recursive chain. Defer this call's tabling key to pendingKeys: it shares the chain's
+            // normal form, so flushReturn caches it (and every key above it) once the chain terminates.
+            if (partials.length === 1 && queryVars.length === 0 && pairs.length === 1) {
+              const p = pairs[0]!;
+              // A StackOverflow cut is terminal, never a tail-call continuation. Re-feeding it into the
+              // trampoline re-cuts at depth 1 and grows an (Error (eval …) StackOverflow) each iteration,
+              // looping forever (the trampoline does not decrement fuel).
+              if (isStackOverflowAtom(p[0]))
+                return flushReturn([[p[0], mergeRestrict(env, queryVars, partB, p[1])]], cur2);
+              const isData = atomEq(p[0], notReducibleA) || atomEq(p[0], wApp);
+              if (!isData && !(opReturnsAtom && !isEmbeddedOp(p[0])) && opOf(p[0]) !== undefined) {
+                const pb = mergeRestrict(env, queryVars, partB, p[1]);
+                if (eligible && key !== undefined) pendingKeys.push(key);
+                la = p[0];
+                lbnd = pb;
+                lst = cur2;
+                // p[0] is operator-headed (opOf check) and instantiate preserves the head, so this stays an
+                // expression headed by a symbol, exactly what the loop top reads as `lw.items[0]`.
+                lw = inst(env, lbnd, la) as ExprAtom;
+                continue reduceTrampoline;
+              }
+            }
+            const [reduced, st4] = yield* reduceRulePairsG(
+              env,
+              fuel,
+              cur2,
+              queryVars,
+              partB,
+              wApp,
+              pairs,
+              opReturnsAtom,
+            );
+            cur2 = st4;
+            for (const r of reduced) out.push(r);
+            if (eligible) {
+              const produced = out.slice(before).map((p) => p[0]);
+              if (key !== undefined && produced.every((a) => a.ground))
+                rememberGroundTable(env, key, produced);
+            }
           }
         } finally {
           // Cleared on every exit (success, an uncaught grounded-op error, or a native stack overflow
-          // unwinding through here) so a call that fails partway never leaves its canonical key stuck in
-          // "in progress" — which would silently disable caching for that whole alpha-equivalence class of
-          // call for the rest of the run. Only ever removes a key this same iteration added.
-          if (modedEligible) env.modedInProgress!.delete(modedKey);
+          // unwinding through here) so a call that fails partway never leaves its key stuck active. Only ever
+          // removes a key this same iteration added.
+          if (modedEligible && modedKey !== undefined) env.tableSpace?.endActive(modedKey);
         }
       }
       return flushReturn(out, cur2);

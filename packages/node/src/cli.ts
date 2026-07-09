@@ -217,7 +217,7 @@ function main(): void {
   const file = positionals[0];
   if (file === undefined) {
     process.stderr.write(
-      "usage: metta-ts [--check [--json] [--undefined-symbols]] [--py] [--prolog] [--conformance] [--max-steps=N] [--max-stack-depth=N] [--hash-cons] [--flat-atomspace] <file.metta>\n",
+      "usage: metta-ts [--check [--json] [--undefined-symbols]] [--py] [--prolog] [--conformance] [--max-steps=N] [--max-stack-depth=N] [--hash-cons] <file.metta>\n",
     );
     process.exit(2);
   }

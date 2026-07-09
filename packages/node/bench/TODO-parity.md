@@ -6,11 +6,12 @@ regression surface, not the authority when it disagrees with LeaTTa.
 
 ## Status (`corpus-bench --engine=both`)
 
-107 examples (42 host-FFI / PeTTa-execution-model cases excluded as N/A in the last full run). MeTTa-TS
-passed 96 shared files in that run and beat PeTTa on most shared passing files. Re-run before making any
-fresh headline claim: the current unresolved split is PLN/NARS lib ports, selfprog, greedy_chess status, and
-the `matespace` family. `matespace`/`matespace2` now have a faster collapse-count route on finite slices, but
-the PeTTa constants are not established as Hyperon expected values for the current no-barrier files.
+105 examples plus 44 host-FFI / PeTTa-execution-model cases marked N/A in the latest full run. PeTTa passed
+104 examples, MeTTa-TS passed 98, both passed 98, and MeTTa-TS was faster on all 98 shared passing files.
+Median speedup was 1.82x, geomean 1.85x, with both-pass totals of PeTTa 28.8s and MeTTa-TS 15.9s. The
+remaining split is semantic or host-surface parity: PLN/NARS lib ports, PeTTa-only execution-model examples,
+and `matespace`/`matespace2`, whose constants are not established as Hyperon expected values for the current
+no-barrier files. The Hyperon-valid workload is `matespacefast`.
 
 ## Done
 
@@ -31,18 +32,25 @@ the PeTTa constants are not established as Hyperon expected values for the curre
   (permutations −3%); streamed `(case (match …) cases)` emit, folding match values through the case body
   without materialising the collapsed tuple (peano 3.5s→2.8s, ~1.25x; gated, `METTA_STREAM_CASE`). Validated
   by the 270 oracle, full suite, and a 600-case streaming-vs-materialising counter differential.
-- Experimental compact atomspace (`experimental.flatAtomspace` / `--flat-atomspace`, OFF by default so the
-  oracle path is untouched). `flat-atomspace.ts`: runtime `&self` additions stored as interned TermId/FactId
+- Compact runtime atomspace. `flat-atomspace.ts`: runtime `&self` additions stored as interned TermId/FactId
   in typed-array chunks with exact ground-membership counts, tombstoned removals, and rollback-safe roots,
-  instead of JS `Atom` trees (~5 KB/atom). Crosses the matespace memory floor — K=4 no longer OOMs under the
-  flag. Byte-identical to the materialising path (full suite 619, an on/off corpus differential, round-trip
-  `format(decode(encode))`). See Remaining 2: matespace is then CPU-bound, not memory-bound.
+  instead of JS `Atom` trees (~5 KB/atom). It is now the default internal runtime `&self` store and falls
+  back to the materialising log for atoms with grounded executors or custom matchers. Crosses the matespace
+  memory floor: K=4 no longer OOMs under the compact path. Byte-identical to the materialising path (full
+  suite, an on/off corpus differential, round-trip `format(decode(encode))`). See Remaining 2: matespace is
+  then CPU-bound, not memory-bound.
+- Automatic tabling is bounded and conservative: pure branching-recursive SCCs are tabled, linear recursion
+  is left to the compiled path, runtime rule tables are keyed by the whole runtime rule version, embedded
+  impure/meta calls decline caching, and table entries are capped by retained atom cells. Equation-load
+  analysis is lazy, so loading many rules no longer recomputes the purity/profitability graph per rule.
+  Direct active moded variants promote to local-linear completion, so finite left-recursive answer
+  relations can reach a fixed point without changing non-cyclic ordered-bag memoization.
 - Named spaces indexed for O(1) ground membership (`World.spaces` holds the same `AtomLog` `&self` uses:
   O(1) append with structural sharing, a ground-membership index, the membership fast path padding the
   counter by the space size so the fresh-variable numbering is byte-identical to the scan). This turned the
   tilepuzzle BFS visited-set from O(n²) to O(n); with a `runFile` import fix (let a corpus file import its
-  sibling `../lib`), tilepuzzle goes from a degenerate timeout to 1.03s, byte-identical (181441), beating
-  PeTTa's 1564ms. Also a query-variable `compileSymbolic` path so `(move $state $_)` stays compiled. All
+  sibling `../lib`), tilepuzzle goes from a degenerate timeout to 426ms, byte-identical (181441), beating
+  PeTTa's 1602ms. Also a query-variable `compileSymbolic` path so `(move $state $_)` stays compiled. All
   byte-identical (270 oracle, full suite, compiled-vs-interpreter corpus differential, a query-var counter
   differential).
 - No `curry` mode. PeTTa-style partial application is ordinary behavior where supported, not an
@@ -57,11 +65,11 @@ the PeTTa constants are not established as Hyperon expected values for the curre
    in Hyperon style, not just a lib port.
 2. **Perf outliers and PeTTa execution-model cases.** The last confirmed crossings were permutations via
    the conjunctive worst-case-optimal collapse-count;
-   nilbc via the compiled nondeterministic let*-chain search (0.40s vs 0.71s, alpha-equivalent
+   nilbc via the compiled nondeterministic let*-chain search (709ms vs 761ms, alpha-equivalent
    fresh naming); peano via the compiled add-atom saturation loop, the add-if-absent idiom as one
    exact-membership probe and the single-branch case-over-match as a snapshot-and-thread loop
-   (0.22s vs 1.69s, byte-identical). **tilepuzzle now PASSES and beats PeTTa**: 1.03s vs
-   1564ms, byte-identical (181441). Its BFS visited-set is a NAMED space, and named spaces were stored as an
+   (306ms vs 1588ms, byte-identical). **tilepuzzle now PASSES and beats PeTTa**: 426ms vs
+   1602ms, byte-identical (181441). Its BFS visited-set is a NAMED space, and named spaces were stored as an
    unindexed `Atom[]` (O(n) copy-on-write per `add-atom`, O(n) linear scan per `match`) while `&self` had an
    append-only log + ground index, so the search was O(n²). Storing each named space as the same `AtomLog`
    `&self` uses (O(1) append, ground-membership index) makes it O(n); the membership fast path pads the
@@ -69,10 +77,10 @@ the PeTTa constants are not established as Hyperon expected values for the curre
    `runFile` was rejecting tilepuzzle's `../lib` import, so it had been running degenerate.) The
    `matespace` family is a separate two-floor case:
    - **Memory floor (done, experimental).** The default path stores each runtime atom as a JS expr tree
-     (~5 KB/atom), so matespace's millions-of-states BFS V8-OOMs at the K=4 slice. `experimental.flatAtomspace`
-     crosses this — under the flag K=4 no longer OOMs (RSS bounded), byte-identical. Promoting it to default
-     is future work (it must subsume named spaces, custom grounded matchers, and every observable boundary
-     byte-identically first; today it is opt-in).
+     (~5 KB/atom), so matespace's millions-of-states BFS V8-OOMs at the K=4 slice. The default compact
+     runtime `&self` store crosses this: K=4 no longer OOMs under the compact path, and the path is
+     byte-identical to the materialising log. Named spaces and static env atoms still use their existing
+     indexes; custom grounded matchers fall back to the materialising log.
    - **CPU floor and semantic split.** matespace uses `&self` (already indexed), so it is not the
      named-space bug. The current no-barrier MeTTa-TS slices grow as `matespace K0=2, K1=4, K2=30, K3=690`
      and `matespace2 K0=1, K1=4, K2=39, K3=42588`; both K4 probes timed out under a 30s cap, and
@@ -84,12 +92,9 @@ the PeTTa constants are not established as Hyperon expected values for the curre
      these adapted files; returning them would be a semantic bug. The full non-cheating fix is either a
      Hyperon-native benchmark shape or a semi-naive/frontier aggregate evaluator proven against the ordinary
      interpreter.
-3. **selfprog.** Two parts. (a) remove-atom of a static top-level rule: `eraseSpace` erases only the runtime
-   `selfExtra` log, not `env.ruleIndex`, so the rule still reduces. Fix is a copy-on-write `removedStatic`
-   tombstone on the World (stays branch-local like `selfExtra`), filtered in `candidates()`/`selfAtoms`
-   behind an empty-set fast path, with compiled/tabling caches invalidated for a tombstoned head. (b) strict
-   `repr`: a PeTTa primitive that evaluates its argument; @metta-ts types it lazy (`Atom`) for the curry
-   repr-of-partial tests.
+3. **selfprog.** Static top-level rule removal now uses branch-local `removedStatic` tombstones filtered
+   through candidate lookup and table admission. The remaining split is strict `repr`: a PeTTa primitive that
+   evaluates its argument; @metta-ts types it lazy (`Atom`) for the curry repr-of-partial tests.
 
 ## Excluded (N/A): PeTTa execution model, not LeaTTa
 

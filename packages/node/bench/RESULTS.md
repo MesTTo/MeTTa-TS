@@ -7,12 +7,12 @@ Run: `pnpm bench` (builds core, then deopt-aware mitata).
 
 | benchmark | time/iter |
 |-----------|-----------|
-| `matchAtoms` symbol mismatch | ~9.7 ns |
-| `matchAtoms` nested, binds 2 vars | ~224 ns |
-| `match` over a 1000-atom space (functor-indexed) | ~2.7 µs |
-| `fib(15)` (~1.2k calls, interpreter) | ~14.5 ms |
-| stdlib load + `(+ 1 2)` | ~160 µs |
-| full 270-assertion Hyperon oracle | ~33 ms |
+| `matchAtoms` symbol mismatch | ~9.5 ns |
+| `matchAtoms` nested, binds 2 vars | ~8.2 ns |
+| `match` over a 1000-atom space (functor-indexed) | ~6.3 µs |
+| `fib(15)` (~1.2k calls, interpreter) | ~18.1 ms |
+| stdlib load + `(+ 1 2)` | ~233 µs |
+| full 270-assertion oracle corpus | ~66 ms |
 
 Detailed sections below are historical, each measured when its optimization landed (some on a Ryzen 9 9950X). The corpus head-to-head against PeTTa is in [`RESULTS-corpus.md`](RESULTS-corpus.md).
 
@@ -113,38 +113,42 @@ Integers are `number` on the fast path (V8 Smi, no allocation) and promote to `b
 
 ## Automatic tabling (shipped, on by default)
 
-Pure deterministic functions are memoised automatically: a ground call to a transitively-pure functor caches its ordered result bag, keyed by the call's canonical printed form (floats refused, mutable-state functors excluded). This turns overlapping-subproblem recursion from exponential to polynomial with no annotation. It is gated byte-identical against the untabled engine on the 270-assertion corpus, an adversarial set (nondeterminism, `collapse`, state, floats), and 300 generated programs; a runtime `add-atom` of a new equation invalidates the memo.
+Pure calls are memoised only after strict admission. The functor must be transitively pure, the call must be key-safe, embedded impure/meta calls decline caching, and the rule graph must predict repeated work. A recursive SCC must branch back into itself at least twice, so Fibonacci-style overlap is tabled while single-tail recursion such as factorial stays on the compiled path.
 
-Measured, ours (in-process eval, warmed, Node v22, single core):
+The table store uses structural token keys in a token trie, not recursive `format()` strings. Completed entries are bounded by entry count, answer count, retained atom cells, maximum entry size, and shared interner leaves. Completed entries are LRU-evictable because recomputing a pure table is safe. Runtime rules are keyed by a whole-world rule version, so a cached answer is not reused after runtime equations change.
 
-| program | untabled | tabled |
-|---------|----------|--------|
-| `fib(20)` | 256 ms | ~2 ms |
-| `fib(25)` | 2513 ms | 2.3 ms |
-| `fib(28)` | ~12 s (extrapolated) | 1.9 ms |
-| `fib(90)` | infeasible | 2.8 ms |
-| `factorial(100)` | — | 4.0 ms |
+Direct active variant re-entry promotes to local-linear completion. Non-cyclic calls keep exact ordered-bag memoization. Cyclic direct variants use canonical answer-set growth until a fixed point, with per-entry caps that return `TableResourceLimit` instead of growing without bound. This is not Picat-style answer subsumption and not a full SLG suspension engine.
 
-So tabling is about **1000x** on `fib(25)` and makes `fib(90)` feasible at all.
+Measured by `node packages/node/bench/perf.mjs`, ours (in-process eval, warmed, Node v22, single core):
+
+| program | default engine |
+|---------|---------------:|
+| `fib(25)` | 1.5 ms |
+| `fib(28)` | 1.4 ms |
+| `fib(90)` exact value | 0.9 ms |
+| `factorial(100)` | 0.9 ms |
+| `ackermann(2,3)` | 0.7 ms |
+
+The speedup is not "table everything." `fib` gets bounded table reuse because it has overlapping subproblems. `factorial` runs fast because the compiler keeps linear recursion off the table path.
 
 ### Versus PeTTa (MeTTa-on-SWI-Prolog/WAM)
 
-Current standing (2026-07-02): MeTTa TS is faster than PeTTa on **all 97** shared corpus programs both engines pass, median ~2x; the full per-program table is in [`RESULTS-corpus.md`](RESULTS-corpus.md). The measurements and readings below are from June, before the compiled nondeterministic-search and saturation-loop phases landed; the third reading's "naive versus naive" gap is closed (nilbc 1.8x, peano 7.7x in MeTTa TS's favour).
+Current standing (2026-07-09): MeTTa TS is faster than PeTTa on **all 98** shared corpus programs both engines pass, median 1.82x and geomean 1.85x. Both-pass totals are PeTTa 28.8s and MeTTa TS 15.9s. The full per-program table is in [`RESULTS-corpus.md`](RESULTS-corpus.md). The measurements and readings below are from June, before the compiled nondeterministic-search and saturation-loop phases landed; the third reading's "naive versus naive" gap is closed.
 
 PeTTa numbers are full wall-clock (`time sh run.sh`, including its MeTTa-to-Prolog translation). Startup baselines: swipl 6 ms, node 45 ms.
 
 | benchmark | PeTTa | ours |
 |-----------|-------|------|
-| naive `fib(25)` (PeTTa default) | 0.198 s | 2.3 ms eval (auto-tabled) |
+| naive `fib(25)` (PeTTa default) | 0.198 s | 1.5 ms eval (auto-tabled) |
 | naive `fib(30)` (PeTTa default) | 0.466 s | ~2 ms eval (auto-tabled) |
-| naive `fib(33)` (PeTTa default) | 1.378 s | ~2.5 ms eval (auto-tabled) |
+| naive `fib(33)` (PeTTa default) | 1.378 s | ~2 ms eval (auto-tabled) |
 | tabled `fib(30)` (manual `!(tabled ...)`) | 0.160 s | ~2 ms eval (~50 ms total w/ node start) |
-| tabled `fib(90)` | 0.170 s | 2.8 ms eval |
+| tabled `fib(90)` | 0.170 s | 0.9 ms eval |
 
 Three honest readings:
 
 - **Out of the box, ours beats PeTTa on PeTTa's own default examples.** PeTTa's shipped `examples/fib.metta` is naive and exponential; ours auto-tables, so on `fib(33)` we are ~550x on eval and the gap grows without bound with `n`. This needs no manual annotation, where PeTTa requires `!(import! (library lib_tabling))` and `!(tabled (fib $N))`.
-- **Tabled versus tabled, we are competitive on total wall-clock** (ours modestly faster, because PeTTa's ~0.15 s floor is fixed translation overhead, not eval). Ours also keeps MeTTa's ordered-bag result semantics, where PeTTa's `:- table` passthrough inherits Prolog's set semantics.
+- **Tabled versus tabled, we are competitive on total wall-clock** (ours faster in-process, while PeTTa's ~0.15 s floor includes translation overhead). Ours keeps MeTTa's ordered-bag result semantics for non-cyclic calls; only observed cyclic direct variants use fixed-point answer sets.
 - **Naive versus naive (both untabled) is where PeTTa's WAM still wins**: our tree-walker runs `fib(25)` in 2513 ms versus PeTTa's ~0.2 s, roughly a 12x per-call constant-factor gap. Closing that is the job of the compilation phases (P2 onward: hashconsed term store, structure-sharing bindings, then codegen), not tabling.
 
 ## Compiled deterministic functional core (shipped, on by default)
@@ -153,7 +157,7 @@ The pure deterministic int/bool functional subset (single-clause functions over 
 
 This closes the per-call constant-factor gap tabling alone could not: the recursion now runs as native JS, with an internal memo that keeps overlapping-subproblem recursion polynomial.
 
-Measured (in-process eval, warmed, Node v22), compiled core on:
+Historical landing measurement (eval-only on a prebuilt environment, warmed, Node v22), compiled core on:
 
 | program | untabled interp | tabled interp | compiled |
 |---------|-----------------|---------------|----------|
@@ -170,6 +174,6 @@ Versus PeTTa:
 | naive `fib(33)` (PeTTa default, exponential) | 1.378 s | 0.4 ms eval |
 | tabled `fib(90)` (PeTTa manual `!(tabled ...)`) | 0.170 s total | 0.2 ms eval |
 
-On PeTTa's own naive default we are about 3000x on eval and the gap grows without bound with `n`; even against PeTTa manually tabled we are competitive-to-faster on total wall-clock, with no manual annotation required.
+On PeTTa's own naive default this was about 3000x on eval and the gap grows without bound with `n`; even against PeTTa manually tabled we are competitive-to-faster on total wall-clock, with no manual annotation required. Use the automatic-tabling section above for the current end-to-end `runProgram` recursion snapshot.
 
 The source backend (`new Function`, spec P4) is deferred by measurement: the closure backend already runs `fib(33)` in 0.4 ms, far past PeTTa, so the injection-safety and compile-cost machinery of a source backend is not warranted to hit the target. It can be revisited if a workload needs it.

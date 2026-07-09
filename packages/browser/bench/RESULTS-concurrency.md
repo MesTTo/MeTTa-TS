@@ -6,9 +6,9 @@ async hyperpose hook. Web Worker startup is covered by the LSP browser benchmark
 
 | benchmark | runs | min ms | median ms |
 |---|---:|---:|---:|
-| browser run VFS import | 21 | 0.87 | 1.54 |
-| browser runSourceAsync (+ 1 2) | 21 | 0.44 | 0.54 |
-| browser par 4x resolved async op | 21 | 0.49 | 0.59 |
-| browser race slow/fast async op | 13 | 0.49 | 0.60 |
-| browser with-mutex 4x awaited sections | 9 | 5.07 | 5.55 |
-| browser async hyperpose hook | 13 | 0.89 | 1.00 |
+| browser run VFS import | 21 | 0.61 | 1.11 |
+| browser runSourceAsync (+ 1 2) | 21 | 0.37 | 0.53 |
+| browser par 4x resolved async op | 21 | 0.55 | 0.77 |
+| browser race slow/fast async op | 13 | 0.45 | 0.53 |
+| browser with-mutex 4x awaited sections | 9 | 4.29 | 5.12 |
+| browser async hyperpose hook | 13 | 0.75 | 0.87 |

@@ -1,4 +1,4 @@
-# MeTTa TS 1.1.1
+# MeTTa TS 1.1.2
 
 A pure-TypeScript implementation of [MeTTa](https://metta-lang.dev), the
 OpenCog Hyperon language. The core engine runs in the browser, Node, Deno, Bun,
@@ -10,18 +10,26 @@ asks for them.
 
 This release is prepared on Linux with Node 22 and pnpm 11. The release gate
 builds every package, typechecks the workspace, runs the full Vitest suite,
-builds the GitHub Pages documentation, runs the live Python, Pyodide,
-SWI-Prolog, and SWI-WASM adapter checks, and runs the benchmark suite before
-tagging.
+builds the GitHub Pages documentation, runs the oracle checks, and runs the
+benchmark suite before tagging. Optional Python, Pyodide, SWI-Prolog, and
+SWI-WASM adapters are built and covered by their available tests, with live
+runtime checks depending on the host tools installed in the release
+environment.
 
-The Hyperon experimental conformance run is unchanged from the previous
-host-import slice. Core/ST reports 431 passed, 77 failed, 60 expected failures,
-and 0 skipped. Full/ST with `fileio,json,random` reports 470 passed, 174 failed,
-4 expected failures, and 26 skipped. The remaining gaps are the tracked
-parser/directive, kernel, typing, stdlib, feature, and concurrency divergences,
-so this release should not be described as full Hyperon conformance.
+The current conformance rerun reports Core/ST at 431 passed, 77 failed, 60
+expected failures, and 0 skipped. Full/ST with `fileio,json,random` reports 470
+passed, 174 failed, 4 expected failures, and 26 skipped. The remaining gaps are
+the tracked parser/directive, kernel, typing, stdlib, feature, and concurrency
+divergences, so this release should not be described as full Hyperon
+conformance.
 
 ## What's new
+
+### Integrated host interop release train
+
+This release includes the full local host-interop train that followed 1.1.0:
+browser host adapters, Python and Prolog runtime splits, SWI-WASM, Pyodide,
+source runners, async effects, CLI checks, and the eDSL host builders.
 
 ### Browser Python and Prolog
 
@@ -91,6 +99,25 @@ const { x } = vars();
 pyCall("math.add", 40, 2); // (py-call (math.add 40 2))
 prologCall(["edge", "alice", x]); // (prolog-call (edge alice $x))
 ```
+
+### Bounded structural tabling
+
+Automatic tabling now uses structural token keys and a bounded table space
+instead of recursive printed-form keys. Pure overlapping-recursive calls can be
+memoized without table growth being unbounded:
+
+- completed pure entries are capped and LRU-evictable;
+- interner resets invalidate old opaque table keys;
+- runtime rules are version-keyed;
+- impure, meta, state, import, `match`, `collapse`, and concurrency paths stay
+  outside the table cache;
+- direct active variant recursion uses local-linear completion for finite answer
+  sets;
+- non-cyclic calls keep exact ordered-bag memoization.
+
+The stale-key path reported during release review is covered by a regression:
+old tail-call pending keys cannot write into a new interner generation after a
+table-space reset.
 
 ## Install
 
