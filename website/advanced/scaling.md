@@ -9,7 +9,9 @@ A naive `match` over a space is a linear scan, which does not scale. MeTTa TS ha
 
 ## Clause indexing (automatic)
 
-The in-memory matcher indexes `&self` atoms as you add them: by head functor, by every ground argument at every position, and by the functor of a nested ground argument. A query then jumps to the most selective bound position instead of scanning. This is automatic; you do nothing.
+The in-memory matcher indexes `&self` atoms as you add them: by head functor, by indexable ground leaves at every position, and by the functor of a nested ground argument. A query selects an eligible indexed position instead of scanning. An existing leaf constraint keeps precedence to preserve its established result order. The final unifier still checks every selected candidate.
+
+The static nested-head path applies to a single match pattern over an immutable ground fact bucket. Static removals, state cells, runtime additions, variable-headed facts, non-ground facts, and conjunctions disable the new static nested path. Runtime additions retain their separate compact-store index, while static candidate selection follows the existing complete or leaf-indexed paths. These admission rules preserve result order, duplicate multiplicity, and fresh-variable numbering.
 
 The effect over a 1,000,000-atom knowledge base: a functor-selective query like `(Parent $x Bob)` skips the unrelated-functor atoms; a query keyed on any ground argument, like `(edge 500000 $y)` or `(edge $x 7)`, resolves in roughly 0.2 to 1.4 ms instead of a full scan. A nested query such as `(num (M $x))` scans only `num` facts whose first argument starts with `M`. A fully unbound, variable-headed query still scans everything, by necessity.
 

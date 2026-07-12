@@ -2,7 +2,7 @@
 
 The MeTTa (OpenCog Hyperon) interpreter in pure TypeScript: atoms, spaces, the type system, pattern matching, evaluation, and the standard library. No native addons and no required WASM. Runs in any JavaScript runtime (browser, Node, Deno, Bun, edge).
 
-Part of [MeTTa TS](https://github.com/MesTTo/Meta-TypeScript-Talk).
+Part of [MeTTa TS](https://github.com/MesTTo/MeTTa-TS).
 
 ## Install
 
@@ -26,8 +26,8 @@ for (const { query, results: rs } of results) {
 // (fact 5) => [ '120' ]
 ```
 
-`runProgram` parses the source, adds every non-bang atom to the knowledge base, evaluates each `!`-query, and returns one result group per query. For a higher-level class API modeled on Python's `hyperon`, see [`@metta-ts/hyperon`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/hyperon).
+`runProgram` parses the source, adds every non-bang atom to the knowledge base, evaluates each `!`-query, and returns one result group per query. For a higher-level class API modeled on Python's `hyperon`, see [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon).
 
 ## License
 
-[MIT](https://github.com/MesTTo/Meta-TypeScript-Talk/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).

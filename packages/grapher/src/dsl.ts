@@ -46,7 +46,7 @@ export interface Grapher {
   fit(): Grapher;
   /** Evaluate every query and label the result. */
   evaluate(): Grapher;
-  /** Play the last query's reduction. */
+  /** Initialize the last query's reduction trace at its first state. */
   play(): Grapher;
   /** The current program as source, reflecting edits and reductions. */
   source(): string;

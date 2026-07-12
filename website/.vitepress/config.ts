@@ -10,8 +10,8 @@ import { defineConfig } from "vitepress";
 export default defineConfig({
   title: "MeTTa TS",
   description: "A pure-TypeScript implementation of MeTTa, the OpenCog Hyperon language.",
-  // Served as a project page at https://mestto.github.io/Meta-TypeScript-Talk/.
-  base: "/Meta-TypeScript-Talk/",
+  // Served as a project page at https://mestto.github.io/MeTTa-TS/.
+  base: "/MeTTa-TS/",
   cleanUrls: true,
   markdown: {
     // MeTTa is Scheme-like; highlight ```metta blocks with the Scheme grammar.
@@ -29,7 +29,7 @@ export default defineConfig({
       { text: "Advanced", link: "/advanced/concurrency" },
       { text: "Reference", link: "/reference/packages" },
       { text: "Playground", link: "/playground" },
-      { text: "GitHub", link: "https://github.com/MesTTo/Meta-TypeScript-Talk" },
+      { text: "GitHub", link: "https://github.com/MesTTo/MeTTa-TS" },
     ],
     sidebar: [
       {
@@ -105,7 +105,7 @@ export default defineConfig({
         ],
       },
     ],
-    socialLinks: [{ icon: "github", link: "https://github.com/MesTTo/Meta-TypeScript-Talk" }],
+    socialLinks: [{ icon: "github", link: "https://github.com/MesTTo/MeTTa-TS" }],
     search: { provider: "local" },
     footer: {
       message: "Released under the MIT License.",

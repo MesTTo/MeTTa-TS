@@ -126,8 +126,12 @@ export function writeOrCheckReport({
   }
 
   if (regressions.length > 0) {
-    printErr(`\n${regressions.length} operation(s) slower than ${regressionRatio}x baseline.`);
+    printErr(
+      `\n${regressions.length} operation(s) exceeded both ${regressionRatio}x baseline and a ${ms(regressionMinMs)} ms slowdown.`,
+    );
     process.exit(1);
   }
-  print(`\nNo regression over ${regressionRatio}x baseline.`);
+  print(
+    `\nNo operation exceeded both ${regressionRatio}x baseline and a ${ms(regressionMinMs)} ms slowdown.`,
+  );
 }

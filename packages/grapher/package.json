@@ -1,6 +1,6 @@
 {
   "name": "@metta-ts/grapher",
-  "version": "1.1.3",
+  "version": "1.1.4",
   "author": "MesTTo",
   "license": "MIT",
   "description": "MeTTaGrapher: a pure-SVG visual node-graph editor for MeTTa. Build a program as connected nodes, evaluate any subtree on the engine, and see the result. A node graph is a MeTTa atom.",
@@ -39,12 +39,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MesTTo/Meta-TypeScript-Talk.git",
+    "url": "git+https://github.com/MesTTo/MeTTa-TS.git",
     "directory": "packages/grapher"
   },
-  "homepage": "https://github.com/MesTTo/Meta-TypeScript-Talk#readme",
+  "homepage": "https://github.com/MesTTo/MeTTa-TS#readme",
   "bugs": {
-    "url": "https://github.com/MesTTo/Meta-TypeScript-Talk/issues"
+    "url": "https://github.com/MesTTo/MeTTa-TS/issues"
   },
   "publishConfig": {
     "access": "public"

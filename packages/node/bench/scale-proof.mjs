@@ -161,6 +161,11 @@ const staticSpace =
   `!(collapse (match &self (edge $x ${mid}) $x))`;
 runCase("static arg-index", staticSpace, [`(, ${mid - 1})`], 8_000);
 
+const nestedStaticSpace =
+  facts(SIZE, (i) => `(nested-static (${i === mid ? "M" : "W"} ${i}))`) +
+  `!(collapse (match &self (nested-static (M $x)) $x))`;
+runCase("static nested-head-index", nestedStaticSpace, [`(, ${mid})`], 8_000);
+
 const runtimeSpace =
   facts(SIZE, (i) => `!(add-atom &self (rt ${i} ${i + 1}))`) +
   `!(collapse (match &self (rt ${mid} $y) $y))`;

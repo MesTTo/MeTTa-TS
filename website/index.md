@@ -19,7 +19,7 @@ hero:
       link: /learn/evaluation/main-concepts
     - theme: alt
       text: GitHub
-      link: https://github.com/MesTTo/Meta-TypeScript-Talk
+      link: https://github.com/MesTTo/MeTTa-TS
 
 features:
   - title: Run it anywhere

@@ -1,6 +1,6 @@
 # @metta-ts/node
 
-Node.js entry for [MeTTa TS](https://github.com/MesTTo/Meta-TypeScript-Talk): the `metta-ts` command-line runner, file-based `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher. Re-exports everything from [`@metta-ts/core`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/core).
+Node.js entry for [MeTTa TS](https://github.com/MesTTo/MeTTa-TS): the `metta-ts` command-line runner, file-based `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher. Re-exports everything from [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core).
 
 ## Install
 
@@ -44,4 +44,4 @@ for (const { query, results } of runFile("program.metta")) {
 
 ## License
 
-[MIT](https://github.com/MesTTo/Meta-TypeScript-Talk/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).

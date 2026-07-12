@@ -1,8 +1,8 @@
 # @metta-ts/edsl
 
-A typed TypeScript eDSL for [MeTTa TS](https://github.com/MesTTo/Meta-TypeScript-Talk). Mint symbols, functors, and logic variables from proxies, build MeTTa with combinators or a tagged template, and run it on the real interpreter. Any TypeScript value drops in as a grounded atom automatically, and TypeScript functions bridge in both directions.
+A typed TypeScript eDSL for [MeTTa TS](https://github.com/MesTTo/MeTTa-TS). Mint symbols, functors, and logic variables from proxies, build MeTTa with combinators or a tagged template, and run it on the real interpreter. Any TypeScript value drops in as a grounded atom automatically, and TypeScript functions bridge in both directions.
 
-It is a thin layer over [`@metta-ts/hyperon`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/hyperon): every builder produces an ordinary atom that runs on the existing engine, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types.
+It is a thin layer over [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon): every builder produces an ordinary atom that runs on the existing engine, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types.
 
 ## Install
 
@@ -121,4 +121,4 @@ Prolog goal when you need a Prolog string.
 
 ## License
 
-[MIT](https://github.com/MesTTo/Meta-TypeScript-Talk/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).

@@ -115,18 +115,25 @@ Nodes form a cycle-guarded graph, so a node can feed several parents and no cycl
 
 ## Using it from TypeScript
 
-The package is [`@metta-ts/grapher`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/grapher). The quickest way in is the fluent `grapher()` driver, in the same style as the [eDSL](/edsl/overview):
+The package is [`@metta-ts/grapher`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/grapher). The quickest way in is the fluent `grapher()` driver, in the same style as the [eDSL](/edsl/overview):
 
 ```ts
 import { grapher } from "@metta-ts/grapher";
 
-grapher("#app")
+const view = grapher("#app")
   .load("(= (double $x) (* $x 2))\n(double 21)")
   .blocks() // or .graph()
-  .play(); // animate the reduction
+  .fit()
+  .evaluate(); // label the query with 42
+
+// Call view.destroy() when the host component unmounts.
 ```
 
-Every building step returns the handle, so a chain reads as one sentence. `source()`, `gif()`, and `destroy()` end the chain, and `.grapher` is the full instance for anything the chain does not cover.
+Every building step returns the handle, so a chain reads as one sentence.
+`source()`, `gif()`, and `destroy()` end the chain, and `.grapher` is the full
+instance for anything the chain does not cover. `play()` initializes a
+reduction trace at its first state; call `traceForward()` on `.grapher` to
+advance it.
 
 Because the view runs on atoms, anything that produces atoms feeds it, including the eDSL. Build the program with combinators and hand the atoms over:
 
@@ -154,7 +161,9 @@ grapher("#app").blocks().palette("teal"); // "site" (default), "teal", or a pale
 `gif()` encodes the reduction as an animated GIF. It takes the encoder as an argument, so the package carries no GIF dependency of its own: install [`gifenc`](https://www.npmjs.com/package/gifenc) where you want the feature and pass it in.
 
 ```ts
-const blob = await grapher("#app").load("(fact 5)").gif(await import("gifenc"));
+const blob = await grapher("#app")
+  .load("(+ 10 (* 25 2))")
+  .gif(await import("gifenc"));
 // blob is an image/gif Blob you can download, upload, or turn into an object URL
 ```
 

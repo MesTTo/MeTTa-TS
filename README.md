@@ -278,7 +278,7 @@ node packages/node/dist/cli.js examples/factorial.metta
 
 ## Performance
 
-The pure-MeTTa path stays TypeScript throughout, with no escape to native code. The interpreter uses a precomputed-ground short-circuit, structural sharing in substitution, a cons-list instruction stack, and Prolog-style clause indexing (by head functor and by every ground-leaf argument position). A functor-and-argument-keyed query over a 1,000,000-atom knowledge base resolves in about 0.2 to 1.4 ms. See [`packages/node/bench/RESULTS.md`](packages/node/bench/RESULTS.md) for the full benchmark log.
+The pure-MeTTa path stays TypeScript throughout, with no escape to native code. The interpreter uses a precomputed-ground short-circuit, structural sharing in substitution, a cons-list instruction stack, and Prolog-style clause indexing by head functor, indexable ground-leaf arguments at every position, and one nested expression-head level. A functor-and-argument-keyed query over a 1,000,000-atom knowledge base resolves in about 0.2 to 1.4 ms. See [`packages/node/bench/RESULTS.md`](packages/node/bench/RESULTS.md) for the full benchmark log.
 
 ### Head-to-head with PeTTa
 
@@ -325,7 +325,7 @@ That speed comes from general engine work:
 - an O(1)-stack worklist for nondeterminism;
 - ground-atom type memoisation;
 - an exact-match ground-fact index;
-- nested argument-functor indexing for ground runtime facts such as `(num (M $x))`;
+- nested argument-functor indexing for ground static and runtime facts such as `(num (M $x))`;
 - bounded automatic tabling of pure overlapping-recursive functions, with structural token keys, runtime rule-versioned entries, and one shared budget for completed and active tables;
 - consumer-directed distinct memoization and streaming choice deduplication only where `unique-atom(collapse(...))` makes duplicate derivations unobservable, while ordinary `collapse` keeps its exact ordered bag;
 - a slot-based evaluator for closed pure `let` and `superpose` products that preserves result order and multiplicity without allocating general binding frames;

@@ -1,6 +1,6 @@
 # @metta-ts/browser
 
-Browser entry for [MeTTa TS](https://github.com/MesTTo/Meta-TypeScript-Talk). Re-exports everything from [`@metta-ts/core`](https://github.com/MesTTo/Meta-TypeScript-Talk/tree/main/packages/core) and adds an in-memory virtual file system so `import!` works without disk access.
+Browser entry for [MeTTa TS](https://github.com/MesTTo/MeTTa-TS). Re-exports everything from [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core) and adds an in-memory virtual file system so `import!` works without disk access.
 
 ## Install
 
@@ -123,4 +123,4 @@ check.
 
 ## License
 
-[MIT](https://github.com/MesTTo/Meta-TypeScript-Talk/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).

@@ -1,6 +1,6 @@
 # @metta-ts/das-gateway
 
-A transport-agnostic gateway that bridges [MeTTa TS](https://github.com/MesTTo/Meta-TypeScript-Talk) to a SingularityNET Distributed AtomSpace (DAS). It encodes a pattern query, sends it over an injected transport (Connect/HTTP, usable from the browser), and decodes the bindings back into MeTTa atoms.
+A transport-agnostic gateway that bridges [MeTTa TS](https://github.com/MesTTo/MeTTa-TS) to a SingularityNET Distributed AtomSpace (DAS). It encodes a pattern query, sends it over an injected transport (Connect/HTTP, usable from the browser), and decodes the bindings back into MeTTa atoms.
 
 ## Install
 
@@ -29,4 +29,4 @@ Each returned binding value must contain exactly one MeTTa atom. `decodeBindings
 
 ## License
 
-[MIT](https://github.com/MesTTo/Meta-TypeScript-Talk/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).

@@ -56,6 +56,34 @@ Correctness gated by the 270/270 oracle plus dedicated multi-result / variable-h
 match tests. This is the in-memory half of the "scale to millions of atoms" goal; the flat-KB +
 worker parallel matcher is an alternative for KB sizes that exceed single-threaded scan capacity.
 
+### Nested static argument-head indexing
+
+A pattern such as `(nested (M $x))` can also select static facts by outer head, argument position, and
+the nested `M` head. The index stores source occurrence ids, then merges exact and residual buckets in
+source order. The normal matcher checks the selected atoms. The fast path is limited to a single match
+pattern over an immutable ground static bucket. Mutable, stateful, and non-ground cases keep the
+complete candidate path.
+
+The contribution-specific matrix compares indexed construction with otherwise identical construction
+where the optional nested index is disabled before the generated facts are added. Query medians use 15
+samples after 8 warmups for selective cases. The dense case uses 5 samples after 3 warmups. Every run
+checks the complete ordered result sequence, selected bucket size, and final evaluator counter. Run it
+with `pnpm bench:nested-index`.
+
+| Static facts | Selected facts | Complete scan | Nested index |
+| -----------: | -------------: | ------------: | -----------: |
+|       10,000 |              1 |   1.368017 ms |  0.051809 ms |
+|      100,000 |              1 |  15.253643 ms |  0.032630 ms |
+|    1,000,000 |              1 | 230.319322 ms |  0.036190 ms |
+|      100,000 |         50,000 |  97.937702 ms | 87.824287 ms |
+
+At 1,000,000 facts, three process runs put median environment construction at 448.538514 ms without
+the index and 429.974969 ms with it. Earlier runs changed the sign of that difference, so the build
+timings do not support a construction-speed claim. Retained heap rose from 442.643234 MiB to 452.925766
+MiB. The 10.282532 MiB increase is 2.3 percent for this all-nested corpus. The selective query visits one
+indexed occurrence but restores the final evaluator counter to 1,000,000, preserving fresh-variable
+numbering.
+
 ## Parallel flat matcher (worker_threads + SharedArrayBuffer) — shipped
 
 `ParallelFlatMatcher` (`@metta-ts/node`) puts a flat interned KB's Int32 tokens in a `SharedArrayBuffer`

@@ -111,11 +111,13 @@ type Gen<R> = Generator<Susp, R, unknown>;
 type EvalRes = [Array<[Atom, Bindings]>, St];
 interface CandidateSource extends Iterable<Atom> {
   readonly counterPadding?: number;
+  readonly synthetic?: true;
 }
 
 function exactCandidateSource(atom: Atom, count: number, total: number): CandidateSource {
   return {
     counterPadding: total - count,
+    synthetic: true,
     *[Symbol.iterator](): Iterator<Atom> {
       for (let i = 0; i < count; i++) yield atom;
     },
@@ -124,8 +126,7 @@ function exactCandidateSource(atom: Atom, count: number, total: number): Candida
 
 const candidateCounterPadding = (source: CandidateSource): number => source.counterPadding ?? 0;
 
-const syntheticCandidateSource = (source: CandidateSource): boolean =>
-  Object.hasOwn(source, "counterPadding");
+const syntheticCandidateSource = (source: CandidateSource): boolean => source.synthetic === true;
 
 // TS-native concurrency primitives (async-only): par/race evaluate their argument expressions
 // concurrently; with-mutex serialises a critical section across await points. Their arguments are NOT
@@ -485,12 +486,13 @@ export interface MinEnv {
   // used for variable/expression first-argument queries. `argIndex` is the finer index, keyed by
   // `functor + arg key` for atoms whose first argument is a ground leaf, so a query like
   // `(edge 500000 $y)` jumps straight to the matching row even when a million atoms share the functor.
-  // `nonGroundAtPos` holds atoms of a functor whose first argument is not a ground leaf (variable or
-  // expression), which must be considered for any first-argument query of that functor.
+  // `argIndex` and `nonGroundAtPos` store exact leaf and residual candidates.
   // `varHeadedFacts` holds atoms with no head key (variable-headed), which can unify with any pattern.
   factIndex: Map<string, Atom[]>;
   argIndex: Map<string, Atom[]>;
   nonGroundAtPos: Map<string, Atom[]>;
+  /** Internal static nested-head index. Optional so existing structural `MinEnv` values stay compatible. */
+  nestedMatchIndex?: StaticNestedMatchIndex | undefined;
   varHeadedFacts: Atom[];
   /** Automatic tabling storage: structural variant keys over token tries and bounded completed entries.
    *  `undefined` when tabling is disabled. */
@@ -535,6 +537,19 @@ export interface MinEnv {
   useFlatAtomspace?: boolean;
 }
 
+interface StaticNestedMatchIndex {
+  /** Occurrence ids by functor, argument position, and nested expression head. */
+  readonly byHead: Map<string, number[]>;
+  /** Occurrence ids whose argument or argument head has a custom grounded matcher. */
+  readonly wildcardAtPos: Map<string, number[]>;
+  /** Root functors with a non-ground static fact. */
+  readonly nonGroundFactHeads: Set<string>;
+}
+
+function emptyStaticNestedMatchIndex(): StaticNestedMatchIndex {
+  return { byHead: new Map(), wildcardAtPos: new Map(), nonGroundFactHeads: new Set() };
+}
+
 const KEY_SEP = "\x01";
 const ARG_SEP = "\x00";
 
@@ -543,12 +558,14 @@ const ARG_SEP = "\x00";
 function argKey(a: Atom): string | undefined {
   if (a.kind === "sym") return "s" + ARG_SEP + a.name;
   if (a.kind === "gnd") {
+    if (a.match !== undefined) return undefined;
     const v = a.value;
     switch (v.g) {
       case "int":
-        return "i" + ARG_SEP + v.n;
       case "float":
-        return "f" + ARG_SEP + v.n;
+        // Ground equality compares mixed ints/floats through Number, so both kinds need the same key.
+        // Precision collisions for huge ints are safe because the matcher checks every candidate.
+        return "n" + ARG_SEP + Number(v.n);
       case "str":
         return "S" + ARG_SEP + v.s;
       case "bool":
@@ -560,10 +577,48 @@ function argKey(a: Atom): string | undefined {
   return undefined;
 }
 
-function pushTo(m: Map<string, Atom[]>, k: string, x: Atom): void {
+/** A fixed nested expression head that can safely prefilter full unification. */
+function nestedArgHead(a: Atom): string | undefined {
+  if (a.kind !== "expr") return undefined;
+  const head = a.items[0];
+  return head?.kind === "sym" ? head.name : undefined;
+}
+
+/** Whether a ground argument without a fixed symbol head may match a symbol-headed expression. */
+function matchesAnyNestedHead(a: Atom): boolean {
+  if (a.kind === "gnd") return a.match !== undefined;
+  if (a.kind !== "expr" || a.items.length === 0) return false;
+  const head = a.items[0]!;
+  return head.kind === "gnd" && head.match !== undefined;
+}
+
+function pushTo<T>(m: Map<string, T[]>, k: string, x: T): void {
   const cur = m.get(k);
   if (cur === undefined) m.set(k, [x]);
   else cur.push(x);
+}
+
+/** Merge disjoint occurrence-id buckets without changing source order or duplicate multiplicity. */
+function orderedIndexedAtoms(
+  env: MinEnv,
+  indexed: readonly number[],
+  wildcards: readonly number[],
+): Atom[] {
+  const out: Atom[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < indexed.length || j < wildcards.length) {
+    const indexedId = indexed[i];
+    const wildcardId = wildcards[j];
+    if (wildcardId === undefined || (indexedId !== undefined && indexedId < wildcardId)) {
+      out.push(env.atoms[indexedId!]!);
+      i += 1;
+    } else {
+      out.push(env.atoms[wildcardId]!);
+      j += 1;
+    }
+  }
+  return out;
 }
 
 function pushUniqueType(m: Map<string, Atom[]>, k: string, x: Atom): void {
@@ -590,6 +645,7 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     factIndex: new Map(),
     argIndex: new Map(),
     nonGroundAtPos: new Map(),
+    nestedMatchIndex: emptyStaticNestedMatchIndex(),
     varHeadedFacts: [],
   };
 }
@@ -805,20 +861,34 @@ function disableTabling(env: MinEnv): void {
  *  gated by the 270/270 oracle. */
 export function addAtomToEnv(env: MinEnv, x: Atom): void {
   const atom = env.intern === undefined ? x : internAtom(env.intern, x);
+  const occurrenceId = env.atoms.length;
+  // Old structural MinEnv values may not carry this optional index. Initialize only for an empty env;
+  // a nonempty legacy env must stay on the complete candidate path because its earlier atoms are unindexed.
+  const nestedMatchIndex =
+    env.nestedMatchIndex ??
+    (occurrenceId === 0 ? (env.nestedMatchIndex = emptyStaticNestedMatchIndex()) : undefined);
   env.atoms.push(atom);
-  // Clause-index for fast `match` candidate selection: by functor, and by functor+first-arg when the
-  // first argument is a ground leaf.
+  // Clause indexes for `match`: root functor, ground leaves, and one nested expression-head level.
   const fk = headKey(atom);
   if (fk === undefined) env.varHeadedFacts.push(atom);
   else {
     pushTo(env.factIndex, fk, atom);
-    // Index by every argument position: a ground leaf goes in argIndex; a variable/expression argument
-    // goes in nonGroundAtPos (it stays a candidate for any query that binds that position).
+    if (!atom.ground) nestedMatchIndex?.nonGroundFactHeads.add(fk);
     if (atom.kind === "expr")
       for (let i = 1; i < atom.items.length; i++) {
-        const ak = argKey(atom.items[i]!);
+        const argument = atom.items[i]!;
+        const positionKey = fk + KEY_SEP + i;
+        const ak = argKey(argument);
         if (ak !== undefined) pushTo(env.argIndex, fk + KEY_SEP + i + KEY_SEP + ak, atom);
-        else pushTo(env.nonGroundAtPos, fk + KEY_SEP + i, atom);
+        else pushTo(env.nonGroundAtPos, positionKey, atom);
+
+        if (atom.ground) {
+          const nestedHead = nestedArgHead(argument);
+          if (nestedHead !== undefined && nestedMatchIndex !== undefined)
+            pushTo(nestedMatchIndex.byHead, fk + KEY_SEP + i + KEY_SEP + nestedHead, occurrenceId);
+          else if (matchesAnyNestedHead(argument) && nestedMatchIndex !== undefined)
+            pushTo(nestedMatchIndex.wildcardAtPos, positionKey, occurrenceId);
+        }
       }
   }
   if (opOf(atom) === "=" && atom.kind === "expr" && atom.items.length === 3) {
@@ -2014,63 +2084,123 @@ export function checkApplication(
  *  functor-headed pattern only scans atoms with that head key plus the variable-headed atoms (which can
  *  unify with any functor); a variable-headed pattern must scan everything. State atoms are resolved
  *  only when the world actually holds state. This is what turns a linear `match` into an indexed one. */
-function* matchCandidates(env: MinEnv, w: World, pInst: Atom): CandidateSource {
+function matchCandidates(
+  env: MinEnv,
+  w: World,
+  pInst: Atom,
+  allowNested: boolean,
+): CandidateSource {
   const k = headKey(pInst);
   if (k === undefined) {
-    // variable-headed pattern: must consider everything.
-    for (const atom of resolveAll(w, visibleStaticAtoms(w, env.atoms))) yield atom;
-    yield* runtimeCandidates(w, undefined);
-    return;
+    return {
+      *[Symbol.iterator](): Iterator<Atom> {
+        // A variable-headed pattern must consider everything.
+        for (const atom of resolveAll(w, visibleStaticAtoms(w, env.atoms))) yield atom;
+        yield* runtimeCandidates(w, undefined);
+      },
+    };
   }
-  // Pick the most selective bound (ground-leaf) argument position: candidates are the atoms with that
-  // ground value at that position, plus the atoms with a non-ground argument there (which can unify).
+  const headCandidates = env.factIndex.get(k) ?? [];
+  const nestedMatchIndex = env.nestedMatchIndex;
+  // Skipping a failed non-ground candidate changes the suffix used to freshen later facts. Restrict nested
+  // indexing to a ground, state-free candidate domain and restore the skipped attempts through counterPadding.
+  // Leaf indexing keeps its established admission and counter behavior.
+  const nestedIndexSafe =
+    allowNested &&
+    nestedMatchIndex !== undefined &&
+    !nestedMatchIndex.nonGroundFactHeads.has(k) &&
+    env.varHeadedFacts.length === 0 &&
+    w.removedStatic === null &&
+    w.store.size === 0 &&
+    w.selfExtra === null &&
+    (w.flatSelfExtra?.size ?? 0) === 0;
+  // Pick the most selective eligible argument position. Nested buckets include custom grounded matchers
+  // from the residual bucket, then merge by source occurrence id.
   let bestKey: string | undefined;
   let bestPosKey: string | undefined;
+  let bestIsNested = false;
   let bestSize = Infinity;
+  const hasLeafConstraint =
+    pInst.kind === "expr" &&
+    pInst.items.slice(1).some((argument) => argKey(argument) !== undefined);
   if (pInst.kind === "expr")
     for (let i = 1; i < pInst.items.length; i++) {
-      const ak = argKey(pInst.items[i]!);
-      if (ak === undefined) continue;
-      const ik = k + KEY_SEP + i + KEY_SEP + ak;
+      const argument = pInst.items[i]!;
       const posKey = k + KEY_SEP + i;
-      const size =
-        (env.argIndex.get(ik)?.length ?? 0) + (env.nonGroundAtPos.get(posKey)?.length ?? 0);
-      if (size < bestSize) {
-        bestSize = size;
-        bestKey = ik;
-        bestPosKey = posKey;
+      const ak = argKey(argument);
+      if (ak !== undefined) {
+        const ik = k + KEY_SEP + i + KEY_SEP + ak;
+        const size =
+          (env.argIndex.get(ik)?.length ?? 0) + (env.nonGroundAtPos.get(posKey)?.length ?? 0);
+        if (size < bestSize) {
+          bestSize = size;
+          bestKey = ik;
+          bestPosKey = posKey;
+          bestIsNested = false;
+        }
+      }
+
+      // The established leaf source yields exact values before residual custom matchers. Keep that source
+      // whenever a leaf constraint exists so adding a nested constraint cannot reorder successful matches.
+      const nestedHead =
+        nestedIndexSafe && !hasLeafConstraint ? nestedArgHead(argument) : undefined;
+      if (nestedHead !== undefined) {
+        const ik = k + KEY_SEP + i + KEY_SEP + nestedHead;
+        const size =
+          (nestedMatchIndex!.byHead.get(ik)?.length ?? 0) +
+          (nestedMatchIndex!.wildcardAtPos.get(posKey)?.length ?? 0);
+        if (size < bestSize && size < headCandidates.length) {
+          bestSize = size;
+          bestKey = ik;
+          bestPosKey = posKey;
+          bestIsNested = true;
+        }
       }
     }
   let cands: Atom[];
+  let counterPadding = 0;
   if (bestKey !== undefined) {
-    cands = [...(env.argIndex.get(bestKey) ?? []), ...(env.nonGroundAtPos.get(bestPosKey!) ?? [])];
+    if (bestIsNested) {
+      cands = orderedIndexedAtoms(
+        env,
+        nestedMatchIndex!.byHead.get(bestKey) ?? [],
+        nestedMatchIndex!.wildcardAtPos.get(bestPosKey!) ?? [],
+      );
+      counterPadding = headCandidates.length - cands.length;
+    } else {
+      // Retain the established leaf-index order: exact candidates, then the residual bucket.
+      cands = [
+        ...(env.argIndex.get(bestKey) ?? []),
+        ...(env.nonGroundAtPos.get(bestPosKey!) ?? []),
+      ];
+    }
   } else {
     // no bound argument position: the whole functor bucket.
-    cands = (env.factIndex.get(k) ?? []).slice();
+    cands = headCandidates.slice();
   }
   cands.push(...env.varHeadedFacts);
   if (w.removedStatic !== null) cands = cands.filter((a) => !staticAtomRemoved(w, a));
-  // Runtime facts. Fast path: an exact GROUND pattern over a runtime log that holds only ground atoms
-  // (and no state handles to resolve) is an exact-membership query; the index answers it in O(1) and the
-  // pattern itself is the only thing that can match (a ground pattern unifies only an identical ground
-  // atom, with an empty binding), so push that many copies of the pattern instead of scanning the log.
-  // This is what makes peano's O(K^3) dedup-by-scan O(K^2). Otherwise fall back to the full scan.
-  if (
-    pInst.ground &&
-    logNonGround(w.selfExtra) === 0 &&
-    (w.flatSelfExtra?.nonGroundCount ?? 0) === 0 &&
-    w.store.size === 0
-  ) {
-    // An empty log holds nothing, so skip idxCount there: it would hash the whole (deep) pattern
-    // just to probe an empty index, and under the flat store the log stays empty for the run.
-    const c = w.selfExtra === null ? 0 : idxCount(logGroundIdx(w.selfExtra), pInst);
-    for (const atom of cands) yield atom;
-    const flatCount = w.flatSelfExtra?.exactCount(pInst) ?? 0;
-    for (let i = 0; i < c + flatCount; i++) yield pInst;
-    return; // pInst carries no state handle, so resolveAll would be a no-op
-  }
-  for (const atom of resolveAll(w, cands)) yield atom;
-  yield* runtimeCandidates(w, k, pInst);
+  const iterate = function* (): Iterator<Atom> {
+    // A ground pattern over a ground runtime log is an exact-membership query. The pattern itself is the
+    // only runtime atom that can match, so yield that many copies instead of scanning the log.
+    if (
+      pInst.ground &&
+      logNonGround(w.selfExtra) === 0 &&
+      (w.flatSelfExtra?.nonGroundCount ?? 0) === 0 &&
+      w.store.size === 0
+    ) {
+      const c = w.selfExtra === null ? 0 : idxCount(logGroundIdx(w.selfExtra), pInst);
+      for (const atom of cands) yield atom;
+      const flatCount = w.flatSelfExtra?.exactCount(pInst) ?? 0;
+      for (let i = 0; i < c + flatCount; i++) yield pInst;
+      return;
+    }
+    for (const atom of resolveAll(w, cands)) yield atom;
+    yield* runtimeCandidates(w, k, pInst);
+  };
+  return counterPadding === 0
+    ? { [Symbol.iterator]: iterate }
+    : { counterPadding, [Symbol.iterator]: iterate };
 }
 
 /** Apply state resolution to candidate atoms only when the world actually holds state. */
@@ -3155,7 +3285,7 @@ function matchSetup(
   // otherwise they scan in insertion order.
   if (sn === undefined || sn === "&self") {
     return {
-      getCandidates: (pInst) => matchCandidates(env, st.world, pInst),
+      getCandidates: (pInst) => matchCandidates(env, st.world, pInst, patterns.length === 1),
       patterns,
     };
   }
