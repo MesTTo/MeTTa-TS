@@ -19,7 +19,7 @@ detailed reference: [core](/reference/core), [hyperon](/reference/hyperon),
 | [`@metta-ts/browser`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/browser)         | Browser entry point with an in-memory virtual file system for `import!` and optional host-runtime composition.                |
 | [`@metta-ts/py`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/py)                   | Python interop: PeTTa's `py-call` and Hyperon's `py-atom`, over pythonia in Node or Pyodide in the browser. Opt-in and async. |
 | [`@metta-ts/prolog`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/prolog)           | Prolog interop: PeTTa-compatible predicate calls, `prolog-call`, and `import_prolog_function` over SWI-Prolog or SWI-WASM.    |
-| [`@metta-ts/grapher`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/grapher)         | MeTTaGrapher: a pure-SVG visual editor that draws a program as a node graph or nested blocks and runs it on the core.         |
+| [`@metta-ts/grapher`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/grapher)         | MeTTaGrapher: a visual editor plus browser and headless Node reduction-GIF rendering over the same core trace.                |
 | [`@metta-ts/das-client`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-client)   | Client for SingularityNET's Distributed AtomSpace.                                                                            |
 | [`@metta-ts/das-gateway`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-gateway) | A transport-agnostic gateway bridging the browser to a Distributed AtomSpace.                                                 |
 
@@ -33,7 +33,11 @@ detailed reference: [core](/reference/core), [hyperon](/reference/hyperon),
 package adds the CLI, file imports, and the worker-thread matcher; the browser
 package adds an in-memory file system. Both re-export the core.
 
-`@metta-ts/grapher` is the visual editor, [MeTTaGrapher](/tools/grapher). It renders a program as a node graph or nested blocks and runs it on the core, so it is a view over atoms rather than a second engine; anything that produces atoms, including the eDSL, feeds it.
+`@metta-ts/grapher` is the visual editor, [MeTTaGrapher](/tools/grapher). It
+renders a program as a node graph or nested blocks and runs it on the core, so
+it is a view over atoms rather than a second engine. The
+[`@metta-ts/grapher/node` entry](/tools/grapher-node-gif) exports the same
+reduction as GIF bytes without mounting the editor or creating a browser DOM.
 
 `@metta-ts/py` and `@metta-ts/prolog` are optional host interop packages.
 Python reaches CPython through pythonia in Node or Pyodide in the browser.

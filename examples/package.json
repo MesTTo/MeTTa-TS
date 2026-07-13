@@ -25,6 +25,7 @@
     "transactions": "tsx transactions.ts",
     "scaling": "tsx scaling.ts",
     "parallel-matcher": "tsx parallel-matcher.ts",
+    "grapher-gif": "tsx grapher-gif.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -43,6 +44,8 @@
   },
   "devDependencies": {
     "esbuild": "0.27.7",
+    "gifenc": "1.0.3",
+    "sharp": "^0.35.3",
     "tsx": "^4.19.2",
     "typescript": "^5.0.0"
   }

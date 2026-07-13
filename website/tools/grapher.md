@@ -156,9 +156,11 @@ Recolor the blocks with a built-in name or your own palette:
 grapher("#app").blocks().palette("teal"); // "site" (default), "teal", or a palette object
 ```
 
-### Exporting a GIF from code
+### Exporting a GIF in the browser
 
-`gif()` encodes the reduction as an animated GIF. It takes the encoder as an argument, so the package carries no GIF dependency of its own: install [`gifenc`](https://www.npmjs.com/package/gifenc) where you want the feature and pass it in.
+`gif()` encodes the mounted editor's reduction as an animated GIF. The mounted
+driver uses browser Canvas and `Image`, so this form belongs in browser code.
+Install [`gifenc`](https://www.npmjs.com/package/gifenc) and pass it in.
 
 ```ts
 const blob = await grapher("#app")
@@ -166,6 +168,10 @@ const blob = await grapher("#app")
   .gif(await import("gifenc"));
 // blob is an image/gif Blob you can download, upload, or turn into an object URL
 ```
+
+To create the same animation from `node app.js`, use the DOM-free
+[`@metta-ts/grapher/node` tutorial](/tools/grapher-node-gif). It returns a
+`Uint8Array` that can be written to a file or sent in an HTTP response.
 
 ### The full instance
 

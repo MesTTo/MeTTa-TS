@@ -1,8 +1,9 @@
 # @metta-ts/grapher
 
-A browser editor for MeTTa programs. It renders the same atoms as a connected
-node graph or nested blocks, evaluates them with `@metta-ts/hyperon`, and
-exposes the model and rendering pieces for custom hosts.
+A visual editor and reduction renderer for MeTTa programs. It renders the same
+atoms as a connected node graph or nested blocks, evaluates them with
+`@metta-ts/hyperon`, and can export the reduction from a browser or plain
+Node.js.
 
 ## Install
 
@@ -51,12 +52,13 @@ view uses Canvas 2D text measurement, and animated transitions use
 `requestAnimationFrame`. Styles are embedded in the generated SVG, so there is
 no stylesheet to import.
 
-The parser, graph model, serialization, and evaluation helpers also run
-headlessly. Node consumers require Node 20 or newer. `@metta-ts/hyperon` is
-installed as a package dependency.
+The parser, graph model, serialization, evaluation helpers, SVG-frame builders,
+and Node GIF renderer also run headlessly. Node consumers require Node 20 or
+newer. The GIF renderer uses Sharp 0.35 and requires Node 20.9 or newer.
+`@metta-ts/hyperon` is installed as a package dependency.
 
-GIF export is optional. Install `gifenc` and pass its module to `gif()` or
-`exportReductionGif()`:
+Browser GIF export is optional. Install `gifenc` and pass its module to `gif()`
+or `exportReductionGif()`:
 
 ```bash
 npm install gifenc
@@ -68,6 +70,40 @@ const blob = await grapher("#metta-graph")
   .blocks()
   .gif(await import("gifenc"));
 ```
+
+## Generate a GIF in Node.js
+
+Install the two optional rendering packages:
+
+```bash
+npm install @metta-ts/grapher sharp gifenc
+```
+
+Then call the Node entry point. It does not create a DOM or open a browser.
+
+```ts
+import { writeFile } from "node:fs/promises";
+import { renderReductionGif } from "@metta-ts/grapher/node";
+
+const gif = await renderReductionGif("(+ 10 (* 25 2))", {
+  view: "blocks",
+  width: 720,
+});
+
+await writeFile("reduction.gif", gif);
+```
+
+`renderReductionGif()` accepts MeTTa source, one `Atom`, or an array of atoms.
+For source and arrays, it loads every atom into the selected engine and traces
+the last atom whose head is not `=` or `:`. Pass `{ metta }` to reuse an
+existing `MeTTa` space. `view` accepts `"blocks"`, `"graph"`, or
+`"side-by-side"`.
+
+The Node renderer uses the same `reduceTrace()`, `blockReductionSvgs()`,
+`graphReductionSvgs()`, and `sideBySideReductionSvgs()` pipeline as the browser.
+Only SVG rasterization changes by host. The function returns GIF bytes as a
+`Uint8Array`; writing, uploading, or returning those bytes is the caller's
+choice.
 
 ## Exports
 
@@ -86,8 +122,12 @@ The code entry point is `@metta-ts/grapher`. Its main public surfaces are:
   `&grapher` directives.
 - `reductionGif`, `graphReductionGif`, and `sideBySideReductionGif` for
   caller-supplied GIF encoding.
+- `blockReductionSvgs`, `graphReductionSvgs`, `sideBySideReductionSvgs`, and
+  `encodeSvgAnimation` for host-independent frame generation and encoding.
+- `renderReductionGif` from `@metta-ts/grapher/node` for direct Node GIF bytes.
 
-The package also exports `@metta-ts/grapher/package.json`. See the
+The package also exports `@metta-ts/grapher/node` and
+`@metta-ts/grapher/package.json`. See the
 [full API reference](https://mestto.github.io/MeTTa-TS/reference/grapher).
 
 ## License

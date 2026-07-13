@@ -81,7 +81,10 @@ export default defineConfig({
       {
         text: "Visual editor",
         collapsed: false,
-        items: [{ text: "MeTTaGrapher", link: "/tools/grapher" }],
+        items: [
+          { text: "MeTTaGrapher", link: "/tools/grapher" },
+          { text: "Generate GIFs in Node.js", link: "/tools/grapher-node-gif" },
+        ],
       },
       {
         text: "Advanced",

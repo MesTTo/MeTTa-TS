@@ -57,11 +57,18 @@ export {
 export { reductionGif, type GifEncoderLib, type GifOptions } from "./block/gif";
 export {
   sideBySideReductionGif,
+  sideBySideReductionSvgs,
   graphReductionGif,
   graphReductionSvgs,
   blockReductionSvgs,
   type GraphFrame,
 } from "./sidebyside-gif";
+export {
+  encodeSvgAnimation,
+  type SvgAnimation,
+  type SvgFrame,
+  type SvgRasterizer,
+} from "./svg-gif";
 export {
   roundedRectPath,
   roundedBackingPath,

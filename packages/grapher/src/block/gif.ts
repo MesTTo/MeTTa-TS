@@ -2,14 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-// Export a reduction as an animated GIF. Each frame of the block animation is rendered to an SVG string,
-// rasterized on an offscreen canvas, and encoded by a caller-provided GIF encoder. The encoder is passed
-// in rather than imported, so this package stays dependency-free: only a consumer that wants GIF export
-// installs one (gifenc) and hands it over. The frames are the same morph the live view plays, over a fixed
-// view box (the union of every state's bounds) so the animation does not jump or rescale.
+// Export a reduction as SVG animation frames or a browser GIF. The browser path rasterizes each SVG on an
+// offscreen canvas and uses a caller-provided GIF encoder. The frames use a fixed view box over every
+// state, so the animation does not jump or rescale.
 
 import type { Atom } from "@metta-ts/hyperon";
 import { DEFAULT_TRACE_MS } from "../anim";
+import { encodeBrowserSvgAnimation, type SvgAnimation } from "../svg-gif";
 import type { BlockSettings } from "./settings";
 import { placeProgram, type BlockBox } from "./layout";
 import { boxesToPrims, interpolate, ease, type Prim } from "./animate";
@@ -129,14 +128,12 @@ export function frameSvg(
   return parts.join("");
 }
 
-/** Encode a sequence of reduction states into an animated GIF, morphing between them. Each state is a
- *  frontier (one or more terms), so a nondeterministic step shows every branch. */
-export async function reductionGif(
+/** Build the nested-block SVG frames for a reduction with explicit block settings. */
+export function blockReductionSvgsWithSettings(
   states: readonly Atom[][],
   s: BlockSettings,
-  lib: GifEncoderLib,
   opts: GifOptions = {},
-): Promise<Blob> {
+): SvgAnimation {
   if (states.length === 0) throw new Error("no reduction states to export");
   const width = opts.width ?? 720;
   const holdMs = opts.holdMs ?? 260;
@@ -146,38 +143,30 @@ export async function reductionGif(
   let vb = boundsOf(placeProgram(states[0]!, s), s);
   for (const frontier of states) vb = union(vb, boundsOf(placeProgram(frontier, s), s));
   const height = Math.max(1, Math.round((width * vb.h) / vb.w));
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (ctx === null) throw new Error("no 2d canvas context for GIF export");
-
-  const gif = lib.GIFEncoder();
-  const addFrame = async (prims: readonly Prim[], delay: number): Promise<void> => {
-    const svg = frameSvg(prims, vb, width, height, s.canvas);
-    const img = new Image();
-    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
-    await img.decode();
-    ctx.fillStyle = s.canvas;
-    ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(img, 0, 0, width, height);
-    const { data } = ctx.getImageData(0, 0, width, height);
-    const palette = lib.quantize(data, 256);
-    const index = lib.applyPalette(data, palette);
-    gif.writeFrame(index, width, height, { palette, delay });
-  };
-
+  const background = opts.background ?? s.canvas;
+  const frames: SvgAnimation["frames"] = [];
   const n = states.length;
   const perStep = framesPerStepFor(opts, n - 1);
-
-  await addFrame(framePrims[0]!, holdMs);
+  frames.push({ svg: frameSvg(framePrims[0]!, vb, width, height, background), delay: holdMs });
   for (let i = 1; i < n; i++) {
     for (let k = 1; k <= perStep; k++) {
       const prims = interpolate(framePrims[i - 1]!, framePrims[i]!, ease(k / perStep));
-      await addFrame(prims, k === perStep ? holdMs : stepMs);
+      frames.push({
+        svg: frameSvg(prims, vb, width, height, background),
+        delay: k === perStep ? holdMs : stepMs,
+      });
     }
   }
-  gif.finish();
-  return new Blob([gif.bytes() as BlobPart], { type: "image/gif" });
+  return { frames, width, height, background };
+}
+
+/** Encode a sequence of reduction states into an animated GIF, morphing between them. Each state is a
+ *  frontier (one or more terms), so a nondeterministic step shows every branch. */
+export async function reductionGif(
+  states: readonly Atom[][],
+  s: BlockSettings,
+  lib: GifEncoderLib,
+  opts: GifOptions = {},
+): Promise<Blob> {
+  return encodeBrowserSvgAnimation(blockReductionSvgsWithSettings(states, s, opts), lib, 256);
 }

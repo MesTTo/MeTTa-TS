@@ -23,6 +23,7 @@ npm install @metta-ts/node        # CLI + file import! + a parallel matcher
 npm install @metta-ts/browser     # web entry + in-memory virtual file system
 npm install @metta-ts/py          # optional Python interop: pythonia or Pyodide
 npm install @metta-ts/prolog      # optional Prolog interop: SWI native or SWI-WASM
+npm install @metta-ts/grapher     # visual editor + browser or Node reduction GIFs
 ```
 
 For the command-line runner, install `@metta-ts/node` globally (or use `npx`):

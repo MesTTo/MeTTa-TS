@@ -4,14 +4,14 @@
 
 // Export a reduction as one animated GIF that plays it in both views at once: the node graph on the left,
 // the nested blocks on the right, morphing between the same states in lockstep. It reuses the block frame
-// machinery (gif.ts) and the graph interpolation (render.ts); each view rasterizes to its own panel and the
-// two are composited onto one canvas per frame, so the picture is the two designs side by side.
+// machinery and graph interpolation, then places both SVG panels in one frame for the host to rasterize.
 
 import type { Atom } from "@metta-ts/hyperon";
 import { boxesToPrims, interpolate, ease, type Prim } from "./block/animate";
 import { placeProgram } from "./block/layout";
 import { makeSettings, type BlockSettings } from "./block/settings";
 import {
+  blockReductionSvgsWithSettings,
   frameSvg,
   framesPerStepFor,
   boundsOf,
@@ -22,6 +22,7 @@ import {
   type GifEncoderLib,
   type GifOptions,
 } from "./block/gif";
+import { encodeBrowserSvgAnimation, type SvgAnimation, type SvgFrame } from "./svg-gif";
 import { atomToGraph } from "./atom";
 import {
   traceFrame,
@@ -90,14 +91,6 @@ function graphTraceSvg(
   return parts.join("");
 }
 
-/** Rasterize an SVG string to a decoded image. */
-async function toImage(svg: string): Promise<HTMLImageElement> {
-  const img = new Image();
-  img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
-  await img.decode();
-  return img;
-}
-
 /** Encode a reduction (its list of states, each a frontier of atoms) into one GIF showing the graph and the
  *  block views side by side, morphing between states together. `s` supplies the block layout and the shared
  *  canvas color. Returns an `image/gif` Blob. */
@@ -107,13 +100,19 @@ export async function sideBySideReductionGif(
   lib: GifEncoderLib,
   opts: GifOptions = {},
 ): Promise<Blob> {
+  return encodeBrowserSvgAnimation(sideBySideReductionSvgs(states, opts, s), lib, 128);
+}
+
+/** The graph and block views in one SVG animation, suitable for browser or Node rasterization. */
+export function sideBySideReductionSvgs(
+  states: readonly Atom[][],
+  opts: GifOptions = {},
+  s: BlockSettings = makeSettings(17, 10),
+): SvgAnimation {
   if (states.length < 2)
     throw new Error("need at least two reduction states for a side-by-side GIF");
   const holdMs = opts.holdMs ?? 260;
   const stepMs = opts.stepMs ?? 40;
-  const panelH = 340;
-  const gap = 28;
-  const labelH = 30;
 
   // Block panel: prims per state and a fixed view box over their union.
   const blockPrims = states.map((f) => boxesToPrims(placeProgram(f, s), s, null));
@@ -131,76 +130,55 @@ export async function sideBySideReductionGif(
   // approach for mixed aspect ratios. The cell's aspect is the geometric mean of the two content aspects, a
   // symmetric compromise that keeps the wasted margin off either side about even.
   const cellAspect = Math.sqrt((graphVb.w / graphVb.h) * (blockVb.w / blockVb.h));
-  const cellW = Math.max(1, Math.round(panelH * cellAspect));
+  const naturalPanelH = 340;
+  const naturalGap = 28;
+  const naturalLabelH = 30;
+  const naturalCellW = Math.max(1, Math.round(naturalPanelH * cellAspect));
+  const naturalWidth = naturalCellW * 2 + naturalGap;
+  const scale = (opts.width ?? naturalWidth) / naturalWidth;
+  const panelH = Math.max(1, Math.round(naturalPanelH * scale));
+  const gap = Math.max(1, Math.round(naturalGap * scale));
+  const labelH = Math.max(1, Math.round(naturalLabelH * scale));
+  const cellW = Math.max(1, Math.round(naturalCellW * scale));
   const totalW = cellW + gap + cellW;
   const totalH = panelH + labelH;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = totalW;
-  canvas.height = totalH;
-  const ctx = canvas.getContext("2d");
-  if (ctx === null) throw new Error("no 2d canvas context for GIF export");
-
-  const gif = lib.GIFEncoder();
-  const addFrame = async (
-    bp: readonly Prim[],
-    gt: InterpolatedTrace,
-    delay: number,
-  ): Promise<void> => {
-    // Each view fits its own cell: the SVG carries the view's content bounds as its view box but is sized to
-    // the shared cell, so its default preserveAspectRatio letterboxes the content, centered, over the canvas.
-    const [gimg, bimg] = await Promise.all([
-      toImage(graphTraceSvg(gt, graphVb, cellW, panelH, s.canvas)),
-      toImage(frameSvg(bp, blockVb, cellW, panelH, s.canvas)),
-    ]);
-    ctx.fillStyle = s.canvas;
-    ctx.fillRect(0, 0, totalW, totalH);
-    ctx.fillStyle = "#8b949e";
-    ctx.font = "600 13px " + FONT;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("graph", cellW / 2, labelH / 2);
-    ctx.fillText("blocks", cellW + gap + cellW / 2, labelH / 2);
-    ctx.drawImage(gimg, 0, labelH, cellW, panelH);
-    ctx.drawImage(bimg, cellW + gap, labelH, cellW, panelH);
-    const { data } = ctx.getImageData(0, 0, totalW, totalH);
-    // The grapher draws few distinct colors (a background, a handful of role colors, text), so a smaller
-    // palette keeps the picture and compresses better.
-    const palette = lib.quantize(data, 128);
-    const index = lib.applyPalette(data, palette);
-    gif.writeFrame(index, totalW, totalH, { palette, delay });
+  const background = opts.background ?? s.canvas;
+  const fontSize = Math.max(8, Math.round(13 * scale));
+  const frames: SvgFrame[] = [];
+  const addFrame = (bp: readonly Prim[], gt: InterpolatedTrace, delay: number): void => {
+    const graph = graphTraceSvg(gt, graphVb, cellW, panelH, background);
+    const blocks = frameSvg(bp, blockVb, cellW, panelH, background);
+    const graphUri = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(graph);
+    const blocksUri = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(blocks);
+    frames.push({
+      delay,
+      svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}"><rect width="${totalW}" height="${totalH}" fill="${background}"/><text x="${cellW / 2}" y="${labelH / 2}" font-size="${fontSize}" font-weight="600" fill="#8b949e" text-anchor="middle" dominant-baseline="central" font-family="${FONT}">graph</text><text x="${cellW + gap + cellW / 2}" y="${labelH / 2}" font-size="${fontSize}" font-weight="600" fill="#8b949e" text-anchor="middle" dominant-baseline="central" font-family="${FONT}">blocks</text><image href="${graphUri}" x="0" y="${labelH}" width="${cellW}" height="${panelH}"/><image href="${blocksUri}" x="${cellW + gap}" y="${labelH}" width="${cellW}" height="${panelH}"/></svg>`,
+    });
   };
 
   const n = states.length;
   const perStep = framesPerStepFor(opts, n - 1);
 
   // Hold the first state, then morph both views together through each step, holding at each settled state.
-  await addFrame(blockPrims[0]!, interpolateTrace(graphFrames[0]!, graphFrames[0]!, 0), holdMs);
+  addFrame(blockPrims[0]!, interpolateTrace(graphFrames[0]!, graphFrames[0]!, 0), holdMs);
   for (let i = 1; i < n; i++) {
     for (let k = 1; k <= perStep; k++) {
       const t = ease(k / perStep);
       const bp = interpolate(blockPrims[i - 1]!, blockPrims[i]!, t);
       const gt = interpolateTrace(graphFrames[i - 1]!, graphFrames[i]!, t);
-      await addFrame(bp, gt, k === perStep ? holdMs : stepMs);
+      addFrame(bp, gt, k === perStep ? holdMs : stepMs);
     }
   }
-  gif.finish();
-  return new Blob([gif.bytes() as BlobPart], { type: "image/gif" });
+  return { frames, width: totalW, height: totalH, background };
 }
 
 /** One rendered graph frame: a self-contained SVG string and how long to hold it (ms). */
-export interface GraphFrame {
-  svg: string;
-  delay: number;
-}
+export type GraphFrame = SvgFrame;
 
 /** The node-graph view of a reduction as a sequence of SVG frames over a fixed-size, action-following
  *  viewport. Pure (no DOM), so it runs in Node as well as the browser: {@link graphReductionGif} rasterizes
- *  these to a GIF with a canvas, and a CLI script can rasterize them with an external tool instead. */
-export function graphReductionSvgs(
-  states: readonly Atom[][],
-  opts: GifOptions = {},
-): { frames: GraphFrame[]; width: number; height: number } {
+ *  these with browser Canvas, while the Node entry uses Sharp. */
+export function graphReductionSvgs(states: readonly Atom[][], opts: GifOptions = {}): SvgAnimation {
   if (states.length < 2) throw new Error("need at least two reduction states for a graph GIF");
   const bg = opts.background ?? CANVAS_BG;
   const holdMs = opts.holdMs ?? 260;
@@ -247,7 +225,7 @@ export function graphReductionSvgs(
       push(interpolateTrace(frames[i - 1]!, frames[i]!, t), k === perStep ? holdMs : stepMs);
     }
   }
-  return { frames: out, width, height };
+  return { frames: out, width, height, background: bg };
 }
 
 /** Encode a reduction as a GIF of the node-graph view alone, morphing between states. Companion to {@link
@@ -258,27 +236,7 @@ export async function graphReductionGif(
   lib: GifEncoderLib,
   opts: GifOptions = {},
 ): Promise<Blob> {
-  const bg = opts.background ?? CANVAS_BG;
-  const { frames, width, height } = graphReductionSvgs(states, opts);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  if (ctx === null) throw new Error("no 2d canvas context for GIF export");
-
-  const gif = lib.GIFEncoder();
-  for (const { svg, delay } of frames) {
-    const img = await toImage(svg);
-    ctx.fillStyle = bg;
-    ctx.fillRect(0, 0, width, height);
-    ctx.drawImage(img, 0, 0, width, height);
-    const { data } = ctx.getImageData(0, 0, width, height);
-    const palette = lib.quantize(data, 128);
-    gif.writeFrame(lib.applyPalette(data, palette), width, height, { palette, delay });
-  }
-  gif.finish();
-  return new Blob([gif.bytes() as BlobPart], { type: "image/gif" });
+  return encodeBrowserSvgAnimation(graphReductionSvgs(states, opts), lib, 128);
 }
 
 /** The nested-block view of a reduction as a sequence of SVG frames over a fixed view box (the union of every
@@ -286,34 +244,7 @@ export async function graphReductionGif(
  *  to each other to show a reduction both ways. Rasterize with a canvas ({@link reductionGif}) or an external
  *  tool. Uses default block settings (site palette, monospace unit width); pass `background` to override the
  *  canvas color. */
-export function blockReductionSvgs(
-  states: readonly Atom[][],
-  opts: GifOptions = {},
-): { frames: GraphFrame[]; width: number; height: number } {
+export function blockReductionSvgs(states: readonly Atom[][], opts: GifOptions = {}): SvgAnimation {
   if (states.length < 2) throw new Error("need at least two reduction states for a block GIF");
-  const s = makeSettings(17, 10);
-  const bg = opts.background ?? s.canvas;
-  const holdMs = opts.holdMs ?? 260;
-  const stepMs = opts.stepMs ?? 40;
-  const width = opts.width ?? 880;
-  const height = Math.round(width * 0.5);
-
-  const prims = states.map((f) => boxesToPrims(placeProgram(f, s), s, null));
-  let vb = boundsOf(placeProgram(states[0]!, s), s);
-  for (const f of states) vb = union(vb, boundsOf(placeProgram(f, s), s));
-
-  const out: GraphFrame[] = [];
-  const push = (bp: readonly Prim[], delay: number): void => {
-    out.push({ svg: frameSvg(bp, vb, width, height, bg), delay });
-  };
-  const n = states.length;
-  const perStep = framesPerStepFor(opts, n - 1);
-  push(prims[0]!, holdMs);
-  for (let i = 1; i < n; i++) {
-    for (let k = 1; k <= perStep; k++) {
-      const t = ease(k / perStep);
-      push(interpolate(prims[i - 1]!, prims[i]!, t), k === perStep ? holdMs : stepMs);
-    }
-  }
-  return { frames: out, width, height };
+  return blockReductionSvgsWithSettings(states, makeSettings(17, 10), opts);
 }

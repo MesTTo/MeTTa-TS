@@ -3,13 +3,14 @@
   "version": "1.1.4",
   "author": "MesTTo",
   "license": "MIT",
-  "description": "MeTTaGrapher: a pure-SVG visual node-graph editor for MeTTa. Build a program as connected nodes, evaluate any subtree on the engine, and see the result. A node graph is a MeTTa atom.",
+  "description": "MeTTa visual editor and reduction renderer for browser and Node.js, with node-graph and nested-block views.",
   "keywords": [
     "metta",
     "hyperon",
     "visual",
     "editor",
     "graph",
+    "gif",
     "svg",
     "typescript"
   ],
@@ -22,6 +23,10 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "default": "./dist/node.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -32,10 +37,26 @@
   },
   "sideEffects": false,
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts --clean --platform browser"
+    "build": "tsup src/index.ts --format esm --dts --clean --platform browser && tsup src/node.ts --format esm --dts --platform node"
   },
   "dependencies": {
     "@metta-ts/hyperon": "workspace:*"
+  },
+  "devDependencies": {
+    "gifenc": "1.0.3",
+    "sharp": "^0.35.3"
+  },
+  "peerDependencies": {
+    "gifenc": "^1.0.3",
+    "sharp": "^0.35.3"
+  },
+  "peerDependenciesMeta": {
+    "gifenc": {
+      "optional": true
+    },
+    "sharp": {
+      "optional": true
+    }
   },
   "repository": {
     "type": "git",

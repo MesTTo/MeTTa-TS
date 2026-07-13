@@ -13,8 +13,9 @@ npm install @metta-ts/grapher
 
 The editor is framework-free and renders its UI as SVG. It depends on
 `@metta-ts/hyperon` for evaluation, and the blocks view uses Canvas 2D for text
-measurement. GIF export takes an encoder as an argument, so you only install
-[`gifenc`](https://www.npmjs.com/package/gifenc) if you want that feature.
+measurement. Browser GIF export takes an encoder as an argument. Plain Node.js
+uses the separate `@metta-ts/grapher/node` entry with optional `sharp` and
+`gifenc` packages. That entry requires Node 20.9 or newer.
 
 ## The fluent driver
 
@@ -114,13 +115,16 @@ console.
 | `blockCanStepBack()` | `boolean` | whether an undo is available               |
 | `blockSource()`      | `string`  | the block view's current program as source |
 
-### GIF export
+### Browser GIF export
 
 ```ts
 const blob = await editor.exportReductionGif(await import("gifenc"), { width: 720, holdMs: 260 });
 ```
 
 `exportReductionGif(encoder, opts?)` returns an `image/gif` `Blob` (or `null` if there is nothing to animate). `GifOptions` covers `width`, `morphMs` (how long one step's morph spans; the editor fills it in with its current trace duration, so the GIF glides exactly like the live view), `framesPerStep` (an explicit frame count that overrides `morphMs`), `maxFrames`, and `holdMs` (how long to hold each settled state, which a host maps from its playback speed).
+
+The browser methods require DOM Canvas and `Image`. They are programmatic APIs,
+but they are not the Node entry point.
 
 ### Events and lifecycle
 
@@ -155,6 +159,49 @@ A TARGET is a node's name (`if`, reaching every `if`) or the term a node stands 
 
 `reductionGif(states, settings, encoder, opts?)` encodes a reduction, given as its list of states (each a frontier of atoms), to a GIF blob directly. This is the routine `exportReductionGif` wraps. `GifEncoderLib` is the slice of `gifenc` it needs, and `GifOptions` also carries `stepMs` (milliseconds per morph frame) alongside the fields above.
 
+## Node GIF API
+
+Install the optional Node renderer and encoder beside the grapher:
+
+```bash
+npm install @metta-ts/grapher sharp gifenc
+```
+
+```ts
+import { writeFile } from "node:fs/promises";
+import { renderReductionGif } from "@metta-ts/grapher/node";
+
+const bytes = await renderReductionGif("(+ 10 (* 25 2))", {
+  view: "blocks",
+  width: 720,
+});
+
+await writeFile("reduction.gif", bytes);
+```
+
+`renderReductionGif(input, options?)` returns `Promise<Uint8Array>`. `input` is
+a source string, one `Atom`, or a read-only atom array. Source and arrays use
+the last non-definition atom as the query. Every input atom is added to
+`options.metta`, or to a fresh `MeTTa` when no engine is supplied.
+
+| option          | default                | effect                                               |
+| --------------- | ---------------------- | ---------------------------------------------------- |
+| `view`          | `"blocks"`             | `"blocks"`, `"graph"`, or `"side-by-side"`           |
+| `metta`         | a fresh engine         | reuse an existing space and its grounded operations  |
+| `width`         | view-specific          | output width in pixels                               |
+| `framesPerStep` | derived from `morphMs` | interpolation frames per reduction                   |
+| `maxFrames`     | `180`                  | maximum encoded frames                               |
+| `holdMs`        | `260`                  | delay on each settled state                          |
+| `stepMs`        | `40`                   | delay on each interpolation frame                    |
+| `morphMs`       | `550`                  | default total duration of one morph                  |
+| `maxSteps`      | `300`                  | maximum evaluator steps while constructing the trace |
+| `background`    | the view palette       | canvas color                                         |
+
+The Node renderer shares `reduceTrace` and the SVG-frame builders with the
+browser. Sharp replaces browser Canvas only for rasterization. See the
+[Node GIF tutorial](/tools/grapher-node-gif) for rules, an existing `MeTTa`
+space, HTTP responses, and the resource limits.
+
 ## Lower-level building blocks
 
-For embedding or customizing, the package also exports the pieces the editor is built from: the `Graph` model (`GraphNode`, `NodeKind`); the atom bridge (`atomToGraph`, `graphToAtoms`, `composeAtom`); `parseProgram`; `layout`; serialization (`toJson`, `fromJson`, `toSource`, `fromSource`); evaluation (`evaluateHead`, `loadProgram`); the step tracer (`reduceStep`, `reduceTrace`); node coloring (`colorFor`, `roleOf`); the `Renderer` and `Controller`; the `Viewport` helpers; and the block view (`BlockView`, `layoutAtom`, `SITE_PALETTE`, `TEAL_PALETTE`).
+For embedding or customizing, the package also exports the pieces the editor is built from: the `Graph` model (`GraphNode`, `NodeKind`); the atom bridge (`atomToGraph`, `graphToAtoms`, `composeAtom`); `parseProgram`; `layout`; serialization (`toJson`, `fromJson`, `toSource`, `fromSource`); evaluation (`evaluateHead`, `loadProgram`); the step tracer (`reduceStep`, `reduceTrace`); node coloring (`colorFor`, `roleOf`); the `Renderer` and `Controller`; the `Viewport` helpers; the block view (`BlockView`, `layoutAtom`, `SITE_PALETTE`, `TEAL_PALETTE`); and the host-independent `blockReductionSvgs`, `graphReductionSvgs`, `sideBySideReductionSvgs`, and `encodeSvgAnimation` functions.
