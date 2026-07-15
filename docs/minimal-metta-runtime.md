@@ -58,6 +58,40 @@ Runtime IDs use the serializable form `<kind>:<namespace>:<sequence>`. Each kind
 
 `TraceRecorder` is bounded by event count and estimated bytes. It does not format or execute atoms. Timestamps appear only when the caller provides a clock. `NO_TRACE_SINK` reports that tracing is ignored, which differs from a recorder that dropped an event because its buffer was full.
 
+## Variable identity and binding frames
+
+`variable("x")`, parser output, `VarAtom.name`, and formatted source retain their existing behavior. A runtime can admit a variable into a `VariableScope` when identity matters. The resulting variable still prints as `$x`, but equality and hashing use a serializable `(ScopeId, slot)` pair.
+
+```ts
+const scopes = new VariableScopeAllocator(new RuntimeIdAllocator("run"));
+const left = scopes.next().variable("x");
+const right = scopes.next().variable("x");
+
+format(left); // $x
+atomEq(left, right); // false
+```
+
+Repeated names in one scope share a slot. `scopeAtoms` scopes several roots together, which is needed for a rule LHS and RHS. `freshenAtoms` uses one old-to-new map, so repeated occurrences retain their sharing shape while each invocation receives a disjoint scope. Forked allocators give worker lanes disjoint scope namespaces.
+
+Scoped identity is stored under a symbol-keyed atom field. JSON and the existing enumerable atom fields remain unchanged. The browser structured-clone algorithm does not preserve that symbol field. Workers must use the versioned atom and frame codec described by the runtime plan. Passing raw scoped atoms to `postMessage` is not supported.
+
+`BindingFrame` is an immutable equivalence-class graph. It retains variable aliases and one optional value per class. Its transient builder uses union by rank and path compression. A frozen frame exposes stable logical representatives sorted by variable identity, independent of the physical union-find root.
+
+The frame operations follow these rules:
+
+- `unify` uses an explicit worklist and returns a typed conflict or occurs-check fault.
+- Variable-to-variable constraints union their complete classes. No alias member is dropped.
+- `instantiate` walks aliases and assigned values to a finite normal form.
+- `merge` replays semantic equations and values. It never combines physical parent maps.
+- `project` retains requested members plus the unbound variables reachable from their values.
+- `bindingFrameFromLegacy` and `bindingFrameToLegacy` isolate the old string relation format at public compatibility boundaries.
+
+Finite-tree cycle rejection happens when a value is attached or classes are joined. Current Hyperon accepts raw cyclic frames and filters most of them later with `has_loops`. The runtime rejects them earlier so every consumer sees the same validity rule. Hyperon's current binding implementation also has an equal-valued class-union defect that can orphan nonrepresentative aliases. The TypeScript frame moves the whole equivalence class instead. See Hyperon's [`VariableAtom`](https://github.com/trueagi-io/hyperon-experimental/blob/3f76dc460da6961f57f69f6c3e550c59c74ada83/hyperon-atom/src/lib.rs#L219-L344) and [`Bindings`](https://github.com/trueagi-io/hyperon-experimental/blob/3f76dc460da6961f57f69f6c3e550c59c74ada83/hyperon-atom/src/matcher.rs#L134-L350).
+
+The resolver follows miniKanren's `walk`, occurs-check, recursive `walk*`, and answer-local reification structure, while retaining equivalence classes instead of an association list. See the canonical [miniKanren implementation](https://github.com/miniKanren/miniKanren/blob/2d50ec5002fe052f5c2f2d72530dcbeb8760fde8/mk.scm#L509-L581). The hot backtracking paths can continue using the existing trail and cell kernel, then freeze retained answers into `BindingFrame` values.
+
+Scoped atoms are not yet admitted to the legacy matcher or evaluator. Those paths still key substitutions, trails, compiler slots, and table entries by display name. Admission will be enabled only after every reference and optimized path uses scoped identity or a checked legacy projection.
+
 ## Compatibility rule
 
 The following public signatures remain unchanged during the migration:

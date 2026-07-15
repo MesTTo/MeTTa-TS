@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { canonInt, type IntVal } from "./number";
+import type { ScopeId } from "./trace";
 
 /**
  * The MeTTa term model. A discriminated union on `kind` (convention C1).
@@ -31,6 +32,7 @@ export interface VarAtom {
   readonly exec: undefined;
   readonly match: undefined;
   readonly ground: false;
+  readonly [variableIdentitySymbol]?: VariableId;
 }
 export interface ExprAtom {
   readonly kind: "expr";
@@ -67,6 +69,52 @@ export interface GndAtom {
   readonly ground: true;
 }
 export type Atom = SymAtom | VarAtom | ExprAtom | GndAtom;
+
+/** A variable's runtime identity. `name` remains its source-level display name. */
+declare const variableIdBrand: unique symbol;
+export interface VariableId {
+  readonly scope: ScopeId;
+  readonly slot: number;
+  readonly [variableIdBrand]: true;
+}
+
+/** Symbol-keyed so existing enumerable atom records and JSON output keep their legacy shape. */
+export const variableIdentitySymbol: unique symbol = Symbol.for(
+  "@metta-ts/core.variable-identity.v1",
+) as never;
+
+/** Mint a validated portable variable identity. */
+export function makeVariableId(scope: ScopeId, slot: number): VariableId {
+  if (!Number.isSafeInteger(slot) || slot < 0)
+    throw new RangeError("variable slot must be a non-negative safe integer");
+  return Object.freeze({ scope, slot }) as VariableId;
+}
+
+/** Return the scoped identity carried by a variable, if it has been admitted into a runtime scope. */
+export function variableIdentity(variable: VarAtom): VariableId | undefined {
+  return variable[variableIdentitySymbol];
+}
+
+/** Value-semantic key for a display name plus optional runtime identity. */
+export function variableIdentityKey(name: string, id: VariableId | undefined): string {
+  return id === undefined
+    ? `legacy:${name.length}:${name}`
+    : `scoped:${id.scope.length}:${id.scope}:${id.slot}`;
+}
+
+/** A stable value-semantic key for maps, codecs, and binding frames. */
+export function variableKey(variable: VarAtom): string {
+  return variableIdentityKey(variable.name, variableIdentity(variable));
+}
+
+/** Whether two variable atoms designate the same logic variable. */
+export function sameVariable(a: VarAtom, b: VarAtom): boolean {
+  const aid = variableIdentity(a);
+  const bid = variableIdentity(b);
+  if (aid === undefined || bid === undefined)
+    return aid === undefined && bid === undefined && a.name === b.name;
+  return aid.scope === bid.scope && aid.slot === bid.slot;
+}
 
 /** A grounded atom's executor: applied when the atom heads an expression `(<gnd> arg...)`. Receives
  *  the evaluated argument atoms and returns the result atoms, either directly or as a Promise. A
@@ -151,6 +199,22 @@ export function variable(name: string): VarAtom {
   };
 }
 
+/** Variable with opaque scope-and-slot identity and a separate source display name. */
+export function scopedVariable(name: string, id: VariableId): VarAtom {
+  const stableId = makeVariableId(id.scope, id.slot);
+  return {
+    kind: "var",
+    name,
+    items: undefined,
+    value: undefined,
+    typ: undefined,
+    exec: undefined,
+    match: undefined,
+    ground: false,
+    [variableIdentitySymbol]: stableId,
+  };
+}
+
 export function expr(items: readonly Atom[]): ExprAtom {
   let ground = true;
   for (const it of items)
@@ -230,10 +294,12 @@ function hasUnsafeGrounded(table: InternTable, a: Atom): boolean {
 }
 
 function internVariable(table: InternTable, a: VarAtom): VarAtom {
-  let v = table.variables.get(a.name);
+  const id = variableIdentity(a);
+  const key = id === undefined ? a.name : variableIdentityKey(a.name, id);
+  let v = table.variables.get(key);
   if (v === undefined) {
     v = a;
-    table.variables.set(a.name, v);
+    table.variables.set(key, v);
   }
   return v;
 }
@@ -388,8 +454,12 @@ export function hashOf(a: Atom): number {
   switch (a.kind) {
     case "sym":
       return mixHash(0x53594d42, strHash(a.name)); // tag "SYMB"
-    case "var":
-      return mixHash(0x56415242, strHash(a.name)); // tag "VARB"
+    case "var": {
+      const id = variableIdentity(a);
+      return id === undefined
+        ? mixHash(0x56415242, strHash(a.name)) // tag "VARB"
+        : mixHash(mixHash(0x56415242, strHash(id.scope)), id.slot);
+    }
     case "gnd":
       return mixHash(0x474e4444, groundHash(a.value)); // tag "GNDD"
     case "expr": {
@@ -513,7 +583,7 @@ export function atomEq(a: Atom, b: Atom): boolean {
     case "sym":
       return false; // interned: a !== b means different symbols
     case "var":
-      return a.name === (b as VarAtom).name;
+      return sameVariable(a, b as VarAtom);
     case "gnd":
       return groundEq(a.value, (b as GndAtom).value);
     case "expr": {
