@@ -78,6 +78,24 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; `!=` is now implemented to work with both grounded and
+; symbolic atoms (while remaining a grounded operation)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+!(assertEqualToResult
+  (!= 4 (+ 2 2))
+  (False))
+!(assertEqualToResult
+  (!= 2 3)
+  (True))
+!(assertEqualToResult
+  (!= (A B) (A B))
+  (False))
+!(assertEqualToResult
+  (!= (A B) (A (B C)))
+  (True))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ; Unlike `<` or `>`, `==` will not remain unreduced if one
 ; of its arguments is grounded, while another is not.
 ; Instead, it will return `False`
