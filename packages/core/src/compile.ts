@@ -189,6 +189,7 @@ const KNOWN_OPS = new Set([
   ">",
   ">=",
   "==",
+  "!=",
   "if",
   "unify",
   "let",
@@ -288,7 +289,7 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
       type: "int",
     };
   }
-  if (op === "<" || op === "<=" || op === ">" || op === ">=" || op === "==") {
+  if (op === "<" || op === "<=" || op === ">" || op === ">=" || op === "==" || op === "!=") {
     const xy = binIntArgs(args, scope, holders);
     if (!xy) return undefined;
     const [xn, yn] = xy;
@@ -301,7 +302,9 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
             ? (c: number) => c > 0
             : op === ">="
               ? (c: number) => c >= 0
-              : (c: number) => c === 0;
+              : op === "=="
+                ? (c: number) => c === 0
+                : (c: number) => c !== 0;
     return { node: (fr) => test(cmpIntVal(xn(fr), yn(fr))), type: "bool" };
   }
   if (op === "if") {
@@ -554,7 +557,8 @@ function inferType(
       : undefined;
   const op = (hd as { name: string }).name;
   if (op === "+" || op === "-" || op === "*" || op === "/" || op === "%") return "int";
-  if (op === "<" || op === "<=" || op === ">" || op === ">=" || op === "==") return "bool";
+  if (op === "<" || op === "<=" || op === ">" || op === ">=" || op === "==" || op === "!=")
+    return "bool";
   if (op === "if" && a.items.length === 4) {
     const tt = inferType(a.items[2]!, varTypes, holders);
     const te = inferType(a.items[3]!, varTypes, holders);
@@ -1062,7 +1066,7 @@ function nondetIsData(env: MinEnv, a: Atom): boolean {
 // comparison operators an `(if ...)` guard may test. Both evaluate at runtime through the interpreter's
 // own grounded ops (callGrounded), so the compiled result is byte-identical to the interpreted one.
 const ARITH_FOLD = new Set(["+", "-", "*"]);
-const NONDET_COMPARE = new Set(["<", "<=", ">", ">=", "=="]);
+const NONDET_COMPARE = new Set(["<", "<=", ">", ">=", "==", "!="]);
 
 /** A call argument or result template the search can build and resolve: interpreter data, but also
  *  binary arithmetic (`(- $s 2)`, `(+ (+ $fs $xs) 1)`) anywhere inside, folded to an int once its
@@ -1810,6 +1814,8 @@ function compileNondetGroup(
             return c >= 0;
           case "==":
             return c === 0;
+          case "!=":
+            return c !== 0;
           default:
             throw BAIL;
         }
@@ -1983,7 +1989,11 @@ function compileNondetGroup(
         }
       };
 
-      return attempt("direct") ?? attempt("frontier");
+      return (
+        (jg.tryDeferred === undefined ? undefined : attempt("deferred")) ??
+        attempt("direct") ??
+        attempt("frontier")
+      );
     };
 
   const holders = new Map<string, NondetHolder>();
@@ -2038,7 +2048,7 @@ type ImpNode = (
 ) => ImpEval;
 type ImperativeFns = Map<string, ImperativeHolder>;
 
-const IMP_GROUNDED = new Set(["==", "<", ">", "<=", ">=", "+", "-", "*", "%"]);
+const IMP_GROUNDED = new Set(["==", "!=", "<", ">", "<=", ">=", "+", "-", "*", "%"]);
 // Heads that are never inert data: the compiled language's own constructs, plus every evaluation
 // op (IMPURE_OPS: match, collapse, once, superpose, metta, ...). Without the latter, a body like
 // `(match &self p t)` whose head happens to have no rule and no grounding would freeze as a tuple,

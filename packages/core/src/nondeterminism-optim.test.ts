@@ -108,10 +108,19 @@ describe("compiled pure choice evaluation", () => {
     expect(formatted(src)).toEqual(formatted(reference));
   });
 
-  it("does not bypass application type errors inside collapse", () => {
-    const src = `!(collapse (== 5 "S"))`;
+  it("does not bypass equality type errors inside collapse", () => {
+    for (const op of ["==", "!="]) {
+      const src = `!(collapse (${op} 5 "S"))`;
+      const reference = withoutChoicePlan(src);
+      expect(formatted(src)).toEqual([[`(, (Error (${op} 5 "S") (BadArgType 2 Number String)))`]]);
+      expect(formatted(src)).toEqual(formatted(reference));
+    }
+  });
+
+  it("preserves != choice products", () => {
+    const src = `!(collapse (let* (($T (1 2)) ($X (superpose $T)) ($Y (superpose $T))) (!= $X $Y)))`;
     const reference = withoutChoicePlan(src);
-    expect(formatted(src)).toEqual([['(, (Error (== 5 "S") (BadArgType 2 Number String)))']]);
+    expect(formatted(src)).toEqual([["(, False True True False)"]]);
     expect(formatted(src)).toEqual(formatted(reference));
   });
 
@@ -227,6 +236,20 @@ describe("consumer-directed distinct tabling", () => {
       distinctBudget({ maxCompletedEntries: 4 }),
     );
     expect(limited).toEqual({ tag: "limit" });
+  });
+
+  it("evaluates != in the distinct integer compiler", () => {
+    const env = buildEnv([...preludeAtoms()], stdTable());
+    const rules = `(= (different $n) (if (!= $n 0) 1 0))`;
+    for (const parsed of parseAll(rules, standardTokenizer())) addAtomToEnv(env, parsed.atom);
+    expect(runDistinctIntRelation(env, "different", [gint(0)], distinctBudget())).toEqual({
+      tag: "ok",
+      answers: [gint(0)],
+    });
+    expect(runDistinctIntRelation(env, "different", [gint(2)], distinctBudget())).toEqual({
+      tag: "ok",
+      answers: [gint(1)],
+    });
   });
 });
 

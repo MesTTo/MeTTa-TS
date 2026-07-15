@@ -303,20 +303,22 @@ A representative slice (wall-clock, subprocess including startup; `speedup` = Pe
 
 The full per-program table is in [`RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md).
 
-The checked nondeterminism benchmark also includes four adversarial programs reported by Patrick Hammer and the `jarr` and `loowoz` bounded backward-chaining queries reported by Nil Geisweiller. Both BFC files extract the exact `obc` definitions and target queries from [`trueagi-io/chaining@bc9beb2`](https://github.com/trueagi-io/chaining/blob/bc9beb2672953e07971b3abecc1fe67651ecddc4/experimental/backward-via-forward/bfc-xp.metta). These are 15-run subprocess medians measured on 2026-07-15 on an AMD Ryzen 9 9950X, including startup, with Node 22.22.1 and the clean PeTTa `6b7f52f` checkout on SWI-Prolog 9.3.33:
+The checked nondeterminism benchmark also includes four adversarial programs reported by Patrick Hammer and the `jarr` and `loowoz` bounded backward-chaining queries reported by Nil Geisweiller. Both BFC files extract the exact `obc` definitions and target queries from [`trueagi-io/chaining@bc9beb2`](https://github.com/trueagi-io/chaining/blob/bc9beb2672953e07971b3abecc1fe67651ecddc4/experimental/backward-via-forward/bfc-xp.metta). These are 15-run subprocess medians measured on 2026-07-15 on an AMD Ryzen 9 9950X, including startup, with Node 22.22.1 and the clean PeTTa `6f5639a` checkout on SWI-Prolog 9.2.9:
 
 | Program                          | PeTTa ms | PeTTa MiB | MeTTa TS ms | MeTTa TS MiB |   Speedup |
 | -------------------------------- | -------: | --------: | ----------: | -----------: | --------: |
-| BFC `jarr`                       |    134.6 |      16.4 |       125.6 |         86.5 | **1.07x** |
-| BFC `loowoz`                     |   2441.2 |      16.4 |       872.8 |        108.9 | **2.80x** |
-| filtered `matespacefast` matches |   6157.9 |    3334.5 |      3568.3 |        424.0 | **1.73x** |
-| 22^4 `superpose` cross product   |    357.5 |      87.9 |       147.7 |        148.8 | **2.42x** |
-| nondeterministic tabled `fib(7)` |    127.8 |      16.4 |        94.1 |         79.8 | **1.36x** |
-| duplicate-heavy `TupleConcat`    |    126.0 |      16.3 |        96.3 |         79.4 | **1.31x** |
+| BFC `jarr`                       |    136.5 |      16.4 |       113.6 |         91.4 | **1.20x** |
+| BFC `loowoz`                     |   2466.3 |      16.4 |       743.6 |        100.0 | **3.32x** |
+| filtered `matespacefast` matches |   6140.3 |    3331.0 |      3380.2 |        424.6 | **1.82x** |
+| 22^4 `superpose` cross product   |    354.5 |      87.9 |       150.3 |        146.8 | **2.36x** |
+| nondeterministic tabled `fib(7)` |    128.6 |      16.3 |        98.5 |         79.9 | **1.31x** |
+| duplicate-heavy `TupleConcat`    |    127.6 |      16.3 |        98.0 |         78.6 | **1.30x** |
 
 The MiB columns are the highest sampled process-tree RSS across the 15 runs on Linux.
 
 The benchmark validates both `jarr` proofs and all three `loowoz` proofs in exact order, all 234,256 cross-product results, all 196 distinct Fibonacci answers, the exact `TupleConcat` result, and the embedded matespace assertion. MeTTa TS uses the same default evaluator as the CLI. No benchmark, PeTTa, curry, or tabling mode is selected.
+
+Against the untouched 1.1.5 build on the same machine, alternating exact-output comparisons improved `jarr` by 1.14x cold and 1.12x loaded. `loowoz` improved by 1.18x cold and 1.31x loaded. The `jarr` cold path also improved on Node 20, 22, and 24. Ineligible programs skip the new route and retain the old generated module shape.
 
 Automatic tabling does not memoize every recursive function. Admission requires transitive purity and a recursive strongly connected component that branches back into itself at least twice. Linear recursion such as factorial stays on the compiled path. Custom host operations and space, state, file, random, time, import, and output operations are excluded.
 
@@ -336,7 +338,7 @@ That speed comes from general engine work:
 - a slot-based evaluator for closed pure `let` and `superpose` products that preserves result order and multiplicity without allocating general binding frames;
 - a native-code compiler for the pure deterministic int/bool/tuple subset, with tail-recursion compiled to loops and PeTTa-style **higher-order specialisation** so a function passed as an argument (e.g. `iterate`'s `$step`) is bound and compiled rather than interpreted;
 - a compiler for **nondeterministic `let*`-chain functions** (the backward-chainer class): a multi-equation function whose clause bodies chain space matches and recursive calls compiles to a clause-major depth-first search, the same fragment PeTTa hands to Prolog's clause alternatives;
-- dependency-sensitive dispatch for static pure search: answer-dependent recursive joins use the compiler first, while independent overlapping calls retain moded tabling; common-result-layout compilation passes only changing result fields through recursive continuations and rebuilds the full MeTTa atom once at the evaluator boundary;
+- dependency-sensitive dispatch for static pure search: answer-dependent recursive joins use the compiler first, while independent overlapping calls retain moded tabling; common-result-layout compilation omits input-projected fields from recursive continuations and constructs a proven independent output only after child searches succeed;
 - WAM-style fresh write-mode binding: when static dataflow proves that every slot in a constructed pattern subtree is introduced at that site, generated code binds the new structure directly; input and previously introduced slots retain the full occurs-checking unifier;
 - a compiler for **add-atom saturation loops**: the add-if-absent idiom becomes one exact-membership probe plus append, and a single-branch `case` over a space match becomes a snapshot-and-thread loop with Empty-pruned branches.
 

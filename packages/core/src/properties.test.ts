@@ -4,7 +4,19 @@
 
 import { describe, it } from "vitest";
 import fc from "fast-check";
-import { type Atom, sym, variable, expr, gint, atomEq, atomVars } from "./atom";
+import {
+  type Atom,
+  sym,
+  variable,
+  expr,
+  gint,
+  gfloat,
+  gbool,
+  gstr,
+  atomEq,
+  atomVars,
+} from "./atom";
+import { callGrounded, stdTable } from "./builtins";
 import { parse, format } from "./parser";
 import { standardTokenizer } from "./runner";
 import { alphaEq } from "./alpha";
@@ -26,6 +38,18 @@ const atomArb: fc.Arbitrary<Atom> = fc.letrec<{ atom: Atom }>((tie) => ({
   ),
 })).atom;
 
+const groundAtomArb: fc.Arbitrary<Atom> = fc.letrec<{ atom: Atom }>((tie) => ({
+  atom: fc.oneof(
+    { depthSize: "small", withCrossShrink: true },
+    name.map(sym),
+    fc.integer({ min: -999, max: 999 }).map(gint),
+    fc.integer({ min: -999, max: 999 }).map((n) => gfloat(n / 3)),
+    fc.boolean().map(gbool),
+    fc.string({ maxLength: 8 }).map(gstr),
+    fc.array(tie("atom"), { maxLength: 3 }).map((xs) => expr(xs)),
+  ),
+})).atom;
+
 const tk = standardTokenizer();
 
 describe("properties (fast-check)", () => {
@@ -41,6 +65,34 @@ describe("properties (fast-check)", () => {
   it("alphaEq is reflexive and symmetric", () => {
     fc.assert(fc.property(atomArb, (a) => alphaEq(a, a)));
     fc.assert(fc.property(atomArb, atomArb, (a, b) => alphaEq(a, b) === alphaEq(b, a)));
+  });
+
+  it("!= is the exact Boolean complement of == for ground atoms", () => {
+    const groundings = stdTable();
+    fc.assert(
+      fc.property(groundAtomArb, groundAtomArb, (a, b) => {
+        const equal = callGrounded(groundings, "==", [a, b]);
+        const unequal = callGrounded(groundings, "!=", [a, b]);
+        if (
+          equal.tag !== "ok" ||
+          unequal.tag !== "ok" ||
+          equal.results.length !== 1 ||
+          unequal.results.length !== 1
+        )
+          return false;
+        const eqResult = equal.results[0]!;
+        const neqResult = unequal.results[0]!;
+        if (
+          eqResult.kind !== "gnd" ||
+          eqResult.value.g !== "bool" ||
+          neqResult.kind !== "gnd" ||
+          neqResult.value.g !== "bool"
+        )
+          return false;
+        return eqResult.value.b === atomEq(a, b) && neqResult.value.b === !eqResult.value.b;
+      }),
+      { numRuns: 1_000 },
+    );
   });
 
   it("matcher soundness: a binding set instantiates the pattern to the ground target", () => {

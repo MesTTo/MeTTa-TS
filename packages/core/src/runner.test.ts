@@ -89,6 +89,7 @@ describe("runner + stdlib prelude", () => {
       "caught",
     ]);
     expect(q("!(case (== 1) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
+    expect(q("!(case (!= 1) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
     expect(q("!(case (unquote) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
     expect(q("!(case (if-equal 1) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
     expect(q("!(case (size-atom) (((Error $a $c) caught) ($_ other)))")).toEqual(["caught"]);
@@ -174,6 +175,27 @@ describe("runner + stdlib prelude", () => {
   it("arithmetic and comparison through the prelude types", () => {
     expect(q("!(+ 1 2)")).toEqual(["3"]);
     expect(q("!(== 2 2)")).toEqual(["True"]);
+    expect(q("!(!= 2 2)")).toEqual(["False"]);
+    expect(q("!(!= 2 3)")).toEqual(["True"]);
+  });
+
+  it("uses Hyperon's equality contract for !=", () => {
+    expect(q("!(get-type !=)")).toEqual(["(-> $t $t Bool)"]);
+    expect(q("!(!= (A B) (A B))")).toEqual(["False"]);
+    expect(q("!(!= (A B) (A (B C)))")).toEqual(["True"]);
+    expect(q("!(!= 1 1.0)")).toEqual(["False"]);
+    expect(q("!(let $nan (/ 0.0 0.0) (!= $nan $nan))")).toEqual(["True"]);
+    expect(q('!(!= 5 "S")')).toEqual(['(Error (!= 5 "S") (BadArgType 2 Number String))']);
+    expect(q("!(!= (Error source cause) anything)")).toEqual(["(Error source cause)"]);
+    expect(q("!(collapse (!= (superpose (1 2)) (superpose (1 3))))")).toEqual([
+      "(, False True True True)",
+    ]);
+  });
+
+  it("keeps != type metadata out of &self", () => {
+    expect(q("(left != right)\n!(collapse (match &self ($a != $b) ($a $b)))")).toEqual([
+      "(, (left right))",
+    ]);
   });
 
   it("tokenizes explicit-plus numeric literals as grounded atoms", () => {

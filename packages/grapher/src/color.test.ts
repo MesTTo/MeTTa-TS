@@ -23,6 +23,7 @@ describe("color", () => {
     expect(roleOf("-3.5")).toBe("number");
     expect(roleOf('"hi"')).toBe("string");
     expect(roleOf("=")).toBe("operator");
+    expect(roleOf("!=")).toBe("operator");
     expect(roleOf("->")).toBe("operator");
     expect(roleOf(":")).toBe("operator");
     // branching forms are decisions, drawn as flowchart diamonds
@@ -45,6 +46,7 @@ describe("color", () => {
     expect(displayGlyph(">=")).toBe("≥");
     expect(displayGlyph("and")).toBe("∧");
     expect(displayGlyph("=")).toBe("≡");
+    expect(displayGlyph("!=")).toBe("≠");
     expect(displayGlyph("fact")).toBe("fact");
   });
 

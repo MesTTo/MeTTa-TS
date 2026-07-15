@@ -231,6 +231,7 @@ export const STDLIB_SRC = `
   (@doc > (@desc "Greater than. Checks whether the first argument is greater than the second") (@params ((@param "First number") (@param "Second number"))) (@return "True if the first argument is greater than the second, False otherwise"))
   (@doc >= (@desc "Greater than or equal. Checks whether the first argument is greater than or equal to the second") (@params ((@param "First number") (@param "Second number"))) (@return "True if the first argument is greater than or equal to the second, False otherwise"))
   (@doc == (@desc "Checks equality of two arguments of the same type") (@params ((@param "First argument") (@param "Second argument"))) (@return "True if the two arguments are equal, False otherwise"))
+  (@doc != (@desc "Checks inequality of two arguments of the same type") (@params ((@param "First argument") (@param "Second argument"))) (@return "True if the two arguments are not equal, False otherwise"))
   (@doc = (@desc "Defines a reduction rule for expressions") (@params ((@param "Pattern to match against the expression to reduce") (@param "Result of reduction or transformation of the pattern"))) (@return "Not reduced itself unless custom equalities over equalities are added"))
   (@doc =alpha (@desc "Checks alpha equality of two expressions") (@params ((@param "First expression") (@param "Second expression"))) (@return "True if both expressions are alpha equal, False otherwise"))
 

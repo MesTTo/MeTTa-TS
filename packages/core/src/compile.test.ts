@@ -93,9 +93,30 @@ describe("deterministic-core compiler", () => {
     expect(runFunctional(c, "odd", [10])).toBe(false);
   });
 
+  it("compiles != as the complement of integer equality", () => {
+    const c = compileEnv(envWith("(= (different $a $b) (!= $a $b))"));
+    expect(runFunctional(c, "different", [4, 4])).toBe(false);
+    expect(runFunctional(c, "different", [4, 5])).toBe(true);
+  });
+
   it("a match-using function is outside the pure int/bool core but compiles as nondet", () => {
     const c = compileEnv(envWith("(= (q $x) (match &self ($x) $x))"));
     expect(c.get("q")?.kind).toBe("nondet");
+  });
+
+  it("compiles != guards in nondeterministic recursion", () => {
+    const src = `
+      (= (walk 0) left)
+      (= (walk 0) right)
+      (= (walk $n)
+         (if (!= $n 0)
+             (let $child (walk (- $n 1)) (S $child))
+             (empty)))`;
+    const c = compileEnv(envWith(src));
+    expect(c.get("walk")?.kind).toBe("nondet");
+    expect(compareCompiledAndInterpreted(`${src}\n!(walk 2)`)).toEqual([
+      ["(S (S left))", "(S (S right))"],
+    ]);
   });
 
   it("declines a nondeterministic group with a wrong-arity internal call", () => {

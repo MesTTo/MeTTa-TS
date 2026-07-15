@@ -56,7 +56,7 @@ const Quote: (x: Term) => ExpressionAtom;
 
 // grounded operations (lowercase)
 const add, sub, mul, div, mod: (a: Term, b: Term) => ExpressionAtom; // arithmetic
-const eq, gt, lt, ge, le: (a: Term, b: Term) => ExpressionAtom; //     comparison
+const eq, neq, gt, lt, ge, le: (a: Term, b: Term) => ExpressionAtom; // comparison
 const and, or: (a: Term, b: Term) => ExpressionAtom;
 const not: (x: Term) => ExpressionAtom;
 const carAtom, cdrAtom, deconsAtom: (x: Term) => ExpressionAtom; //   expression/list ops

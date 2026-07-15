@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
+import fc from "fast-check";
 import { type Atom, expr, gint, sym, variable } from "./atom";
 import { BAIL, type Skel, type SkelBody, type SkelClause } from "./compile";
 import { compileJitGroup, jitRuntime, type JitGroup } from "./nondet-jit";
@@ -84,19 +85,64 @@ function compileSourceProbe(
   )!;
 }
 
+const walkOutput = (size: Skel, trace: Skel): Skel => node(constant("Out"), size, trace);
+const walkStep = (child: Skel): Skel => node(constant("Step"), child);
+
+function recursiveWalk(slots: number, guard: "!=" | ">", recursiveSize: Skel): SkelClause[] {
+  return [
+    {
+      n: 0,
+      lhsArgs: [integer(0), constant("leaf")],
+      body: template(walkOutput(integer(0), constant("leaf"))),
+    },
+    {
+      n: slots,
+      lhsArgs: [slot(0), walkStep(slot(1))],
+      body: {
+        tag: "if",
+        op: guard,
+        x: slot(0),
+        y: integer(0),
+        then: {
+          tag: "seq",
+          goals: [
+            {
+              pat: walkOutput(recursiveSize, slot(1)),
+              fn: "walk",
+              args: [sub(slot(0), integer(1)), slot(1)],
+            },
+          ],
+          tail: { tag: "tpl", tpl: walkOutput(slot(0), walkStep(slot(1))) },
+        },
+        els: { tag: "seq", goals: [], tail: { tag: "empty" } },
+      },
+    },
+  ];
+}
+
 describe("nondeterministic JIT structural factorization", () => {
-  it("factorizes an independent recursive constructor output", () => {
+  it("factorizes an independent recursive constructor output with a != guard", () => {
+    const walk = recursiveWalk(3, "!=", slot(2));
+    const jit = compileJitGroup(new Map([["walk", walk]]), new Map([["walk", 2]]), BAIL)!;
+    const args = [gint(4), variable("trace")];
+
+    expect(runDeferred(jit, "walk", args)).toEqual(["(Out 4 (Step (Step (Step (Step leaf)))))"]);
+    expect(run(jit, "walk", args)).toEqual(runDeferred(jit, "walk", args));
+    expect(runDeferred(jit, "walk", [gint(4), sym("leaf")])).toBeUndefined();
+  });
+
+  it("declines when the deferred output aliases a nested control input", () => {
     const output = (size: Skel, trace: Skel): Skel => node(constant("Out"), size, trace);
     const step = (child: Skel): Skel => node(constant("Step"), child);
     const walk: SkelClause[] = [
       {
-        n: 0,
-        lhsArgs: [integer(0), constant("leaf")],
+        n: 1,
+        lhsArgs: [integer(0), slot(0), constant("leaf")],
         body: template(output(integer(0), constant("leaf"))),
       },
       {
-        n: 3,
-        lhsArgs: [slot(0), step(slot(1))],
+        n: 4,
+        lhsArgs: [slot(0), slot(1), step(slot(2))],
         body: {
           tag: "if",
           op: ">",
@@ -106,23 +152,84 @@ describe("nondeterministic JIT structural factorization", () => {
             tag: "seq",
             goals: [
               {
-                pat: output(slot(2), slot(1)),
+                pat: output(slot(3), slot(2)),
                 fn: "walk",
-                args: [sub(slot(0), integer(1)), slot(1)],
+                args: [sub(slot(0), integer(1)), slot(1), slot(2)],
               },
             ],
-            tail: { tag: "tpl", tpl: output(slot(0), step(slot(1))) },
+            tail: { tag: "tpl", tpl: output(slot(0), step(slot(2))) },
           },
           els: { tag: "seq", goals: [], tail: { tag: "empty" } },
         },
       },
     ];
-    const jit = compileJitGroup(new Map([["walk", walk]]), new Map([["walk", 2]]), BAIL)!;
-    const args = [gint(4), variable("trace")];
+    const jit = compileJitGroup(new Map([["walk", walk]]), new Map([["walk", 3]]), BAIL)!;
+    expect(
+      runDeferred(jit, "walk", [gint(1), expr([sym("Hold"), sym("context")]), variable("trace")]),
+    ).toEqual(["(Out 1 (Step leaf))"]);
 
-    expect(runDeferred(jit, "walk", args)).toEqual(["(Out 4 (Step (Step (Step (Step leaf)))))"]);
-    expect(run(jit, "walk", args)).toEqual(runDeferred(jit, "walk", args));
-    expect(runDeferred(jit, "walk", [gint(4), sym("leaf")])).toBeUndefined();
+    const shared = variable("shared");
+    const args = [gint(1), expr([sym("Hold"), shared]), shared];
+
+    expect(runDeferred(jit, "walk", args)).toBeUndefined();
+    expect(run(jit, "walk", args)).toEqual(["(Out 1 (Step leaf))"]);
+  });
+
+  it("checks a consumer constraint against an omitted projected result", () => {
+    const walk = recursiveWalk(2, ">", integer(99));
+    const jit = compileJitGroup(new Map([["walk", walk]]), new Map([["walk", 2]]), BAIL)!;
+    const args = [gint(1), variable("trace")];
+
+    expect(runDeferred(jit, "walk", args)).toEqual([]);
+    expect(run(jit, "walk", args)).toEqual([]);
+  });
+
+  it("matches exact ordered bags over generated decreasing witness relations", () => {
+    fc.assert(
+      fc.property(
+        fc.integer({ min: 0, max: 5 }),
+        fc.array(fc.constantFrom("leaf-a", "leaf-b"), { minLength: 1, maxLength: 3 }),
+        fc.array(fc.constantFrom("Step", "Wrap"), { minLength: 1, maxLength: 2 }),
+        (depth, leaves, constructors) => {
+          const output = (size: Skel, trace: Skel): Skel => node(constant("Out"), size, trace);
+          const clauses: SkelClause[] = leaves.map((leaf) => ({
+            n: 0,
+            lhsArgs: [integer(0), constant(leaf)],
+            body: template(output(integer(0), constant(leaf))),
+          }));
+          for (const constructor of constructors) {
+            const wrapped = (child: Skel): Skel => node(constant(constructor), child);
+            clauses.push({
+              n: 3,
+              lhsArgs: [slot(0), wrapped(slot(1))],
+              body: {
+                tag: "if",
+                op: ">",
+                x: slot(0),
+                y: integer(0),
+                then: {
+                  tag: "seq",
+                  goals: [
+                    {
+                      pat: output(slot(2), slot(1)),
+                      fn: "walk",
+                      args: [sub(slot(0), integer(1)), slot(1)],
+                    },
+                  ],
+                  tail: { tag: "tpl", tpl: output(slot(0), wrapped(slot(1))) },
+                },
+                els: { tag: "seq", goals: [], tail: { tag: "empty" } },
+              },
+            });
+          }
+
+          const jit = compileJitGroup(new Map([["walk", clauses]]), new Map([["walk", 2]]), BAIL)!;
+          const args = [gint(depth), variable("trace")];
+          expect(runDeferred(jit, "walk", args)).toEqual(run(jit, "walk", args));
+        },
+      ),
+      { numRuns: 100 },
+    );
   });
 
   it("specializes a generalized control table to the consumed call", () => {

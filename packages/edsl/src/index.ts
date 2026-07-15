@@ -42,6 +42,7 @@ export {
   div,
   mod,
   eq,
+  neq,
   gt,
   lt,
   ge,

@@ -54,6 +54,7 @@ import {
   callGrounded,
   type GroundFn,
   type GroundingTable,
+  groundedOperationType,
   isTableSafeGroundedOp,
   pettaOpNames,
   type ReduceEffect,
@@ -631,9 +632,17 @@ function pushUniqueType(m: Map<string, Atom[]>, k: string, x: Atom): void {
   else if (!cur.some((e) => atomEq(e, x))) m.set(k, [...cur, x]);
 }
 
+function addGroundedOperationType(env: MinEnv, name: string, op: GroundFn): void {
+  const type = groundedOperationType(op);
+  if (type === undefined) return;
+  if (type.kind === "expr" && opOf(type) === "->") env.sigs.set(name, type.items.slice(1));
+  pushUniqueType(env.types, name, type);
+  env.typeCache = undefined;
+}
+
 /** An empty environment for grounding table `gt`. Grow it with `addAtomToEnv`. */
 export function emptyEnv(gt: GroundingTable): MinEnv {
-  return {
+  const env: MinEnv = {
     ruleIndex: new Map(),
     varRules: [],
     varRulesVar: [],
@@ -652,6 +661,8 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     nestedMatchIndex: emptyStaticNestedMatchIndex(),
     varHeadedFacts: [],
   };
+  for (const [name, op] of gt) addGroundedOperationType(env, name, op);
+  return env;
 }
 
 const runtimePureCache = new Map<string, boolean>();
@@ -687,6 +698,7 @@ function invalidateGroundedRegistration(env: MinEnv): void {
 /** Register a sync grounded operation and invalidate analyses that may have classified its name. */
 export function registerGroundedOperation(env: MinEnv, name: string, op: GroundFn): void {
   env.gt.set(name, op);
+  addGroundedOperationType(env, name, op);
   invalidateGroundedRegistration(env);
 }
 
@@ -1871,6 +1883,7 @@ function returnsAtom(env: MinEnv, a: Atom): boolean {
 const lowerFunctionHead = /^[a-z_]/;
 const STRICT_HYPERON_ARITY = new Map<string, number>([
   ["==", 2],
+  ["!=", 2],
   ["=alpha", 2],
   ["if-equal", 4],
   ["unquote", 1],
@@ -4901,6 +4914,7 @@ const CHOICE_PLAN_RULE_COUNTS: ReadonlyArray<readonly [string, number]> = [
   [">", 0],
   [">=", 0],
   ["==", 0],
+  ["!=", 0],
   ["unique-atom", 0],
 ];
 
@@ -4914,6 +4928,7 @@ const CHOICE_PLAN_SIGNATURES: ReadonlyArray<readonly [string, readonly Atom[]]> 
   ["*", [sym("Number"), sym("Number"), sym("Number")]],
   ["if", [sym("Bool"), sym("Atom"), sym("Atom"), variable("t")]],
   ["==", [variable("t"), variable("t"), sym("Bool")]],
+  ["!=", [variable("t"), variable("t"), sym("Bool")]],
   ["<", [sym("Number"), sym("Number"), sym("Bool")]],
   ["<=", [sym("Number"), sym("Number"), sym("Bool")]],
   [">", [sym("Number"), sym("Number"), sym("Bool")]],
@@ -4929,6 +4944,7 @@ const CHOICE_PLAN_GROUNDED_OPS = [
   ">",
   ">=",
   "==",
+  "!=",
   "superpose",
   "unique-atom",
 ];

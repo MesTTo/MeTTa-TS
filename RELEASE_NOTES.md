@@ -1,3 +1,99 @@
+# MeTTa TS 1.1.6
+
+MeTTa TS 1.1.6 reduces the cold and loaded cost of compiled nondeterministic
+proof search. It also adds Hyperon-style structural inequality to the core and
+TypeScript EDSL.
+
+## Deferred proof output
+
+The nondeterministic compiler can now prove that one result field is an
+unbound output projection which does not affect clause choice, matching,
+guards, or recursive call arguments. For those relations, generated search
+code carries only the control fields. It constructs the deferred field after
+all child searches succeed. Result fields already projected from call inputs
+are recovered at the consumer instead of being passed through every recursive
+continuation.
+
+The analysis uses result and input projections from the existing compiler. It
+does not recognize `obc`, theorem names, or benchmark source. Runtime admission
+requires the projected input to be unbound and unaliased, and requires a
+natural-number descent field for the existing bounded-recursion guard. If any
+proof fails, the ordinary compiled search runs with unchanged ordered-bag
+semantics. Groups with no deferred plan retain the 1.1.5 generated module shape
+and skip the deferred attempt entirely.
+
+Large generated clause matchers are emitted as separate JavaScript functions,
+while small recurrence clauses stay inline. This reduces V8 compilation work
+for large rule groups without changing source-order dispatch.
+
+An alternating same-host A/B against the untouched 1.1.5 build compared exact
+ordered output on every run. On Node 22.22.1, `jarr` improved from 127.9 ms to
+111.9 ms over 51 cold pairs and from 3.32 ms to 2.97 ms over 401 loaded pairs.
+`loowoz` improved from 892.0 ms to 754.8 ms cold and from 922.3 ms to 705.3 ms
+loaded.
+
+The cold `jarr` comparison was also repeated on three Node majors:
+
+| Runtime      |    1.1.5 |    1.1.6 | Speedup |
+| ------------ | -------: | -------: | ------: |
+| Node 20.20.2 |  86.0 ms |  69.4 ms |   1.24x |
+| Node 22.22.1 | 127.9 ms | 111.9 ms |   1.14x |
+| Node 24.18.0 |  56.6 ms |  54.3 ms |   1.04x |
+
+The clean 15-run subprocess comparison on an AMD Ryzen 9 9950X used PeTTa
+`6f5639a` on SWI-Prolog 9.2.9. Times include process startup and use the normal
+MeTTa TS evaluator:
+
+| Program      |     PeTTa | MeTTa TS | Speedup |
+| ------------ | --------: | -------: | ------: |
+| BFC `jarr`   |  136.5 ms | 113.6 ms |   1.20x |
+| BFC `loowoz` | 2466.3 ms | 743.6 ms |   3.32x |
+
+Maximum sampled MeTTa TS process-tree RSS was 91.4 MiB for `jarr` and 100.0
+MiB for `loowoz`. The benchmark validates both `jarr` proofs and all three
+`loowoz` proofs in exact order.
+
+## Inequality
+
+MeTTa TS now provides `!=` as a core grounded operation. It is the Boolean
+complement of Hyperon's structural `==` for non-error operands, including
+integer/float promotion and NaN behavior. Both operators use the same
+`(-> $t $t Bool)` type, arity checks, argument evaluation, and error
+propagation. The TypeScript EDSL exports the matching `neq(a, b)` builder.
+
+## Verification
+
+The release candidate was checked on Linux with Node 22 and pnpm 11.
+
+- All 116 executed test files pass: 1,164 tests passed and 38 optional live
+  integration tests were skipped.
+- The checked 270-assertion oracle passes all 23 corpus files.
+- Core/ST conformance is byte-identical to 1.1.5 at 431 passed, 77 established
+  failures, 60 manifest expected failures, and zero skips.
+- The standard benchmark, all six nondeterminism cases, concurrency checks,
+  and all 33 scale cases pass.
+- The documentation site builds, and all ten package tarballs install together
+  in a clean npm project. The packed evaluator, EDSL, `jarr`, GIF renderer, and
+  TypeScript declarations pass their smoke checks.
+- Browser and grapher base entries import from a clean install without Sharp or
+  `gifenc`. The production dependency audit reports no known vulnerabilities.
+
+## Packages
+
+All public packages use version `1.1.6`:
+
+```bash
+npm install @metta-ts/core@1.1.6
+npm install -g @metta-ts/node@1.1.6
+```
+
+Optional host packages use the same version:
+
+```bash
+npm install @metta-ts/py@1.1.6 pythonia
+npm install @metta-ts/prolog@1.1.6
+```
+
 # MeTTa TS 1.1.5
 
 MeTTa TS 1.1.5 adds a programmatic reduction-GIF API for plain Node.js. It

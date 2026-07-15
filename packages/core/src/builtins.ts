@@ -73,6 +73,18 @@ export type ReduceResult =
 export type GroundFn = (args: readonly Atom[]) => ReduceResult;
 export type GroundingTable = Map<string, GroundFn>;
 
+const groundedOperationTypes = new WeakMap<GroundFn, Atom>();
+
+function withGroundedOperationType(op: GroundFn, type: Atom): GroundFn {
+  groundedOperationTypes.set(op, type);
+  return op;
+}
+
+/** Return the type carried by a grounded operation, if it has one. */
+export function groundedOperationType(op: GroundFn): Atom | undefined {
+  return groundedOperationTypes.get(op);
+}
+
 // Monotonic counter for `sealed`'s fresh variable names (process-wide uniqueness, like Hyperon's make_unique).
 let sealCounter = 0;
 const ok = (...results: Atom[]): ReduceResult => ({ tag: "ok", results });
@@ -340,15 +352,23 @@ function boolBin(f: (x: boolean, y: boolean) => boolean): GroundFn {
   };
 }
 
-// `==`: error operands pass through; otherwise structural equality as a Bool.
-const eqAtom: GroundFn = (args) => {
-  if (args.length !== 2) return ierr("expected exactly two arguments");
-  const a = args[0]!;
-  const b = args[1]!;
-  if (isErrorAtom(a)) return ok(a);
-  if (isErrorAtom(b)) return ok(b);
-  return ok(gbool(atomEq(a, b)));
-};
+// Equality operators pass through error operands and compare every other atom structurally.
+function equalityCmp(expectEqual: boolean): GroundFn {
+  return (args) => {
+    if (args.length !== 2) return ierr("expected exactly two arguments");
+    const a = args[0]!;
+    const b = args[1]!;
+    if (isErrorAtom(a)) return ok(a);
+    if (isErrorAtom(b)) return ok(b);
+    return ok(gbool(atomEq(a, b) === expectEqual));
+  };
+}
+const eqAtom = equalityCmp(true);
+// Hyperon carries operation types on grounded values instead of inserting declarations into &self.
+const neqAtom = withGroundedOperationType(
+  equalityCmp(false),
+  expr([sym("->"), variable("t"), variable("t"), sym("Bool")]),
+);
 
 // --- list surgery ---
 const consAtom: GroundFn = (args) => {
@@ -474,6 +494,7 @@ const coreEntries: Array<[string, GroundFn]> = [
   [">", numCmp((c) => c > 0)],
   [">=", numCmp((c) => c >= 0)],
   ["==", eqAtom],
+  ["!=", neqAtom],
   ["and", boolBin((a, b) => a && b)],
   ["or", boolBin((a, b) => a || b)],
   ["cons-atom", consAtom],

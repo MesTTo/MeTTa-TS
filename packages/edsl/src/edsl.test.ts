@@ -16,6 +16,7 @@ import {
   gt,
   lt,
   eq,
+  neq,
   add,
   sub,
   mul,
@@ -87,6 +88,16 @@ describe("exercise 2.2 — classify with If", () => {
     expect(db.eval(classify(7)).map(String)).toEqual(["Positive"]);
     expect(db.eval(classify(0)).map(String)).toEqual(["Zero"]);
     expect(db.eval(classify(-3)).map(String)).toEqual(["Negative"]);
+  });
+});
+
+describe("comparison builders", () => {
+  it("builds and evaluates !=", () => {
+    const db = mettaDB();
+    const { A, B } = names();
+    expect(String(neq(A, B))).toBe("(!= A B)");
+    expect(db.evalJs(neq(2, 2))).toEqual([false]);
+    expect(db.evalJs(neq(2, 3))).toEqual([true]);
   });
 });
 

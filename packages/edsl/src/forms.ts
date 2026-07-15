@@ -88,6 +88,7 @@ export const mod = op2("%");
 
 /** Comparison grounded operations (return `True`/`False`). */
 export const eq = op2("==");
+export const neq = op2("!=");
 export const gt = op2(">");
 export const lt = op2("<");
 export const ge = op2(">=");

@@ -30,12 +30,6 @@ import {
   discriminationSymbol,
   discriminationVariable,
 } from "./ordered-discrimination-index";
-import {
-  type OrderedAnswer,
-  type OrderedDerivation,
-  countOrderedAnswers,
-  enumerateOrderedAnswers,
-} from "./ordered-factorization";
 
 // ---------- slim terms ----------
 // One hidden class for every node (the engine's own Atom design, shrunk to what the search touches):
@@ -726,6 +720,7 @@ interface EmitCtx {
   /** Hoisted rigid slim constants, one per distinct ground skeleton atom. */
   readonly consts: Atom[];
   readonly constIdx: Map<Atom, number>;
+  readonly deferredConsts: Slim[];
   /** Fresh temp-variable counter for the clause being emitted. */
   tmp: number;
   readonly frontier: boolean;
@@ -828,6 +823,15 @@ const constRef = (ctx: EmitCtx, a: Atom): string => {
     ctx.constIdx.set(a, i);
   }
   return "K[" + String(i) + "]";
+};
+
+const deferredConstRef = (ctx: EmitCtx, value: Slim): string => {
+  let index = ctx.deferredConsts.findIndex((candidate) => rigidSlimEquals(candidate, value));
+  if (index < 0) {
+    index = ctx.deferredConsts.length;
+    ctx.deferredConsts.push(value);
+  }
+  return `D[${index}]`;
 };
 
 /** A slot site's expression: the first head-read occurrence aliases (assigned there once per dispatch);
@@ -1147,6 +1151,8 @@ interface DeferredGoalPlan {
   readonly fn: string;
   readonly controlArgs: readonly Skel[];
   readonly controlPattern: readonly Skel[];
+  readonly projectedControlValues: readonly (Skel | undefined)[];
+  readonly redundantControlResults: ReadonlySet<number>;
   readonly deferredSlot: number;
 }
 
@@ -1190,6 +1196,7 @@ interface DeferredGroupPlan {
   readonly hole: number;
   readonly inputHoleByFn: ReadonlyMap<string, number>;
   readonly controlResultHoles: readonly number[];
+  readonly emittedResultHoles: readonly number[];
   readonly clausesByFn: ReadonlyMap<string, readonly DeferredClausePlan[]>;
 }
 
@@ -1246,6 +1253,8 @@ function analyzeDeferredBody(
   witnessHead: Skel,
   hole: number,
   resultLayout: ResultLayout,
+  resultProjections: ReadonlyMap<string, readonly (InputProjection | undefined)[]>,
+  projectedResultHoles: ReadonlySet<number>,
   inputLayouts: ReadonlyMap<string, InputLayout>,
   inputHoleByFn: ReadonlyMap<string, number>,
 ): DeferredClauseAnalysis | undefined {
@@ -1255,6 +1264,8 @@ function analyzeDeferredBody(
       witnessHead,
       hole,
       resultLayout,
+      resultProjections,
+      projectedResultHoles,
       inputLayouts,
       inputHoleByFn,
     );
@@ -1263,6 +1274,8 @@ function analyzeDeferredBody(
       witnessHead,
       hole,
       resultLayout,
+      resultProjections,
+      projectedResultHoles,
       inputLayouts,
       inputHoleByFn,
     );
@@ -1314,11 +1327,35 @@ function analyzeDeferredBody(
     deferredSlots.add(witnessArg.i);
     const controlArgs = callFields.filter((_, index) => index !== calleeWitnessHole);
     const controlPattern = resultFields.filter((_, index) => index !== hole);
+    const projectedControlValues: Array<Skel | undefined> = [];
+    for (let resultHole = 0; resultHole < resultLayout.holes; resultHole++) {
+      if (resultHole === hole) continue;
+      if (!projectedResultHoles.has(resultHole)) {
+        projectedControlValues.push(undefined);
+        continue;
+      }
+      const projection = resultProjections.get(goal.fn)?.[resultHole];
+      const projected =
+        projection === undefined
+          ? undefined
+          : skelAtPath(goal.args[projection.arg], projection.path);
+      if (projected === undefined) return undefined;
+      projectedControlValues.push(projected);
+    }
+    const redundantHoles = redundantResultHoles(goal, resultLayout, resultProjections);
+    const redundantControlResults = new Set<number>();
+    for (let resultHole = 0, controlField = 0; resultHole < resultLayout.holes; resultHole++) {
+      if (resultHole === hole) continue;
+      if (redundantHoles.has(resultHole)) redundantControlResults.add(controlField);
+      controlField += 1;
+    }
     controlUses.push(...controlArgs, ...controlPattern);
     goals.push({
       fn: goal.fn,
       controlArgs,
       controlPattern,
+      projectedControlValues,
+      redundantControlResults,
       deferredSlot: witnessArg.i,
     });
   }
@@ -1392,6 +1429,32 @@ function analyzeDeferredGroup(
     }
     if (!projected) continue;
 
+    const controlResultHoles = Array.from({ length: resultLayout.holes }, (_, i) => i).filter(
+      (i) => i !== hole,
+    );
+    const projectedResultHoles = new Set<number>();
+    for (const resultHole of controlResultHoles) {
+      let reusable = true;
+      for (const fn of skelsByFn.keys()) {
+        const projection = resultProjections.get(fn)?.[resultHole];
+        const layout = inputLayouts.get(fn);
+        const witnessInputHole = inputHoleByFn.get(fn);
+        const mapped =
+          projection === undefined || layout === undefined
+            ? undefined
+            : inputAliasRef(layout, projection);
+        if (
+          mapped === undefined ||
+          witnessInputHole === undefined ||
+          mapped.hole === witnessInputHole
+        ) {
+          reusable = false;
+          break;
+        }
+      }
+      if (reusable) projectedResultHoles.add(resultHole);
+    }
+
     const clausesByFn = new Map<string, DeferredClausePlan[]>();
     let valid = true;
     for (const [fn, clauses] of skelsByFn) {
@@ -1411,6 +1474,8 @@ function analyzeDeferredGroup(
           witnessHead,
           hole,
           resultLayout,
+          resultProjections,
+          projectedResultHoles,
           inputLayouts,
           inputHoleByFn,
         );
@@ -1431,8 +1496,9 @@ function analyzeDeferredGroup(
     return {
       hole,
       inputHoleByFn,
-      controlResultHoles: Array.from({ length: resultLayout.holes }, (_, i) => i).filter(
-        (i) => i !== hole,
+      controlResultHoles,
+      emittedResultHoles: controlResultHoles.filter(
+        (resultHole) => !projectedResultHoles.has(resultHole),
       ),
       clausesByFn,
     };
@@ -1440,282 +1506,7 @@ function analyzeDeferredGroup(
   return undefined;
 }
 
-// ---------- bounded deferred-output evaluation ----------
-
-const DEFERRED_LIMIT = Symbol("deferred-output-limit");
-const DEFERRED_MAX_STATES = 50_000;
-const DEFERRED_MAX_ANSWERS = 200_000;
-const DEFERRED_MAX_VIEWS = 10_000;
-const DEFERRED_MAX_DERIVATIONS = 20_000;
-const DEFERRED_MAX_EDGES = 50_000;
-const DEFERRED_MAX_REPLAY_CELLS = 1_000_000;
-const DEFERRED_MAX_WORK = 500_000;
-const DEFERRED_MAX_LEAVES = 250_000;
-const DEFERRED_MAX_OUTPUTS = 250_000n;
-
-interface DeferredPackedValue {
-  readonly view: DeferredAnswerView;
-  readonly output: Slim;
-}
-
-interface DeferredControlAnswer {
-  readonly hash: number;
-  readonly owner: DeferredTableEntry;
-  readonly row: DeferredReplayRow;
-  readonly viewsByHash: Map<number, DeferredAnswerView[]>;
-  readonly derivations: DeferredControlDerivation[];
-}
-
-interface DeferredAnswerView {
-  readonly hash: number;
-  readonly answer: DeferredControlAnswer;
-  readonly row: DeferredReplayRow;
-  ordered: OrderedAnswer<DeferredPackedValue> | undefined;
-  derivations: OrderedDerivation<DeferredPackedValue>[] | undefined;
-  justifying: boolean;
-}
-
-interface DeferredConsumedAnswer {
-  readonly answer: DeferredControlAnswer;
-  readonly args: readonly Slim[];
-  readonly results: readonly Slim[];
-}
-
-type DeferredBuildPlan =
-  | { readonly tag: "template"; readonly template: DeferredTemplate }
-  | { readonly tag: "child"; readonly index: number };
-
-interface DeferredRecordedChild {
-  readonly answer: DeferredControlAnswer;
-  readonly args: number;
-  readonly results: number;
-}
-
-/** One successful control derivation captured before its trail bindings are undone. Parent and child
- *  terms share one row-local variable namespace, so specialization can propagate into every child. */
-interface DeferredControlDerivation {
-  readonly choice: number;
-  readonly occurrence: number;
-  readonly row: DeferredReplayRow;
-  readonly parentResults: number;
-  readonly children: readonly DeferredRecordedChild[];
-  readonly build: DeferredBuildPlan;
-}
-
-interface DeferredTableEntry {
-  readonly fn: string;
-  readonly args: readonly Slim[];
-  readonly answers: DeferredControlAnswer[];
-  readonly answersByHash: Map<number, DeferredControlAnswer[]>;
-  active: boolean;
-}
-
-interface DeferredTrieNode<V> {
-  value: V | undefined;
-  children: Map<number, DeferredTrieNode<V>> | undefined;
-}
-
-interface DeferredReplayRow {
-  readonly args: readonly number[];
-  readonly results: readonly number[];
-  readonly cells: number;
-}
-
-interface DeferredReplayNode {
-  readonly items: readonly number[] | undefined;
-  readonly value: Slim | undefined;
-}
-
-class DeferredTokenTrie<V> {
-  private readonly root: DeferredTrieNode<V> = { value: undefined, children: undefined };
-  nodes = 1;
-
-  get(tokens: readonly number[]): V | undefined {
-    let node = this.root;
-    for (const token of tokens) {
-      const next = node.children?.get(token);
-      if (next === undefined) return undefined;
-      node = next;
-    }
-    return node.value;
-  }
-
-  set(tokens: readonly number[], value: V): number {
-    let node = this.root;
-    let added = 0;
-    for (const token of tokens) {
-      let children = node.children;
-      if (children === undefined) node.children = children = new Map();
-      let next = children.get(token);
-      if (next === undefined) {
-        next = { value: undefined, children: undefined };
-        children.set(token, next);
-        this.nodes += 1;
-        added += 1;
-      }
-      node = next;
-    }
-    node.value = value;
-    return added;
-  }
-}
-
-class ReplayTermInterner {
-  private readonly symbols = new Map<string, number>();
-  private readonly integers = new Map<IntVal, number>();
-  private readonly grounds = new Map<string, number>();
-  private readonly opaqueGrounds = new Map<Atom, number>();
-  private readonly expressions = new Map<number, number[]>();
-  private readonly arena: Array<DeferredReplayNode | undefined> = [undefined];
-  private readonly captureVariables = new Map<Slim, number>();
-  private readonly captureMemo = new Map<Slim, number>();
-  nodes = 0;
-
-  capture(args: readonly Slim[], results: readonly Slim[]): DeferredReplayRow {
-    this.captureVariables.clear();
-    this.captureMemo.clear();
-    const capturedArgs = new Array<number>(args.length);
-    for (let i = 0; i < args.length; i++) capturedArgs[i] = this.captureTerm(args[i]!);
-    const capturedResults = new Array<number>(results.length);
-    for (let i = 0; i < results.length; i++) capturedResults[i] = this.captureTerm(results[i]!);
-    return {
-      args: capturedArgs,
-      results: capturedResults,
-      cells: args.length + results.length,
-    };
-  }
-
-  key(row: DeferredReplayRow): number[] {
-    return [row.args.length, ...row.args, row.results.length, ...row.results];
-  }
-
-  hash(row: DeferredReplayRow): number {
-    let hash = 0x811c9dc5;
-    hash = Math.imul(hash ^ row.args.length, 0x01000193);
-    for (const term of row.args) hash = Math.imul(hash ^ term, 0x01000193);
-    hash = Math.imul(hash ^ row.results.length, 0x01000193);
-    for (const term of row.results) hash = Math.imul(hash ^ term, 0x01000193);
-    return hash >>> 0;
-  }
-
-  equal(left: DeferredReplayRow, right: DeferredReplayRow): boolean {
-    return (
-      left.args.length === right.args.length &&
-      left.results.length === right.results.length &&
-      left.args.every((term, index) => term === right.args[index]) &&
-      left.results.every((term, index) => term === right.results[index])
-    );
-  }
-
-  instantiate(term: number, variables: Slim[]): Slim {
-    if (term < 0) {
-      const index = -term - 1;
-      const cell = variables[index] ?? mkc();
-      variables[index] = cell;
-      return cell;
-    }
-    const node = this.arena[term];
-    if (node === undefined) throw DEFERRED_LIMIT;
-    if (node.value !== undefined) return node.value;
-    return exq(node.items!.map((item) => this.instantiate(item, variables)));
-  }
-
-  unify(term: number, actual: Slim, variables: Slim[], trail: Slim[]): boolean {
-    if (term < 0) return unifyS(trail, actual, this.instantiate(term, variables));
-    const node = this.arena[term];
-    if (node === undefined) throw DEFERRED_LIMIT;
-    if (node.value !== undefined) return unifyS(trail, actual, node.value);
-    const value = derefS(actual);
-    if (value.t === 0) return unifyS(trail, value, this.instantiate(term, variables));
-    const items = node.items!;
-    if (value.t !== 4 || value.i.length !== items.length) return false;
-    for (let i = 0; i < items.length; i++)
-      if (!this.unify(items[i]!, value.i[i]!, variables, trail)) return false;
-    return true;
-  }
-
-  private captureTerm(term: Slim): number {
-    const value = derefS(term);
-    const cached = this.captureMemo.get(value);
-    if (cached !== undefined) return cached;
-    let captured: number;
-    if (value.t === 0) {
-      let variable = this.captureVariables.get(value);
-      if (variable === undefined) {
-        variable = -this.captureVariables.size - 1;
-        this.captureVariables.set(value, variable);
-      }
-      captured = variable;
-    } else if (value.t === 4) {
-      const items = new Array<number>(value.i.length);
-      for (let i = 0; i < value.i.length; i++) items[i] = this.captureTerm(value.i[i]!);
-      captured = this.expression(items);
-    } else captured = this.leaf(value);
-    this.captureMemo.set(value, captured);
-    return captured;
-  }
-
-  private leaf(value: Slim): number {
-    let canonical: number | undefined;
-    if (value.t === 1) {
-      canonical = this.symbols.get(value.s);
-    } else if (value.t === 2) {
-      canonical = this.integers.get(value.n);
-    } else {
-      const atom = value.g as GndAtom;
-      const key = discriminationGround(atom);
-      canonical = key.wildcard ? this.opaqueGrounds.get(atom) : this.grounds.get(key.key);
-    }
-    if (canonical !== undefined) return canonical;
-    const id = this.addNode({ items: undefined, value });
-    if (value.t === 1) this.symbols.set(value.s, id);
-    else if (value.t === 2) this.integers.set(value.n, id);
-    else {
-      const atom = value.g as GndAtom;
-      const key = discriminationGround(atom);
-      if (key.wildcard) this.opaqueGrounds.set(atom, id);
-      else this.grounds.set(key.key, id);
-    }
-    return id;
-  }
-
-  private expression(items: readonly number[]): number {
-    let hash = Math.imul(0x45585052 ^ items.length, 0x01000193);
-    for (const item of items) hash = Math.imul(hash ^ item, 0x01000193);
-    hash >>>= 0;
-    const bucket = this.expressions.get(hash);
-    if (bucket !== undefined)
-      for (const id of bucket) {
-        const existingItems = this.arena[id]!.items!;
-        if (
-          existingItems.length === items.length &&
-          items.every((item, index) => item === existingItems[index])
-        )
-          return id;
-      }
-    const rigidItems: Slim[] = [];
-    let rigid = true;
-    for (const item of items) {
-      const value = item < 0 ? undefined : this.arena[item]?.value;
-      if (value === undefined || !value.r) {
-        rigid = false;
-        break;
-      }
-      rigidItems.push(value);
-    }
-    const id = this.addNode({ items, value: rigid ? exq(rigidItems) : undefined });
-    if (bucket === undefined) this.expressions.set(hash, [id]);
-    else bucket.push(id);
-    return id;
-  }
-
-  private addNode(node: DeferredReplayNode): number {
-    const id = this.arena.length;
-    this.arena.push(node);
-    this.nodes += 1;
-    return id;
-  }
-}
+// ---------- deferred-output boundary helpers ----------
 
 function rigidSlimEquals(left0: Slim, right0: Slim): boolean {
   const left = derefS(left0);
@@ -1758,614 +1549,6 @@ function slimContains(root0: Slim, target: Slim, seen = new Set<Slim>()): boolea
   if (root.t !== 4 || seen.has(root)) return false;
   seen.add(root);
   return root.i.some((item) => slimContains(item, target, seen));
-}
-
-function collectSlimVariables(root0: Slim, variables: Set<Slim>, seen: Set<Slim>): void {
-  const root = derefS(root0);
-  if (root.t === 0) {
-    variables.add(root);
-    return;
-  }
-  if (root.t !== 4 || seen.has(root)) return;
-  seen.add(root);
-  for (const item of root.i) collectSlimVariables(item, variables, seen);
-}
-
-class DeferredEvaluator {
-  private readonly tables = new Map<string, DeferredTokenTrie<DeferredTableEntry>>();
-  private readonly replayInterner = new ReplayTermInterner();
-  private readonly trail: Slim[] = [];
-  private readonly constants = new Map<Atom, Slim>();
-  private states = 0;
-  private answers = 0;
-  private views = 0;
-  private derivations = 0;
-  private projectedDerivations = 0;
-  private edges = 0;
-  private occurrences = 0;
-  private replayCells = 0;
-  private trieNodes = 0;
-  private work = 0;
-  private counter: number;
-  private rankPositions: ReadonlySet<number> | undefined;
-
-  constructor(
-    private readonly plan: DeferredGroupPlan,
-    private readonly inputLayouts: ReadonlyMap<string, InputLayout>,
-    private readonly resultLayout: ResultLayout,
-    private readonly bail: unknown,
-    counter: number,
-  ) {
-    this.counter = counter;
-  }
-
-  tryRun(
-    fn: string,
-    topArgs: readonly Slim[],
-    continuation: (result: Slim) => void,
-  ): { readonly counter: number } | undefined {
-    const layout = this.inputLayouts.get(fn);
-    const deferredInputHole = this.plan.inputHoleByFn.get(fn);
-    if (layout === undefined || deferredInputHole === undefined) return undefined;
-
-    const fields: Slim[] = [];
-    if (
-      topArgs.length !== layout.shapes.length ||
-      !topArgs.every((arg, i) =>
-        extractSlimFields(layout.shapes[i]!, arg, fields, this.constant),
-      ) ||
-      fields.length !== layout.holes ||
-      fields.some((field) => field === undefined)
-    )
-      return undefined;
-
-    const deferred = derefS(fields[deferredInputHole]!);
-    if (deferred.t !== 0 || deferred.b !== undefined) return undefined;
-    const controlArgs = fields.filter((_, index) => index !== deferredInputHole);
-    if (controlArgs.some((arg) => slimContains(arg, deferred))) return undefined;
-    const rankPositions = controlArgs
-      .map((arg, index) => (naturalInt(arg) === undefined ? -1 : index))
-      .filter((index) => index >= 0);
-    if (rankPositions.length === 0) return undefined;
-    for (const clauses of this.plan.clausesByFn.values())
-      if (
-        clauses.some((clause) =>
-          rankPositions.some((position) => position >= clause.controlHead.length),
-        )
-      )
-        return undefined;
-    this.rankPositions = new Set(rankPositions);
-
-    let entry: DeferredTableEntry;
-    let matchingViews: DeferredAnswerView[];
-    let orderedAnswers: OrderedAnswer<DeferredPackedValue>[];
-    try {
-      entry = this.ensure(fn, controlArgs);
-      matchingViews = [];
-      for (const answer of entry.answers)
-        this.replay(answer, controlArgs, (controlResults) => {
-          matchingViews.push(this.view(answer, controlArgs, controlResults));
-        });
-      orderedAnswers = matchingViews.map((view) => this.justify(view));
-      const represented = countOrderedAnswers(orderedAnswers, DEFERRED_MAX_OUTPUTS);
-      if (represented > DEFERRED_MAX_OUTPUTS) return undefined;
-    } catch (cause) {
-      if (cause === DEFERRED_LIMIT || cause === this.bail || cause instanceof RangeError)
-        return undefined;
-      throw cause;
-    }
-
-    for (const packed of enumerateOrderedAnswers(orderedAnswers)) {
-      this.replayView(packed.value.view, controlArgs, (controlResults) => {
-        const mark = this.trail.length;
-        try {
-          if (!unifyS(this.trail, deferred, packed.value.output)) throw DEFERRED_LIMIT;
-          const resultFields: Slim[] = new Array(this.resultLayout.holes);
-          resultFields[this.plan.hole] = packed.value.output;
-          for (let i = 0; i < this.plan.controlResultHoles.length; i++)
-            resultFields[this.plan.controlResultHoles[i]!] = controlResults[i]!;
-          continuation(this.pack(this.resultLayout.shape, resultFields));
-        } finally {
-          this.undo(mark);
-        }
-      });
-    }
-    return { counter: this.counter };
-  }
-
-  private constant = (atom: Atom): Slim => {
-    let value = this.constants.get(atom);
-    if (value === undefined) {
-      value = slimOfAtom(atom, new Map());
-      this.constants.set(atom, value);
-    }
-    return value;
-  };
-
-  private charge(amount = 1): void {
-    this.work += amount;
-    if (this.work > DEFERRED_MAX_WORK) throw DEFERRED_LIMIT;
-  }
-
-  private storageCells(): number {
-    return this.replayCells + this.replayInterner.nodes + this.trieNodes;
-  }
-
-  private checkStorage(): void {
-    if (this.storageCells() > DEFERRED_MAX_REPLAY_CELLS) throw DEFERRED_LIMIT;
-  }
-
-  private tableFor(fn: string): DeferredTokenTrie<DeferredTableEntry> {
-    let table = this.tables.get(fn);
-    if (table === undefined) {
-      table = new DeferredTokenTrie();
-      this.tables.set(fn, table);
-      this.trieNodes += 1;
-    }
-    return table;
-  }
-
-  private ensure(fn: string, args: readonly Slim[]): DeferredTableEntry {
-    this.charge();
-    const generalized = this.generalize(args);
-    const captured = this.replayInterner.capture(generalized, []);
-    if (this.replayInterner.nodes > DEFERRED_MAX_LEAVES) throw DEFERRED_LIMIT;
-    this.checkStorage();
-    const key = this.replayInterner.key(captured);
-    const table = this.tableFor(fn);
-    const existing = table.get(key);
-    if (existing !== undefined) {
-      if (existing.active) throw DEFERRED_LIMIT;
-      return existing;
-    }
-
-    this.states += 1;
-    if (this.states > DEFERRED_MAX_STATES) throw DEFERRED_LIMIT;
-    this.replayCells += captured.cells;
-    this.checkStorage();
-    const variables: Slim[] = [];
-    const canonicalArgs = captured.args.map((arg) =>
-      this.replayInterner.instantiate(arg, variables),
-    );
-    const entry: DeferredTableEntry = {
-      fn,
-      args: canonicalArgs,
-      answers: [],
-      answersByHash: new Map(),
-      active: true,
-    };
-    this.trieNodes += table.set(key, entry);
-    this.checkStorage();
-    this.evaluate(fn, entry);
-    entry.active = false;
-    return entry;
-  }
-
-  private generalize(args: readonly Slim[]): Slim[] {
-    const rankPositions = this.rankPositions;
-    if (rankPositions === undefined) throw DEFERRED_LIMIT;
-    for (const position of rankPositions)
-      if (naturalInt(args[position]) === undefined) throw DEFERRED_LIMIT;
-    return args.map(derefS);
-  }
-
-  private evaluate(fn: string, entry: DeferredTableEntry): void {
-    const clauses = this.plan.clausesByFn.get(fn);
-    if (clauses === undefined) throw this.bail;
-    for (const clause of clauses) {
-      this.charge();
-      this.counter += 1;
-      if (clause.controlHead.length !== entry.args.length) continue;
-      const frame: (Slim | undefined)[] = new Array(clause.n).fill(undefined);
-      const mark = this.trail.length;
-      try {
-        let matched = true;
-        for (let i = 0; matched && i < entry.args.length; i++)
-          matched = this.unifySkel(clause.controlHead[i]!, frame, entry.args[i]!);
-        if (matched) this.runBody(entry, clause, clause.body, frame);
-      } finally {
-        this.undo(mark);
-      }
-    }
-  }
-
-  private runBody(
-    entry: DeferredTableEntry,
-    clause: DeferredClausePlan,
-    body: DeferredBodyPlan,
-    frame: (Slim | undefined)[],
-  ): void {
-    if (body.tag === "if") {
-      this.runBody(
-        entry,
-        clause,
-        this.guard(body.op, body.x, body.y, frame) ? body.then : body.els,
-        frame,
-      );
-      return;
-    }
-    this.runGoals(entry, clause, body, frame, 0, []);
-  }
-
-  private runGoals(
-    entry: DeferredTableEntry,
-    clause: DeferredClausePlan,
-    body: Extract<DeferredBodyPlan, { readonly tag: "seq" }>,
-    frame: (Slim | undefined)[],
-    index: number,
-    children: readonly DeferredConsumedAnswer[],
-  ): void {
-    if (index === body.goals.length) {
-      this.runTail(entry, clause, body.tail, frame, children);
-      return;
-    }
-    const goal = body.goals[index]!;
-    const args = goal.controlArgs.map((arg) => this.buildSkel(arg, frame, true));
-    this.consume(goal.fn, args, (answer, results) => {
-      const mark = this.trail.length;
-      try {
-        let matched = results.length === goal.controlPattern.length;
-        for (let i = 0; matched && i < results.length; i++)
-          matched = this.unifySkel(goal.controlPattern[i]!, frame, results[i]!);
-        if (matched)
-          this.runGoals(entry, clause, body, frame, index + 1, [
-            ...children,
-            { answer, args, results },
-          ]);
-      } finally {
-        this.undo(mark);
-      }
-    });
-  }
-
-  private runTail(
-    entry: DeferredTableEntry,
-    clause: DeferredClausePlan,
-    tail: DeferredTailPlan,
-    frame: (Slim | undefined)[],
-    children: readonly DeferredConsumedAnswer[],
-  ): void {
-    if (tail.tag === "empty") return;
-    if (tail.tag === "tpl") {
-      const results = tail.controlResults.map((result) => this.buildSkel(result, frame, true));
-      this.addDerivation(entry, results, clause.choice, children, {
-        tag: "template",
-        template: tail.deferred,
-      });
-      return;
-    }
-    const args = tail.controlArgs.map((arg) => this.buildSkel(arg, frame, true));
-    this.consume(tail.fn, args, (child, results) => {
-      const allChildren = [...children, { answer: child, args, results }];
-      this.addDerivation(entry, results, clause.choice, allChildren, {
-        tag: "child",
-        index: tail.deferredChild,
-      });
-    });
-  }
-
-  private consume(
-    fn: string,
-    args: readonly Slim[],
-    continuation: (answer: DeferredControlAnswer, results: readonly Slim[]) => void,
-  ): void {
-    const entry = this.ensure(fn, args);
-    for (const answer of entry.answers) {
-      this.charge();
-      this.replay(answer, args, (results) => continuation(answer, results));
-    }
-  }
-
-  private replay(
-    answer: DeferredControlAnswer,
-    args: readonly Slim[],
-    continuation: (results: readonly Slim[]) => void,
-  ): void {
-    this.replayRow(answer.row, args, continuation);
-  }
-
-  private replayView(
-    view: DeferredAnswerView,
-    args: readonly Slim[],
-    continuation: (results: readonly Slim[]) => void,
-  ): void {
-    this.replayRow(view.row, args, continuation);
-  }
-
-  private replayRow(
-    row: DeferredReplayRow,
-    args: readonly Slim[],
-    continuation: (results: readonly Slim[]) => void,
-  ): void {
-    const mark = this.trail.length;
-    const variables: Slim[] = [];
-    try {
-      let matched = row.args.length === args.length;
-      for (let i = 0; matched && i < args.length; i++)
-        matched = this.replayInterner.unify(row.args[i]!, args[i]!, variables, this.trail);
-      if (matched)
-        continuation(
-          row.results.map((result) => this.replayInterner.instantiate(result, variables)),
-        );
-    } finally {
-      this.undo(mark);
-    }
-  }
-
-  private instantiateRow(
-    row: DeferredReplayRow,
-    continuation: (args: readonly Slim[], results: readonly Slim[]) => void,
-  ): void {
-    const variables: Slim[] = [];
-    continuation(
-      row.args.map((arg) => this.replayInterner.instantiate(arg, variables)),
-      row.results.map((result) => this.replayInterner.instantiate(result, variables)),
-    );
-  }
-
-  private justify(view: DeferredAnswerView): OrderedAnswer<DeferredPackedValue> {
-    if (view.justifying) throw DEFERRED_LIMIT;
-    if (view.ordered !== undefined) return view.ordered;
-    const derivations: OrderedDerivation<DeferredPackedValue>[] = [];
-    const ordered: OrderedAnswer<DeferredPackedValue> = { derivations };
-    view.ordered = ordered;
-    view.derivations = derivations;
-    view.justifying = true;
-    try {
-      this.instantiateRow(view.row, (targetArgs, targetResults) => {
-        for (const recorded of view.answer.derivations) {
-          this.charge();
-          this.replayDerivation(recorded, targetArgs, targetResults, (children) => {
-            this.projectedDerivations += 1;
-            if (this.projectedDerivations > DEFERRED_MAX_DERIVATIONS) throw DEFERRED_LIMIT;
-            const childAnswers = children.map((child) =>
-              this.justify(this.view(child.answer, child.args, child.results)),
-            );
-            derivations.push({
-              choice: recorded.choice,
-              occurrence: recorded.occurrence,
-              children: childAnswers,
-              build: (values) => ({
-                view,
-                output: this.buildRecorded(recorded.build, values),
-              }),
-            });
-          });
-        }
-      });
-    } finally {
-      view.justifying = false;
-    }
-    return ordered;
-  }
-
-  private replayDerivation(
-    derivation: DeferredControlDerivation,
-    targetArgs: readonly Slim[],
-    targetResults: readonly Slim[],
-    continuation: (children: readonly DeferredConsumedAnswer[]) => void,
-  ): void {
-    const mark = this.trail.length;
-    const variables: Slim[] = [];
-    try {
-      const row = derivation.row;
-      let matched = row.args.length === targetArgs.length;
-      for (let i = 0; matched && i < targetArgs.length; i++)
-        matched = this.replayInterner.unify(row.args[i]!, targetArgs[i]!, variables, this.trail);
-      if (derivation.parentResults !== targetResults.length) matched = false;
-      for (let i = 0; matched && i < targetResults.length; i++)
-        matched = this.replayInterner.unify(
-          row.results[i]!,
-          targetResults[i]!,
-          variables,
-          this.trail,
-        );
-      if (!matched) return;
-
-      let cursor = derivation.parentResults;
-      const children: DeferredConsumedAnswer[] = [];
-      for (const child of derivation.children) {
-        const args = row.results
-          .slice(cursor, cursor + child.args)
-          .map((term) => this.replayInterner.instantiate(term, variables));
-        cursor += child.args;
-        const results = row.results
-          .slice(cursor, cursor + child.results)
-          .map((term) => this.replayInterner.instantiate(term, variables));
-        cursor += child.results;
-        children.push({ answer: child.answer, args, results });
-      }
-      if (cursor !== row.results.length) throw DEFERRED_LIMIT;
-      const shared = new Set<Slim>();
-      for (const child of children) {
-        const variablesInChild = new Set<Slim>();
-        const seen = new Set<Slim>();
-        for (const arg of child.args) collectSlimVariables(arg, variablesInChild, seen);
-        for (const result of child.results) collectSlimVariables(result, variablesInChild, seen);
-        for (const variable of variablesInChild) {
-          if (shared.has(variable)) throw DEFERRED_LIMIT;
-          shared.add(variable);
-        }
-      }
-      continuation(children);
-    } finally {
-      this.undo(mark);
-    }
-  }
-
-  private addDerivation(
-    entry: DeferredTableEntry,
-    parentResults: readonly Slim[],
-    choice: number,
-    children: readonly DeferredConsumedAnswer[],
-    build: DeferredBuildPlan,
-  ): void {
-    this.charge();
-    this.derivations += 1;
-    this.edges += 1 + children.length;
-    if (this.derivations > DEFERRED_MAX_DERIVATIONS || this.edges > DEFERRED_MAX_EDGES)
-      throw DEFERRED_LIMIT;
-
-    const flattened: Slim[] = [...parentResults];
-    const recordedChildren: DeferredRecordedChild[] = [];
-    for (const child of children) {
-      flattened.push(...child.args, ...child.results);
-      recordedChildren.push({
-        answer: child.answer,
-        args: child.args.length,
-        results: child.results.length,
-      });
-    }
-    const row = this.replayInterner.capture(entry.args, flattened);
-    if (this.replayInterner.nodes > DEFERRED_MAX_LEAVES) throw DEFERRED_LIMIT;
-    const parentRow: DeferredReplayRow = {
-      args: row.args,
-      results: row.results.slice(0, parentResults.length),
-      cells: entry.args.length + parentResults.length,
-    };
-    const hash = this.replayInterner.hash(parentRow);
-    const bucket = entry.answersByHash.get(hash);
-    let answer = bucket?.find((candidate) => this.replayInterner.equal(candidate.row, parentRow));
-    let extraCells = row.cells;
-    if (answer === undefined) {
-      this.answers += 1;
-      if (this.answers > DEFERRED_MAX_ANSWERS) throw DEFERRED_LIMIT;
-      extraCells += parentResults.length;
-      answer = {
-        hash,
-        owner: entry,
-        row: parentRow,
-        viewsByHash: new Map(),
-        derivations: [],
-      };
-      entry.answers.push(answer);
-      if (bucket === undefined) entry.answersByHash.set(hash, [answer]);
-      else bucket.push(answer);
-    }
-    this.replayCells += extraCells;
-    this.checkStorage();
-    answer.derivations.push({
-      choice,
-      occurrence: this.occurrences++,
-      row,
-      parentResults: parentResults.length,
-      children: recordedChildren,
-      build,
-    });
-  }
-
-  private buildRecorded(build: DeferredBuildPlan, children: readonly DeferredPackedValue[]): Slim {
-    if (build.tag === "template")
-      return this.buildDeferred(
-        build.template,
-        children.map((child) => child.output),
-      );
-    const selected = children[build.index];
-    if (selected === undefined) throw DEFERRED_LIMIT;
-    return selected.output;
-  }
-
-  /** Specialize a generalized table answer to the exact call/result instance consumed by its parent. */
-  private view(
-    answer: DeferredControlAnswer,
-    args: readonly Slim[],
-    results: readonly Slim[],
-  ): DeferredAnswerView {
-    const row = this.replayInterner.capture(args, results);
-    if (this.replayInterner.nodes > DEFERRED_MAX_LEAVES) throw DEFERRED_LIMIT;
-    this.checkStorage();
-    const hash = this.replayInterner.hash(row);
-    const bucket = answer.viewsByHash.get(hash);
-    const existing = bucket?.find((candidate) => this.replayInterner.equal(candidate.row, row));
-    if (existing !== undefined) return existing;
-
-    this.views += 1;
-    if (this.views > DEFERRED_MAX_VIEWS) throw DEFERRED_LIMIT;
-    this.replayCells += row.cells;
-    this.checkStorage();
-    const created: DeferredAnswerView = {
-      hash,
-      answer,
-      row,
-      ordered: undefined,
-      derivations: undefined,
-      justifying: false,
-    };
-    if (bucket === undefined) answer.viewsByHash.set(hash, [created]);
-    else bucket.push(created);
-    return created;
-  }
-
-  private buildDeferred(template: DeferredTemplate, children: readonly Slim[]): Slim {
-    if (template.tag === "const") return template.value;
-    if (template.tag === "child") {
-      const child = children[template.index];
-      if (child === undefined) throw DEFERRED_LIMIT;
-      return child;
-    }
-    return exq(template.items.map((item) => this.buildDeferred(item, children)));
-  }
-
-  private buildSkel(sk: Skel, frame: (Slim | undefined)[], fold: boolean): Slim {
-    if (sk.t === 0) return this.constant(sk.a);
-    if (sk.t === 1) {
-      let value = frame[sk.i];
-      if (value === undefined) {
-        value = mkc();
-        frame[sk.i] = value;
-      }
-      return derefS(value);
-    }
-    if (fold && sk.arith !== undefined) {
-      const left = this.integer(this.buildSkel(sk.items[1]!, frame, true));
-      const right = this.integer(this.buildSkel(sk.items[2]!, frame, true));
-      return intS(
-        sk.arith === "+"
-          ? addInt(left, right)
-          : sk.arith === "-"
-            ? subInt(left, right)
-            : mulInt(left, right),
-      );
-    }
-    return exq(sk.items.map((item) => this.buildSkel(item, frame, fold)));
-  }
-
-  private unifySkel(sk: Skel, frame: (Slim | undefined)[], actual: Slim): boolean {
-    return unifyS(this.trail, this.buildSkel(sk, frame, false), actual);
-  }
-
-  private integer(term: Slim): IntVal {
-    const value = derefS(term);
-    if (value.t !== 2) throw this.bail;
-    return value.n;
-  }
-
-  private guard(op: string, x: Skel, y: Skel, frame: (Slim | undefined)[]): boolean {
-    const compared = cmpIntVal(
-      this.integer(this.buildSkel(x, frame, true)),
-      this.integer(this.buildSkel(y, frame, true)),
-    );
-    if (op === "<") return compared < 0;
-    if (op === "<=") return compared <= 0;
-    if (op === ">") return compared > 0;
-    if (op === ">=") return compared >= 0;
-    if (op === "==") return compared === 0;
-    throw this.bail;
-  }
-
-  private pack(shape: ResultShape, fields: readonly Slim[]): Slim {
-    if (shape.tag === "hole") {
-      const field = fields[shape.id];
-      if (field === undefined) throw DEFERRED_LIMIT;
-      return field;
-    }
-    if (shape.tag === "const") return this.constant(shape.atom);
-    return exq(shape.items.map((item) => this.pack(item, fields)));
-  }
-
-  private undo(mark: number): void {
-    while (this.trail.length > mark) this.trail.pop()!.b = undefined;
-  }
 }
 
 /** Emit the guard/arithmetic operand as a raw IntVal expression (bails on a non-integer): nested
@@ -2474,6 +1657,7 @@ const CMP_JS: Record<string, string> = {
   ">": "> 0",
   ">=": ">= 0",
   "==": "=== 0",
+  "!=": "!== 0",
 };
 
 function emitCall(
@@ -2747,6 +1931,232 @@ function emitFn(
   return lines.join("\n");
 }
 
+function emitDeferredTemplate(ctx: EmitCtx, template: DeferredTemplate): string {
+  if (template.tag === "const") return deferredConstRef(ctx, template.value);
+  if (template.tag === "child") return `w${template.index}`;
+  return `exq([${template.items.map((item) => emitDeferredTemplate(ctx, item)).join(", ")}])`;
+}
+
+function emitDeferredCall(
+  ctx: EmitCtx,
+  fnIdOf: ReadonlyMap<string, number>,
+  fn: string,
+  args: readonly Skel[],
+  continuation: string,
+): string {
+  const id = fnIdOf.get(fn);
+  if (id === undefined) throw new Error("deferred call target missing");
+  const built = args.map((arg) => emitBuild(ctx, arg, true)).join(", ");
+  return `d${id}(${built}${built.length > 0 ? ", " : ""}${continuation});`;
+}
+
+function emitDeferredBody(
+  ctx: EmitCtx,
+  fnIdOf: ReadonlyMap<string, number>,
+  body: DeferredBodyPlan,
+  continuation: string,
+  controlResults: number,
+  emittedControlFields: readonly number[],
+  controlProjectionRefs: readonly (string | undefined)[],
+  introduced: ReadonlySet<number>,
+): string {
+  if (body.tag === "if") {
+    const cmp = CMP_JS[body.op];
+    if (cmp === undefined) return "throw BAIL;";
+    const branchIntroduced = new Set(introduced);
+    collectSlots(body.x, branchIntroduced);
+    collectSlots(body.y, branchIntroduced);
+    return (
+      `if (cmpI(${emitIntOperand(ctx, body.x)}, ${emitIntOperand(ctx, body.y)}) ${cmp}) {\n` +
+      emitDeferredBody(
+        ctx,
+        fnIdOf,
+        body.then,
+        continuation,
+        controlResults,
+        emittedControlFields,
+        controlProjectionRefs,
+        new Set(branchIntroduced),
+      ) +
+      `\n} else {\n` +
+      emitDeferredBody(
+        ctx,
+        fnIdOf,
+        body.els,
+        continuation,
+        controlResults,
+        emittedControlFields,
+        controlProjectionRefs,
+        new Set(branchIntroduced),
+      ) +
+      `\n}`
+    );
+  }
+
+  const seen = new Set(introduced);
+  const patternSites: Set<number>[] = [];
+  const introducedByPattern: number[][] = [];
+  for (const goal of body.goals) {
+    if (goal.controlPattern.length !== controlResults)
+      throw new Error("deferred result arity mismatch");
+    collectManySlots(goal.controlArgs, seen);
+    patternSites.push(new Set(seen));
+    const patternSlots = new Set<number>();
+    collectManySlots(goal.controlPattern, patternSlots);
+    introducedByPattern.push([...patternSlots].filter((slot) => !seen.has(slot)));
+    for (const slot of patternSlots) seen.add(slot);
+  }
+
+  let inner: string;
+  if (body.tail.tag === "empty") inner = "";
+  else if (body.tail.tag === "call")
+    inner = emitDeferredCall(ctx, fnIdOf, body.tail.fn, body.tail.controlArgs, continuation);
+  else {
+    const tail = body.tail;
+    if (tail.controlResults.length !== controlResults)
+      throw new Error("deferred tail result arity mismatch");
+    const results = emittedControlFields.map(
+      (index) => controlProjectionRefs[index] ?? emitBuild(ctx, tail.controlResults[index]!, true),
+    );
+    results.push(emitDeferredTemplate(ctx, tail.deferred));
+    inner = `${continuation}(${results.join(", ")});`;
+  }
+
+  for (let index = body.goals.length - 1; index >= 0; index--) {
+    const goal = body.goals[index]!;
+    if (goal.projectedControlValues.length !== controlResults)
+      throw new Error("deferred projected result arity mismatch");
+    const resultRefs = Array.from({ length: controlResults }, (_, field) => {
+      if (emittedControlFields.includes(field)) return `r${index}_${field}`;
+      const projected = goal.projectedControlValues[field];
+      if (projected === undefined) throw new Error("deferred projected result missing");
+      return emitBuild(ctx, projected, true);
+    });
+    const emittedRefs = emittedControlFields.map((field) => resultRefs[field]!);
+    const witness = `w${index}`;
+    const conditions = goal.controlPattern.flatMap((pattern, field) =>
+      goal.redundantControlResults.has(field)
+        ? []
+        : [emitUnify(ctx, pattern, resultRefs[field]!, patternSites[index]!)],
+    );
+    const reset = introducedByPattern[index]!.map((slot) => `v${slot} = undefined;`).join("\n");
+    inner = emitDeferredCall(
+      ctx,
+      fnIdOf,
+      goal.fn,
+      goal.controlArgs,
+      `(${[...emittedRefs, witness].join(", ")}) => {\n` +
+        `const mg${index} = trail.length;\n` +
+        `if (${conditions.length > 0 ? conditions.join(" && ") : "true"}) {\n${inner}\n}\n` +
+        `while (trail.length > mg${index}) trail.pop().b = undefined;\n` +
+        `${reset}${reset.length > 0 ? "\n" : ""}` +
+        `}`,
+    );
+  }
+  return inner;
+}
+
+function emitDeferredFn(
+  ctx: EmitCtx,
+  fnIdOf: ReadonlyMap<string, number>,
+  fn: string,
+  fnId: number,
+  clauses: readonly DeferredClausePlan[],
+  inputLayout: InputLayout,
+  deferredInputHole: number,
+  controlResultHoles: readonly number[],
+  emittedResultHoles: readonly number[],
+  resultProjections: ReadonlyMap<string, readonly (InputProjection | undefined)[]>,
+): string {
+  const controlResults = controlResultHoles.length;
+  const emittedControlFields = emittedResultHoles.map((resultHole) => {
+    const field = controlResultHoles.indexOf(resultHole);
+    if (field < 0) throw new Error("deferred emitted result is not a control result");
+    return field;
+  });
+  const controlRefs = Array.from({ length: inputLayout.holes - 1 }, (_, index) => `p${index}`);
+  const refsByInputHole: string[] = [];
+  let control = 0;
+  for (let hole = 0; hole < inputLayout.holes; hole++)
+    refsByInputHole.push(hole === deferredInputHole ? "undefined" : controlRefs[control++]!);
+  const projections = resultProjections.get(fn);
+  const controlProjectionRefs = controlResultHoles.map((resultHole) => {
+    const projection = projections?.[resultHole];
+    if (projection === undefined) return undefined;
+    const mapped = inputAliasRef(inputLayout, projection);
+    if (mapped === undefined || mapped.hole === deferredInputHole) return undefined;
+    return emitLhsAlias(inputLayout, refsByInputHole, projection);
+  });
+  const guardArgs = inputLayout.shapes.map((shape) => {
+    if (shape.tag === "hole") return refsByInputHole[shape.id]!;
+    if (shape.tag === "const" && shape.atom.kind === "gnd" && shape.atom.value.g === "int")
+      return constRef(ctx, shape.atom);
+    return "undefined";
+  });
+  const emittedResults = [
+    ...Array.from({ length: emittedControlFields.length }, (_, index) => `q${index}`),
+    "w",
+  ];
+  const clauseSources: string[] = [];
+  const lines = [
+    `function d${fnId}(${controlRefs.join(", ")}${controlRefs.length > 0 ? ", " : ""}k) {`,
+    `const dispatch = ++ST.d;`,
+    `if (ST.hardCap !== undefined && dispatch > ST.hardCap) throw ST.limit;`,
+    `const guarded = dispatch > ST.cap;`,
+    `const guardFrame = guarded ? guard(ST, ${fnId}, [${guardArgs.join(", ")}]) : undefined;`,
+    `if (guarded && guardFrame === undefined) throw BAIL;`,
+    `const emit = guarded ? (${emittedResults.join(", ")}) => { ` +
+      `ST.active.pop(); k(${emittedResults.join(", ")}); ST.active.push(guardFrame); } : k;`,
+  ];
+  for (const clause of clauses) {
+    if (clause.controlHead.length !== controlRefs.length) {
+      lines.push(`ST.c += 1;`);
+      continue;
+    }
+    const slots = Array.from({ length: clause.n }, (_, index) => `v${index}`);
+    ctx.tmp = 0;
+    const firstSites = new Set<number>();
+    const headConditions = clause.controlHead.map((head, index) =>
+      emitUnify(ctx, head, controlRefs[index]!, firstSites),
+    );
+    const introduced = new Set<number>();
+    collectManySlots(clause.controlHead, introduced);
+    const body = emitDeferredBody(
+      ctx,
+      fnIdOf,
+      clause.body,
+      "emit",
+      controlResults,
+      emittedControlFields,
+      controlProjectionRefs,
+      introduced,
+    );
+    const temps = Array.from({ length: ctx.tmp }, (_, index) => `x${index}`);
+    const clauseName = `dc${fnId}_${clause.choice}`;
+    const attemptLines = [`ST.c += 1;`, `{`];
+    if (slots.length > 0) attemptLines.push(`let ${slots.join(", ")};`);
+    if (temps.length > 0) attemptLines.push(`let ${temps.join(", ")};`);
+    attemptLines.push(`const m = trail.length;`);
+    attemptLines.push(`if (${headConditions.length > 0 ? headConditions.join(" && ") : "true"}) {`);
+    attemptLines.push(body);
+    attemptLines.push(`}`);
+    attemptLines.push(`while (trail.length > m) trail.pop().b = undefined;`);
+    attemptLines.push(`}`);
+    const attempt = attemptLines.join("\n");
+    // Keep small recurrence clauses inline. Isolating larger matchers prevents one oversized V8
+    // optimization unit while preserving the source-ordered dispatcher.
+    if (slots.length + temps.length >= 12 || attempt.length >= 2_000) {
+      clauseSources.push(
+        `function ${clauseName}(${[...controlRefs, "emit"].join(", ")}) {\n${attempt}\n}`,
+      );
+      lines.push(`${clauseName}(${[...controlRefs, "emit"].join(", ")});`);
+    } else lines.push(attempt);
+  }
+  lines.push(`if (guarded) ST.active.pop();`);
+  lines.push(`}`);
+  return [...clauseSources, lines.join("\n")].join("\n");
+}
+
 // ---------- group compilation and the per-run wrapper ----------
 
 export interface JitGroup {
@@ -2757,8 +2167,8 @@ export interface JitGroup {
     k: (r: Slim) => void,
     st: JitSearchState,
   ) => void;
-  /** Evaluate a statically independent output field through a bounded ordered derivation circuit. False
-   *  means admission or a pre-emission resource bound failed, so the direct JIT remains the oracle. */
+  /** Evaluate a proven independent output field after recursive control succeeds. False means the
+   *  generated specialization does not admit this call, so the direct JIT remains the oracle. */
   readonly tryDeferred?: (
     fn: string,
     args: readonly Slim[],
@@ -2791,7 +2201,13 @@ export function compileJitGroup(
 ): JitGroup | undefined {
   const fnIdOf = new Map<string, number>();
   for (const fn of skelsByFn.keys()) fnIdOf.set(fn, fnIdOf.size);
-  const ctx: EmitCtx = { consts: [], constIdx: new Map(), tmp: 0, frontier: enableFrontier };
+  const ctx: EmitCtx = {
+    consts: [],
+    constIdx: new Map(),
+    deferredConsts: [],
+    tmp: 0,
+    frontier: enableFrontier,
+  };
   const resultLayout = commonResultLayout(skelsByFn);
   const resultProjections = proveResultProjections(skelsByFn, resultLayout);
   const inputLayouts = new Map<string, InputLayout>();
@@ -2807,6 +2223,7 @@ export function compileJitGroup(
     resultProjections,
   );
   const fnSrcs: string[] = [];
+  const deferredSrcs: string[] = [];
   try {
     for (const [fn, clauses] of skelsByFn) {
       const arity = arityByFn.get(fn)!;
@@ -2825,11 +2242,35 @@ export function compileJitGroup(
         ),
       );
     }
+    if (deferredPlan !== undefined) {
+      for (const [fn, clauses] of deferredPlan.clausesByFn) {
+        const id = fnIdOf.get(fn);
+        const layout = inputLayouts.get(fn);
+        const deferredInputHole = deferredPlan.inputHoleByFn.get(fn);
+        if (id === undefined || layout === undefined || deferredInputHole === undefined)
+          return undefined;
+        deferredSrcs.push(
+          emitDeferredFn(
+            ctx,
+            fnIdOf,
+            fn,
+            id,
+            clauses,
+            layout,
+            deferredInputHole,
+            deferredPlan.controlResultHoles,
+            deferredPlan.emittedResultHoles,
+            resultProjections,
+          ),
+        );
+      }
+    }
   } catch {
     return undefined;
   }
   const dispatch: string[] = [];
   const rawDispatch: string[] = [];
+  const deferredDispatch: string[] = [];
   for (const [fn, id] of fnIdOf) {
     const entryName = inputLayouts.get(fn)!.factorized
       ? `f${id}`
@@ -2837,6 +2278,36 @@ export function compileJitGroup(
         ? `c${id}`
         : `f${id}`;
     rawDispatch.push(`${JSON.stringify(`$raw:${fn}`)}: ${entryName}`);
+    if (deferredPlan !== undefined && resultLayout !== undefined) {
+      const layout = inputLayouts.get(fn)!;
+      const deferredInputHole = deferredPlan.inputHoleByFn.get(fn)!;
+      const controlArgs = Array.from({ length: layout.holes - 1 }, (_, index) => `p${index}`);
+      const refsByInputHole: string[] = [];
+      let control = 0;
+      for (let hole = 0; hole < layout.holes; hole++)
+        refsByInputHole.push(hole === deferredInputHole ? "undefined" : controlArgs[control++]!);
+      const emittedResults = deferredPlan.emittedResultHoles.map((_, index) => `q${index}`);
+      const fields: string[] = new Array(resultLayout.holes);
+      fields[deferredPlan.hole] = "w";
+      for (const resultHole of deferredPlan.controlResultHoles) {
+        const emitted = deferredPlan.emittedResultHoles.indexOf(resultHole);
+        if (emitted >= 0) {
+          fields[resultHole] = emittedResults[emitted]!;
+          continue;
+        }
+        const projection = resultProjections.get(fn)?.[resultHole];
+        const projected =
+          projection === undefined ? undefined : emitLhsAlias(layout, refsByInputHole, projection);
+        if (projected === undefined) return undefined;
+        fields[resultHole] = projected;
+      }
+      const packed = emitPackedResult(ctx, resultLayout.shape, fields);
+      deferredDispatch.push(
+        `${JSON.stringify(`$deferred:${fn}`)}: (${[...controlArgs, "k"].join(", ")}) => ` +
+          `d${id}(${controlArgs.join(", ")}${controlArgs.length > 0 ? ", " : ""}` +
+          `(${[...emittedResults, "w"].join(", ")}) => k(${packed}, w))`,
+      );
+    }
     if (resultLayout === undefined) {
       dispatch.push(`${JSON.stringify(fn)}: ${entryName}`);
       continue;
@@ -2856,11 +2327,19 @@ export function compileJitGroup(
   // shared by all runs. Runs never interleave (the generated code calls only within its own group and a
   // bail unwinds the whole run), so the slots cannot be observed stale.
   const src =
-    `"use strict";\n` +
-    `const { K, BAIL, mkc, deref, unify, bindS, exq, int, gci, addI, subI, mulI, cmpI, guard, accepts, probe } = R;\n` +
-    `let trail = null, ST = null;\n` +
-    fnSrcs.join("\n") +
-    `\nreturn { $run(t, s) { trail = t; ST = s; }, ${rawDispatch.join(", ")}, ${dispatch.join(", ")} };`;
+    deferredPlan === undefined
+      ? `"use strict";\n` +
+        `const { K, BAIL, mkc, deref, unify, bindS, exq, int, gci, addI, subI, mulI, cmpI, guard, accepts, probe } = R;\n` +
+        `let trail = null, ST = null;\n` +
+        fnSrcs.join("\n") +
+        `\nreturn { $run(t, s) { trail = t; ST = s; }, ${rawDispatch.join(", ")}, ${dispatch.join(", ")} };`
+      : `"use strict";\n` +
+        `const { K, D, BAIL, mkc, deref, unify, bindS, exq, int, gci, addI, subI, mulI, cmpI, guard, accepts, probe } = R;\n` +
+        `let trail = null, ST = null;\n` +
+        fnSrcs.join("\n") +
+        `\n` +
+        deferredSrcs.join("\n") +
+        `\nreturn { $run(t, s) { trail = t; ST = s; }, ${rawDispatch.join(", ")}, ${deferredDispatch.join(", ")}, ${dispatch.join(", ")} };`;
   // Hoisted constants convert once (they are ground, so the cell map is never consulted).
   const noCells = new Map<string, Slim>();
   const K = ctx.consts.map((a) => slimOfAtom(a, noCells));
@@ -2889,6 +2368,7 @@ export function compileJitGroup(
       trail: Slim[],
     ) => state.frontier?.replay(fn, args, continuation, trail) === true,
   };
+  if (deferredPlan !== undefined) Object.assign(R, { D: ctx.deferredConsts });
   let mod: Record<string, (...xs: unknown[]) => void>;
   try {
     const factory = new Function("R", src) as (
@@ -3007,10 +2487,48 @@ export function compileJitGroup(
     st: JitSearchState,
   ): boolean => {
     if (deferredPlan === undefined || resultLayout === undefined) return false;
-    const evaluator = new DeferredEvaluator(deferredPlan, inputLayouts, resultLayout, bail, st.c);
-    const completed = evaluator.tryRun(fn, args, continuation);
-    if (completed === undefined) return false;
-    st.c = completed.counter;
+    const layout = inputLayouts.get(fn);
+    const deferredInputHole = deferredPlan.inputHoleByFn.get(fn);
+    const f = mod[`$deferred:${fn}`];
+    if (layout === undefined || deferredInputHole === undefined || f === undefined) return false;
+    const fields: Slim[] = [];
+    const noCells = new Map<string, Slim>();
+    if (
+      args.length !== layout.shapes.length ||
+      !args.every((arg, index) =>
+        extractSlimFields(layout.shapes[index]!, arg, fields, (atom) => slimOfAtom(atom, noCells)),
+      ) ||
+      fields.length !== layout.holes ||
+      fields.some((field) => field === undefined)
+    )
+      return false;
+    const deferred = derefS(fields[deferredInputHole]!);
+    if (deferred.t !== 0 || deferred.b !== undefined) return false;
+    const controlArgs = fields.filter((_, index) => index !== deferredInputHole);
+    if (controlArgs.some((arg) => slimContains(arg, deferred))) return false;
+    const rankPositions = controlArgs
+      .map((arg, index) => (naturalInt(arg) === undefined ? -1 : index))
+      .filter((index) => index >= 0);
+    if (rankPositions.length === 0) return false;
+    for (const clauses of deferredPlan.clausesByFn.values())
+      if (
+        clauses.some((clause) =>
+          rankPositions.some((position) => position >= clause.controlHead.length),
+        )
+      )
+        return false;
+
+    const trail: Slim[] = [];
+    mod["$run"]!(trail, st);
+    f(...controlArgs, (result: Slim, witness: Slim) => {
+      const mark = trail.length;
+      try {
+        if (!unifyS(trail, deferred, witness)) throw bail;
+        continuation(result);
+      } finally {
+        while (trail.length > mark) trail.pop()!.b = undefined;
+      }
+    });
     return true;
   };
 

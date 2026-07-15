@@ -4,7 +4,7 @@
 
 // Node coloring that mimics the MeTTa syntax highlighting on the docs site (metta-highlight.ts, the GitHub
 // dark theme): variables orange, numbers blue, strings light blue, the control/operator symbols
-// (= : -> ! ==) red, space-refs orange, @-atoms purple, and headless expressions (parens) green. Every
+// (= : -> ! == !=) red, space-refs orange, @-atoms purple, and headless expressions (parens) green. Every
 // other symbol is the neutral default. Coloring the fill this way keeps a graph and its source consistent.
 
 import type { GraphNode } from "./model";
@@ -32,6 +32,7 @@ const GLYPHS: Record<string, string> = {
   "%": "mod",
   ">=": "≥", // ≥
   "<=": "≤", // ≤
+  "!=": "≠", // ≠
   "->": "→", // →
   "=": "≡", // ≡
   and: "∧", // ∧
@@ -60,6 +61,7 @@ const OPERATORS = new Set([
   ":",
   "->",
   "==",
+  "!=",
   "!",
   "+",
   "-",

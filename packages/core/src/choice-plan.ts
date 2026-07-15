@@ -163,18 +163,19 @@ function compileEquality(
   args: readonly Atom[],
   scope: ReadonlyMap<string, number>,
   state: CompileState,
+  expectEqual: boolean,
 ): ChoiceNode | undefined {
   const nodes = compileBinaryChoices(args, scope, state);
   if (nodes === undefined) return undefined;
   const [left, right] = nodes;
   if (left.one !== undefined && right.one !== undefined) {
-    const bool: BoolNode = (frame) => atomEq(left.one!(frame), right.one!(frame));
+    const bool: BoolNode = (frame) => atomEq(left.one!(frame), right.one!(frame)) === expectEqual;
     return oneChoice((frame) => gbool(bool(frame)), undefined, bool);
   }
   return {
     run(frame, emit) {
       left.run(frame, (leftAtom) =>
-        right.run(frame, (rightAtom) => emit(gbool(atomEq(leftAtom, rightAtom)))),
+        right.run(frame, (rightAtom) => emit(gbool(atomEq(leftAtom, rightAtom) === expectEqual))),
       );
     },
   };
@@ -329,7 +330,9 @@ function compileChoice(
     case ">=":
       return compileComparison(args, scope, state, (comparison) => comparison >= 0);
     case "==":
-      return compileEquality(args, scope, state);
+      return compileEquality(args, scope, state, true);
+    case "!=":
+      return compileEquality(args, scope, state, false);
     case "if":
       return compileIf(args, scope, state);
     case "superpose":

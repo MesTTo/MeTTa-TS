@@ -235,6 +235,14 @@ function compileNode(
       callSelf,
       (left, right) => cmpIntVal(intValue(left), intValue(right)) === 0,
     );
+  if (op === "!=")
+    return compileBinaryValue(
+      args,
+      scope,
+      target,
+      callSelf,
+      (left, right) => cmpIntVal(intValue(left), intValue(right)) !== 0,
+    );
   if (op === "if") return compileIf(args, scope, target, callSelf);
   return undefined;
 }

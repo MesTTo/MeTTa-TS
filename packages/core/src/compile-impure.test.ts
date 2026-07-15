@@ -38,6 +38,18 @@ describe("compiled impure body (matespace VM de-risk)", () => {
     expect(run(g, true)).toEqual(run(g, false));
   });
 
+  it("compiles != in an impure recursive guard", () => {
+    const src = `
+      (= (g-neq $n)
+         (if (!= $n 0)
+             (let $x (add-atom &self (item-neq $n)) (g-neq (- $n 1)))
+             done))
+      !(g-neq 4)
+      !(collapse (match &self (item-neq $k) $k))`;
+    expect(compiledEnvWith(src).compiled!.get("g-neq")?.kind).toBe("imperative");
+    expect(run(src, true)).toEqual(run(src, false));
+  });
+
   // A longer completing run: every looped application must advance the fresh-variable counter in lockstep
   // with the interpreter, and the 50 add-atoms must accumulate in the same order, across 50 iterations.
   const g50 = `

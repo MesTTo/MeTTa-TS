@@ -12,6 +12,10 @@ describe("completions", () => {
     expect(out).toContain("car-atom");
   });
 
+  it("surfaces != as a standard comparison", () => {
+    expect(completionsFor("!=", new MeTTa())).toContain("!=");
+  });
+
   it("surfaces user-defined function names from the space", () => {
     const metta = new MeTTa();
     metta.run("(= (double $x) (* $x 2))");

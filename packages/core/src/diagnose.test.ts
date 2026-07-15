@@ -26,6 +26,14 @@ describe("analyzeSource — arity", () => {
     expect(analyzeSource("!(car-atom (a b))", cfg)).toEqual([]);
   });
 
+  it("reads != arity from the shared core environment", () => {
+    expect(analyzeSource("!(!= 1 2)", { undefinedSymbols: true })).toEqual([]);
+    const diags = analyzeSource("!(!= 1)", cfg);
+    expect(diags).toHaveLength(1);
+    expect(diags[0]!.code).toBe("arity-mismatch");
+    expect(diags[0]!.message).toBe("!= expects 2 arguments, got 1");
+  });
+
   it("does not flag an op that has no declared signature", () => {
     // `foo` is unknown; with undefinedSymbols off, nothing is reported
     expect(analyzeSource("!(foo 1 2 3)", cfg)).toEqual([]);

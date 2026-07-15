@@ -168,18 +168,20 @@ The speedup is not "table everything." `fib` gets bounded table reuse because it
 
 `pnpm bench:nondeterminism` runs six reported query shapes through PeTTa and MeTTa TS as subprocesses, then validates the actual results or embedded assertions. The BFC inputs extract the exact `obc` definitions and `jarr` and `loowoz` queries from [`trueagi-io/chaining@bc9beb2`](https://github.com/trueagi-io/chaining/blob/bc9beb2672953e07971b3abecc1fe67651ecddc4/experimental/backward-via-forward/bfc-xp.metta). The validator compares every ordered proof, not only its count.
 
-These are 15-run medians from 2026-07-15 on an AMD Ryzen 9 9950X with Node 22.22.1 and pnpm 11.2.2. PeTTa was the clean `6b7f52f` checkout running on SWI-Prolog 9.3.33. Times include process startup. Memory is the highest sampled process-tree RSS across the 15 runs on Linux.
+These are 15-run medians from 2026-07-15 on an AMD Ryzen 9 9950X with Node 22.22.1 and pnpm 11.2.2. PeTTa was the clean `6f5639a` checkout running on SWI-Prolog 9.2.9. Times include process startup. Memory is the highest sampled process-tree RSS across the 15 runs on Linux.
 
 | program                          | PeTTa ms | PeTTa MiB | MeTTa TS ms | MeTTa TS MiB | speedup |
 | -------------------------------- | -------: | --------: | ----------: | -----------: | ------: |
-| BFC `jarr`                       |    134.6 |      16.4 |       125.6 |         86.5 |   1.07x |
-| BFC `loowoz`                     |   2441.2 |      16.4 |       872.8 |        108.9 |   2.80x |
-| filtered `matespacefast` matches |   6157.9 |    3334.5 |      3568.3 |        424.0 |   1.73x |
-| 22^4 `superpose` cross product   |    357.5 |      87.9 |       147.7 |        148.8 |   2.42x |
-| nondeterministic tabled `fib(7)` |    127.8 |      16.4 |        94.1 |         79.8 |   1.36x |
-| duplicate-heavy `TupleConcat`    |    126.0 |      16.3 |        96.3 |         79.4 |   1.31x |
+| BFC `jarr`                       |    136.5 |      16.4 |       113.6 |         91.4 |   1.20x |
+| BFC `loowoz`                     |   2466.3 |      16.4 |       743.6 |        100.0 |   3.32x |
+| filtered `matespacefast` matches |   6140.3 |    3331.0 |      3380.2 |        424.6 |   1.82x |
+| 22^4 `superpose` cross product   |    354.5 |      87.9 |       150.3 |        146.8 |   2.36x |
+| nondeterministic tabled `fib(7)` |    128.6 |      16.3 |        98.5 |         79.9 |   1.31x |
+| duplicate-heavy `TupleConcat`    |    127.6 |      16.3 |        98.0 |         78.6 |   1.30x |
 
-MeTTa TS uses its normal CLI evaluator for all six. No benchmark mode or evaluator flag is selected. Static analysis sends recursive joins that consume a clause-local field from an earlier answer, such as BFC, to the nondeterministic compiler before moded answer tabling. Independent overlapping calls such as relational Fibonacci remain table-first. For BFC, generated continuations pass only the changing fields of the common `MkSized` result and rebuild the complete atom at the public evaluator boundary. Unsupported groups continue through the bounded table space or interpreter.
+MeTTa TS uses its normal CLI evaluator for all six. No benchmark mode or evaluator flag is selected. Static analysis sends recursive joins that consume a clause-local field from an earlier answer, such as BFC, to the nondeterministic compiler before moded answer tabling. Independent overlapping calls such as relational Fibonacci remain table-first. For BFC, the compiler proves that the proof output is independent of control, constructs it only after child searches succeed, and recovers the theorem field from the input projection instead of passing it through each continuation. Unsupported calls use the ordinary compiled search. Groups with no deferred plan retain the 1.1.5 generated module shape and continue through the bounded table space or interpreter.
+
+An alternating same-host comparison against the untouched 1.1.5 build checked byte-identical output on every pair. `jarr` improved from 127.9 ms to 111.9 ms over 51 cold pairs and from 3.32 ms to 2.97 ms over 401 loaded pairs. `loowoz` improved from 892.0 ms to 754.8 ms cold and from 922.3 ms to 705.3 ms loaded. A 101-cold and 401-loaded comparison of the 234,256-result cross product measured 1.001x in both cases, within timer noise. The other ineligible workloads were neutral or faster in repeated paired runs.
 
 Generated unification also applies SWI-Prolog's write-mode principle. If every slot below a structured write is first introduced at that site, the new structure cannot contain the target cell. The JIT binds it directly and trails the root. If any slot comes from an input, an earlier head position, a call argument, or an earlier result pattern, the ordinary occurs-checking bind remains. A cyclic `source($x) -> $x` regression with the consumer pattern `Wrap($x)` verifies that boundary.
 

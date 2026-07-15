@@ -21,9 +21,10 @@
 !(test (get-type >) (-> Number Number Bool))
 !(test (get-type >=) (-> Number Number Bool))
 
-;; Type of the equality operator. In Hyperon `==` is (-> $t $t Bool) (the two operands share one type
-;; variable, unlike PeTTa's (-> $a $b Bool)). There is no `!=` grounded op in Hyperon, so that line is dropped.
+;; Equality and inequality share Hyperon's same-type contract. `!=` is a MeTTa-TS extension whose
+;; result is the Boolean complement of `==`.
 !(test (get-type ==) (-> $t $t Bool))
+!(test (get-type !=) (-> $t $t Bool))
 
 ;; Test type definitions of common mathematical functions
 !(test (get-type pow-math) (-> Number Number Number))
