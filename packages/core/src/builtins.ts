@@ -350,6 +350,16 @@ const eqAtom: GroundFn = (args) => {
   return ok(gbool(atomEq(a, b)));
 };
 
+// `!=`: error operands pass through; otherwise structural non-equality as a Bool.
+const neqAtom: GroundFn = (args) => {
+  if (args.length !== 2) return ierr("expected exactly two arguments");
+  const a = args[0]!;
+  const b = args[1]!;
+  if (isErrorAtom(a)) return ok(a);
+  if (isErrorAtom(b)) return ok(b);
+  return ok(gbool(!atomEq(a, b)));
+};
+
 // --- list surgery ---
 const consAtom: GroundFn = (args) => {
   if (args.length !== 2) return ierr("expected head and tail");
@@ -474,6 +484,7 @@ const coreEntries: Array<[string, GroundFn]> = [
   [">", numCmp((c) => c > 0)],
   [">=", numCmp((c) => c >= 0)],
   ["==", eqAtom],
+  ["!=", neqAtom],
   ["and", boolBin((a, b) => a && b)],
   ["or", boolBin((a, b) => a || b)],
   ["cons-atom", consAtom],
