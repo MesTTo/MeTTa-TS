@@ -10,6 +10,7 @@ export const RUNTIME_ID_KINDS = [
   "state",
   "scope",
   "space",
+  "packet",
   "effect",
   "suspension",
 ] as const;
@@ -28,6 +29,7 @@ export type BranchId = RuntimeId<"branch">;
 export type StateId = RuntimeId<"state">;
 export type ScopeId = RuntimeId<"scope">;
 export type SpaceId = RuntimeId<"space">;
+export type PacketId = RuntimeId<"packet">;
 export type EffectId = RuntimeId<"effect">;
 export type SuspensionId = RuntimeId<"suspension">;
 

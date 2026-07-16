@@ -21,7 +21,7 @@ import {
   makeValRel,
   relations,
 } from "./bindings";
-import { mapExpressionChildren } from "./map-expression";
+import { mapAtomVariables, mapExpressionChildren } from "./map-expression";
 import { parseRuntimeId } from "./trace";
 
 /** A logic variable as seen by a binding frame. Its display name is never its scoped identity. */
@@ -443,6 +443,28 @@ export class BindingFrame {
     const builder = new BindingFrameBuilder(this);
     for (const bindingClass of other.classes()) {
       const fault = builder.replayClass(bindingClass);
+      if (fault !== undefined) return { ok: false, fault };
+    }
+    return { ok: true, value: builder.finish() };
+  }
+
+  /** Rename variable identities while preserving complete equivalence classes and checked values. */
+  mapVariables(mapVariable: (variable: VarAtom) => VarAtom): BindingFrameResult {
+    const builder = new BindingFrameBuilder(new BindingFrame());
+    const memo = new Map<ExprAtom, Atom>();
+    for (const bindingClass of this.classes()) {
+      const members = bindingClass.members.map((member) =>
+        frameVariable(mapVariable(frameVariableAtom(member))),
+      );
+      const value =
+        bindingClass.value === undefined
+          ? undefined
+          : mapAtomVariables(bindingClass.value, mapVariable, memo);
+      const fault = builder.replayClass({
+        representative: members[0]!,
+        members,
+        ...(value === undefined ? {} : { value }),
+      });
       if (fault !== undefined) return { ok: false, fault };
     }
     return { ok: true, value: builder.finish() };

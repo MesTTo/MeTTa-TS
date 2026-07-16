@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { type Atom, type ExprAtom, expr } from "./atom";
+import { type Atom, type ExprAtom, type VarAtom, expr } from "./atom";
 
 /** Rebuild an expression only when `mapChild` changes at least one child. */
 export function mapExpressionChildren(
@@ -25,4 +25,16 @@ export function mapExpressionChildren(
   const result = items === undefined ? atom : expr(items);
   memo.set(atom, result);
   return result;
+}
+
+/** Map every variable in an atom while preserving ground subterms and unchanged expression nodes. */
+export function mapAtomVariables(
+  atom: Atom,
+  mapVariable: (variable: VarAtom) => VarAtom,
+  memo: Map<ExprAtom, Atom> = new Map(),
+): Atom {
+  if (atom.ground) return atom;
+  if (atom.kind === "var") return mapVariable(atom);
+  if (atom.kind !== "expr") return atom;
+  return mapExpressionChildren(atom, memo, (item) => mapAtomVariables(item, mapVariable, memo));
 }

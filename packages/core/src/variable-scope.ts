@@ -11,7 +11,7 @@ import {
   variableIdentity,
   variableKey,
 } from "./atom";
-import { mapExpressionChildren } from "./map-expression";
+import { mapAtomVariables } from "./map-expression";
 import { RuntimeIdAllocator, type ScopeId } from "./trace";
 
 /** Allocates the repeated source names in one expression to stable local slots. */
@@ -52,25 +52,6 @@ export class VariableScopeAllocator {
   fork(lane: string): VariableScopeAllocator {
     return new VariableScopeAllocator(this.ids.fork(lane));
   }
-}
-
-function mapExpression(
-  atom: ExprAtom,
-  mapVariable: (variable: VarAtom) => VarAtom,
-  memo: Map<ExprAtom, Atom>,
-): Atom {
-  return mapExpressionChildren(atom, memo, (item) => mapAtomVariables(item, mapVariable, memo));
-}
-
-function mapAtomVariables(
-  atom: Atom,
-  mapVariable: (variable: VarAtom) => VarAtom,
-  memo: Map<ExprAtom, Atom>,
-): Atom {
-  if (atom.ground) return atom;
-  if (atom.kind === "var") return mapVariable(atom);
-  if (atom.kind === "expr") return mapExpression(atom, mapVariable, memo);
-  return atom;
 }
 
 /**
@@ -121,4 +102,28 @@ export function freshenAtoms(atoms: readonly Atom[], target: VariableScope): Ato
     return replacement;
   };
   return atoms.map((atom) => mapAtomVariables(atom, replace, memo));
+}
+
+/** Return each variable identity reachable from the atoms once, in first-occurrence order. */
+export function uniqueVariablesInAtoms(atoms: readonly Atom[]): VarAtom[] {
+  const result: VarAtom[] = [];
+  const seen = new Set<string>();
+  const expressions = new Set<ExprAtom>();
+  const stack = [...atoms].reverse();
+  while (stack.length > 0) {
+    const atom = stack.pop()!;
+    if (atom.ground) continue;
+    if (atom.kind === "var") {
+      const key = variableKey(atom);
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push(atom);
+      }
+      continue;
+    }
+    if (atom.kind !== "expr" || expressions.has(atom)) continue;
+    expressions.add(atom);
+    for (let index = atom.items.length - 1; index >= 0; index--) stack.push(atom.items[index]!);
+  }
+  return result;
 }

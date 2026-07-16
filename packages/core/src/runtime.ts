@@ -16,3 +16,4 @@ export * from "./trace";
 export * from "./eval-outcome";
 export * from "./variable-scope";
 export * from "./binding-frame";
+export * from "./binding-packet";

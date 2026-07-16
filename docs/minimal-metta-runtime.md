@@ -92,6 +92,24 @@ The resolver follows miniKanren's `walk`, occurs-check, recursive `walk*`, and a
 
 Scoped atoms are not yet admitted to the legacy matcher or evaluator. Those paths still key substitutions, trails, compiler slots, and table entries by display name. Admission will be enabled only after every reference and optimized path uses scoped identity or a checked legacy projection.
 
+## Binding capture and replay
+
+`collapse-bind` now stores the projected frame for each answer in an opaque grounded `Bindings` packet. `superpose-bind` validates that packet, freshens packet-local variables, merges its frame with the caller, and removes only alternatives whose constraints conflict. Exported caller variables retain their identities, so a binding discovered inside the collapsed evaluation is visible after replay.
+
+```metta
+(= (foo a) xa)
+(= (foo b) xb)
+!(chain (collapse-bind (eval (foo $a))) $captured
+  (chain (superpose-bind $captured) $x
+    ($x $a)))
+```
+
+The result is `(xa a)` and `(xb b)`. Earlier MeTTa TS releases returned `(xa $a)` and `(xb $a)` because `collapse-bind` wrote `()` instead of the answer bindings and `superpose-bind` ignored its second pair item.
+
+Packets belong to the evaluation environment that created them. Replaying a forged, foreign, or unsupported-version packet returns a language error. The legacy `(atom ())` pair remains accepted as an empty frame. Ordinary `collapse` still takes the value-only path and does not allocate packets that `collapse-extract` would discard.
+
+The current packet handle is process-local. Worker transport will use the versioned atom and frame codec rather than relying on structured clone to copy the grounded handle.
+
 ## Compatibility rule
 
 The following public signatures remain unchanged during the migration:

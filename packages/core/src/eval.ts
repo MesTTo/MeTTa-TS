@@ -50,6 +50,8 @@ import {
   size,
   valEntries,
 } from "./bindings";
+import { bindingFrameFromLegacy, bindingFrameToLegacy, emptyBindingFrame } from "./binding-frame";
+import { BindingPacketRegistry } from "./binding-packet";
 import {
   callGrounded,
   type GroundFn,
@@ -89,6 +91,7 @@ import {
 } from "./tabling";
 import { type ActiveTableEntry, TableSpace, type TableKey } from "./table-space";
 import { Trail, unifyTrail } from "./trail";
+import { uniqueVariablesInAtoms } from "./variable-scope";
 import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 
 // Constructor / normal-form short-circuit, on by default. `METTA_CTOR_SC=0` disables it for A/B measurement.
@@ -540,6 +543,17 @@ export interface MinEnv {
   /** Compact runtime `&self` atomspace. When on, runtime additions are stored as flat term ids and decoded
    *  only when a query or observable operation needs tree atoms. */
   useFlatAtomspace?: boolean;
+}
+
+const bindingPacketRegistries = new WeakMap<MinEnv, BindingPacketRegistry>();
+
+function bindingPacketRegistry(env: MinEnv): BindingPacketRegistry {
+  let registry = bindingPacketRegistries.get(env);
+  if (registry === undefined) {
+    registry = new BindingPacketRegistry("binding-packets");
+    bindingPacketRegistries.set(env, registry);
+  }
+  return registry;
 }
 
 interface StaticNestedMatchIndex {
@@ -1847,9 +1861,37 @@ function chainLiveVars(cont: Atom, prev: Stack): string[] {
   collectVars(cont, out, seen);
   return out;
 }
-function superposeItem(prev: Stack, b: Bindings, pair: Atom): Item {
-  if (pair.kind === "expr" && pair.items.length > 0) return finItem(prev, pair.items[0]!, b);
-  return finItem(prev, pair, b);
+
+function bindingPacketVisibleVariables(source: Atom, result: Atom, prev: Stack) {
+  const atoms: Atom[] = [source, result];
+  for (let frameStack = prev; frameStack !== null; frameStack = frameStack.tail)
+    atoms.push(frameStack.head.atom);
+  return uniqueVariablesInAtoms(atoms);
+}
+
+/** The stdlib `collapse` continuation observes only each pair's first item through `collapse-extract`. */
+function collapseBindDiscardsBindings(prev: Stack): boolean {
+  if (prev === null || prev.head.ret !== "chain") return false;
+  const outer = prev.head.atom;
+  if (outer.kind !== "expr" || opOf(outer) !== "chain" || outer.items.length !== 4) return false;
+  const packetVariable = outer.items[2]!;
+  const continuation = outer.items[3]!;
+  if (
+    packetVariable.kind !== "var" ||
+    continuation.kind !== "expr" ||
+    opOf(continuation) !== "chain" ||
+    continuation.items.length !== 4
+  )
+    return false;
+  const source = continuation.items[1]!;
+  if (source.kind !== "expr" || opOf(source) !== "eval" || source.items.length !== 2) return false;
+  const extract = source.items[1]!;
+  return (
+    extract.kind === "expr" &&
+    opOf(extract) === "collapse-extract" &&
+    extract.items.length === 2 &&
+    atomEq(extract.items[1]!, packetVariable)
+  );
 }
 
 function argMask(ts: Atom[] | undefined, arity: number): boolean[] {
@@ -2740,27 +2782,86 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
       }
       break;
     case "superpose-bind":
-      if (it2.length === 2 && it2[1]!.kind === "expr")
-        return [it2[1]!.items.map((p) => superposeItem(prev, it.bnd, p)), st];
-      break;
+      if (it2.length === 2 && it2[1]!.kind === "expr") {
+        const registry = bindingPacketRegistry(env);
+        const output: Item[] = [];
+        for (const pair of it2[1]!.items) {
+          if (pair.kind !== "expr" || pair.items.length !== 2) {
+            output.push(
+              finItem(
+                prev,
+                errTextAtom(a, "superpose-bind: expected an (atom bindings) pair"),
+                it.bnd,
+              ),
+            );
+            continue;
+          }
+          const [atom, packetAtom] = pair.items;
+          if (atomEq(packetAtom!, unitA)) {
+            output.push(finItem(prev, atom!, it.bnd));
+            continue;
+          }
+          const read = registry.read(packetAtom!);
+          if (!read.ok) {
+            output.push(finItem(prev, errTextAtom(a, `superpose-bind: ${read.message}`), it.bnd));
+            continue;
+          }
+          const incoming = bindingFrameFromLegacy(it.bnd);
+          if (!incoming.ok) {
+            output.push(
+              finItem(prev, errTextAtom(a, `superpose-bind: ${incoming.fault.message}`), it.bnd),
+            );
+            continue;
+          }
+          const replay = registry.prepareReplay(read.packet);
+          if (!replay.ok) {
+            output.push(
+              finItem(prev, errTextAtom(a, `superpose-bind: ${replay.fault.message}`), it.bnd),
+            );
+            continue;
+          }
+          const merged = incoming.value.merge(replay.value);
+          if (!merged.ok) {
+            if (merged.fault.code === "conflict" || merged.fault.code === "occurs-check") continue;
+            output.push(
+              finItem(prev, errTextAtom(a, `superpose-bind: ${merged.fault.message}`), it.bnd),
+            );
+            continue;
+          }
+          output.push(finItem(prev, atom!, bindingFrameToLegacy(merged.value)));
+        }
+        return [output, st];
+      }
+      return [
+        [finItem(prev, errTextAtom(a, "superpose-bind: expected an expression"), it.bnd)],
+        st,
+      ];
     case "collapse-bind": {
       if (it2.length !== 2) break;
       const [atoms, st2] = yield* interpretLoopG(env, fuel, st, [
         { stack: atomToStack(it2[1]!, null), bnd: it.bnd },
       ]);
-      return [
-        [
-          finItem(
-            prev,
-            makeExpr(
-              env,
-              atoms.map((p) => makeExpr(env, [p[0], unitA])),
-            ),
-            it.bnd,
-          ),
-        ],
-        st2,
-      ];
+      if (collapseBindDiscardsBindings(prev)) {
+        const pairs = atoms.map((pair) => makeExpr(env, [pair[0], unitA]));
+        return [[finItem(prev, makeExpr(env, pairs), it.bnd)], st2];
+      }
+      const registry = bindingPacketRegistry(env);
+      const captured = atoms.map((pair, alternative) => {
+        const decoded = bindingFrameFromLegacy(pair[1]);
+        const visible = bindingPacketVisibleVariables(it2[1]!, pair[0], prev);
+        const projected = decoded.ok ? decoded.value.project(visible) : decoded;
+        const frame = projected.ok ? projected.value : emptyBindingFrame;
+        const atom = projected.ok
+          ? pair[0]
+          : errTextAtom(a, `collapse-bind: ${projected.fault.message}`);
+        const packet = registry.capture(frame, visible, {
+          operation: "collapse-bind",
+          source: it2[1]!,
+          alternative,
+        });
+        return makeExpr(env, [atom, packet]);
+      });
+      return [[finItem(prev, makeExpr(env, captured), it.bnd)], st2];
     }
     // TS-native extension. `(transaction <body>)` evaluates the body and atomically commits its
     // space mutations only if the body succeeds. Because the world is threaded copy-on-write
