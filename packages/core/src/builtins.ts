@@ -24,6 +24,7 @@ import {
 } from "./atom";
 import { dedupAlphaStable } from "./atom-set";
 import { matchAtoms } from "./match";
+import { applyConsAtom, applyDeconsAtom } from "./minimal-instruction";
 import {
   addInt,
   type IntVal,
@@ -445,18 +446,12 @@ const neqAtom = withGroundedOperationType(
 
 // --- list surgery ---
 const consAtom: GroundFn = (args) => {
-  if (args.length !== 2) return ierr("expected head and tail");
-  const [h, t] = args as [Atom, Atom];
-  if (t.kind !== "expr") return ierr("cons-atom: expected an expression tail");
-  return ok(expr([h, ...t.items]));
+  const result = applyConsAtom(args);
+  return result.ok ? ok(result.atom) : ierr(result.fault.message);
 };
 const deconsAtom: GroundFn = (args) => {
-  if (args.length !== 1) return ierr("expected non-empty expression");
-  const e = args[0]!;
-  if (e.kind !== "expr") return ierr("expected non-empty expression");
-  if (e.items.length === 0) return ierr("expected non-empty expression");
-  const [h, ...t] = e.items;
-  return ok(expr([h!, expr(t)]));
+  const result = applyDeconsAtom(args);
+  return result.ok ? ok(result.atom) : ierr(result.fault.message);
 };
 const carAtom: GroundFn = (args) => {
   const e = args[0];

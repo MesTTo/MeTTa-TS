@@ -146,6 +146,79 @@ A host import is opaque. Its installation record keeps the original request and 
 
 `context-space`, `capture`, `metta`, and `metta-thread` use the active context rather than silently falling back to the root `&self`. `metta` also enforces its expected-type operand. A named space owns its local rules and declarations while inheriting the shared prelude and grounded services. Local declarations cannot replace an existing shared grounded signature.
 
+## Direct Minimal MeTTa interpretation
+
+`interpretMinimal` executes one Minimal MeTTa control program directly. `interpretMinimalAsync` provides the same boundary for asynchronous grounded operations and pins the program, registry, and world snapshots for the call. These entry points do not run the full type-directed argument evaluator.
+
+```ts
+const [answers, nextState] = interpretMinimal(env, atom, {
+  bindings,
+  state,
+  fuel,
+});
+```
+
+The machine records whether a frame is executable control or a delivered value. Admission is explicit at these boundaries:
+
+- the direct interpreter admits its root atom;
+- `eval` admits an embedded instruction operand and a returned `function` wrapper;
+- `chain` admits its source and each selected template;
+- `function` admits its body and embedded continuation results.
+
+Every other instruction result is delivered as data. A delivered `(eval x)` is not executed merely because its head names an instruction. The `Frame.fin` field remains as a compatibility mirror while `Frame.control` records `execute` or `deliver` directly. The representation follows the explicit control and continuation split described by [Abstracting Abstract Machines](https://arxiv.org/abs/1007.4446), with a relational binding frame added for MeTTa.
+
+### One-step `eval`
+
+`(eval atom)` performs one reduction at the Minimal boundary:
+
+| Operand result                           | Minimal result                             |
+| ---------------------------------------- | ------------------------------------------ |
+| matching equality rule                   | one delivered rule body per matching frame |
+| named grounded operation                 | its result atoms in returned order         |
+| executable grounded atom head            | its result atoms in returned order         |
+| no matching rule or `noReduce`           | `NotReducible`                             |
+| empty grounded result                    | no alternative                             |
+| grounded runtime failure                 | `(Error original-call message)`            |
+| non-`function` instruction-shaped result | delivered data                             |
+| returned `(function body)`               | enter a function delimiter                 |
+
+`mettaEval`, `evalAtom`, and `runProgram` retain full MeTTa normalization. Their planner can request more Minimal reductions after the first answer when the type and evaluation policy require it.
+
+### `chain`, `function`, and `return`
+
+`chain` is a streaming relational bind. It evaluates the source and creates one continuation for each consistent answer. The chain variable extends a transient frame used to instantiate the template. The selected source frame is preserved as the continuation frame. The local chain binding is not leaked into the caller.
+
+Keeping the binder local matters for code such as `atom-subst`, where a variable atom is passed as the chain operand. Persisting the temporary binding would assign the caller's variable and change later reductions. The local substitution takes precedence for occurrences of the binder in the template. Other variables still resolve through the source frame. A scoped binder uses variable identity, so it cannot capture a same-spelled variable from another scope.
+
+`function` accepts any body atom. Each nondeterministic branch runs under its own delimiter. `(return value)` exits the nearest delimiter and delivers `value` without inspecting its head. A terminal branch that never reaches `return` produces `(Error call-atom NoReturn)`. A `return` form outside a function is ordinary data.
+
+The local chain rule matches Hyperon's pinned implementation, which applies a fresh variable binding to the template and carries the incoming bindings unchanged. See [`chain` in Hyperon](https://github.com/trueagi-io/hyperon-experimental/blob/3f76dc460da6961f57f69f6c3e550c59c74ada83/lib/src/metta/interpreter.rs#L687-L702).
+
+### Total constructor and control faults
+
+`cons-atom` and `decons-atom` share one implementation between their embedded and grounded call paths. Their exact argument faults are:
+
+```text
+cons-atom: expected a head and an expression tail
+decons-atom: expected one non-empty expression
+```
+
+Malformed `eval`, `chain`, `function`, and `unify` forms also return one language `Error` atom. They do not fall through to data or a host exception. Constructor property tests cover 500 generated heads and tails and verify `decons-atom(cons-atom(head, tail)) = (head tail)`.
+
+### Pinned Hyperon differential
+
+The U5 corpus was run through MeTTa TS and Hyperon revision `3f76dc460da6961f57f69f6c3e550c59c74ada83`. Rule reduction, missing reduction, instruction-shaped data, multi-answer chain, both `unify` branches, nested function return, return payload protection, and constructor results agree.
+
+Three observed differences are intentional:
+
+| Case                    | MeTTa TS contract                                  | Pinned Hyperon behavior                      |
+| ----------------------- | -------------------------------------------------- | -------------------------------------------- |
+| rule answer order       | visible source order                               | reverse insertion order in the probed space  |
+| `(function terminal)`   | `(Error (function terminal) NoReturn)`             | rejects the non-expression body as malformed |
+| malformed error message | stable concise message with the original call atom | generated `expected ... found ...` text      |
+
+The source-order choice preserves existing MeTTa TS result bags. Accepting a leaf body follows the stated `(function <atom>)` signature and makes the `NoReturn` rule independent of syntax shape. Error atoms retain the same call attribution even though their text differs.
+
 ## Compatibility rule
 
 The following public signatures remain unchanged during the migration:
@@ -153,8 +226,10 @@ The following public signatures remain unchanged during the migration:
 - `mettaEval` returns `[Array<[Atom, Bindings]>, St]`.
 - `mettaEvalAsync` returns a promise of the same tuple.
 - `mettaEvalAsyncOwned` returns the same promise and requires exclusive ownership of its environment and state until settlement.
+- `interpretMinimal` returns `[Array<[Atom, Bindings]>, St]` after direct Minimal execution.
+- `interpretMinimalAsync` returns a promise of the same tuple.
 - `evalAtom` returns `[Atom[], St]`.
 - `QueryResult` has only `query` and `results`.
 - `ReduceResult`, `GroundFn`, `Frame`, `Item`, `World`, `St`, and string-based `Bindings` remain exported.
 
-New evaluator entry points will expose typed outcomes and cursors beside these APIs. The legacy functions will drain the cursor through `projectLegacyOutcome` once the cursor owns the complete transition loop.
+The cursor evaluator will expose typed outcomes beside these APIs. The legacy functions will drain the cursor through `projectLegacyOutcome` once the cursor owns the complete transition loop.

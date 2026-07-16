@@ -26,6 +26,7 @@ import {
   metaType,
   sym,
   variable,
+  variableIdentity,
 } from "./atom";
 import { dedupAlphaStable, ExactAtomSet } from "./atom-set";
 import {
@@ -82,6 +83,7 @@ import { readEnv } from "./env";
 import { FlatAtomSpace } from "./flat-atomspace";
 import { instantiate } from "./instantiate";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
+import { applyConsAtom, applyDeconsAtom } from "./minimal-instruction";
 import { addInt, type IntVal, subInt } from "./number";
 import { format } from "./parser";
 import { readonlyMapSnapshot, readonlySetSnapshot } from "./readonly-collection";
@@ -507,11 +509,17 @@ function* callHostImportG(
 
 // ---------- machine types ----------
 export type Ret = "none" | "chain" | "function";
+export type MachineControl = "execute" | "deliver";
 export interface Frame {
   readonly atom: Atom;
   readonly ret: Ret;
   readonly vars: readonly string[];
+  /** Explicitly distinguishes code admitted for one transition from delivered data. */
+  readonly control?: MachineControl;
+  /** Compatibility mirror for callers that inspect the pre-U5 frame shape. */
   readonly fin: boolean;
+  /** Stable call attribution for a function delimiter. */
+  readonly callAtom?: Atom;
 }
 // The evaluation stack as an immutable cons-list (O(1) push/rest, no per-step array slice/spread;
 // the array form showed up as ArrayPrototypeSlice in the profile). `null` is the empty stack.
@@ -544,13 +552,12 @@ const frame = (
   atom: Atom,
   ret: Ret = "none",
   vars: readonly string[] = [],
-  fin = false,
-): Frame => ({
-  atom,
-  ret,
-  vars,
-  fin,
-});
+  control: MachineControl = "execute",
+  callAtom?: Atom,
+): Frame =>
+  callAtom === undefined
+    ? { atom, ret, vars, control, fin: control === "deliver" }
+    : { atom, ret, vars, control, fin: control === "deliver", callAtom };
 
 const notReducibleA = sym("NotReducible");
 const emptyA = sym("Empty");
@@ -748,34 +755,60 @@ function isNormalFormAssumingVars(env: MinEnv, w: World, t: Atom): boolean {
   }
 }
 
-// ---------- atom_to_stack ----------
-function atomToStack(a: Atom, prev: Stack): Stack {
+// ---------- control admission ----------
+function malformedCoreInstruction(a: Atom, operation: string, expected: string): Frame {
+  return frame(errTextAtom(a, `${operation}: expected ${expected}`), "none", [], "deliver");
+}
+
+function malformedCoreInstructionAtom(a: Atom, operation: string): Atom | undefined {
+  switch (operation) {
+    case "eval":
+      return errTextAtom(a, "eval: expected one atom");
+    case "chain":
+      return errTextAtom(a, "chain: expected a source, variable, and template");
+    case "function":
+      return errTextAtom(a, "function: expected one body");
+    case "unify":
+      return errTextAtom(a, "unify: expected an atom, pattern, then branch, and else branch");
+    default:
+      return undefined;
+  }
+}
+
+/** Admit an atom as code. Delivered atoms never pass through this function implicitly. */
+function admitAtom(a: Atom, prev: Stack, callAtom?: Atom): Stack {
   if (a.kind === "expr") {
     const op = opOf(a);
     const it = a.items;
     if (op === "chain" && it.length === 4 && it[2]!.kind === "var") {
-      return atomToStack(it[1]!, cons(frame(a, "chain", varsCopy(prev)), prev));
+      return admitAtom(it[1]!, cons(frame(a, "chain", varsCopy(prev)), prev));
     }
-    if (op === "function" && it.length === 2 && it[1]!.kind === "expr") {
-      return atomToStack(it[1]!, cons(frame(a, "function", varsCopy(prev)), prev));
+    if (op === "function" && it.length === 2) {
+      const delimiter = frame(a, "function", varsCopy(prev), "execute", callAtom ?? a);
+      return admitAtom(it[1]!, cons(delimiter, prev));
     }
     if (op === "unify" && it.length === 5) {
       return cons(frame(a, "none"), prev);
     }
-    if (op === "chain") return cons(frame(errAtom(a, "chain: malformed"), "none", [], true), prev);
-    if (op === "function")
-      return cons(frame(errAtom(a, "function: malformed"), "none", [], true), prev);
-    if (op === "unify") return cons(frame(errAtom(a, "unify: malformed"), "none", [], true), prev);
+    if (op === "chain") {
+      return cons(malformedCoreInstruction(a, "chain", "a source, variable, and template"), prev);
+    }
+    if (op === "function") return cons(malformedCoreInstruction(a, "function", "one body"), prev);
+    if (op === "unify")
+      return cons(
+        malformedCoreInstruction(a, "unify", "an atom, pattern, then branch, and else branch"),
+        prev,
+      );
   }
   return cons(frame(a, "none", varsCopy(prev)), prev);
 }
 
 function finItem(st: Stack, a: Atom, b: Bindings): Item {
-  return { stack: cons(frame(a, "none", [], true), st), bnd: b };
+  return { stack: cons(frame(a, "none", [], "deliver"), st), bnd: b };
 }
 
-function evalResult(prev: Stack, r: Atom, b: Bindings): Item {
-  if (opOf(r) === "function") return { stack: atomToStack(r, prev), bnd: b };
+function evalResult(prev: Stack, r: Atom, b: Bindings, callAtom?: Atom): Item {
+  if (opOf(r) === "function") return { stack: admitAtom(r, prev, callAtom), bnd: b };
   return finItem(prev, r, b);
 }
 
@@ -2757,7 +2790,7 @@ function queryOpWithCandidates(
     counter += 1;
     for (const mb of matchAtomsScoped(lhs0, toEval, suffix)) {
       for (const m of merge(b, mb)) {
-        if (!hasLoop(m)) out.push(evalResult(prev, inst(env, m, rhs0, suffix), m));
+        if (!hasLoop(m)) out.push(evalResult(prev, inst(env, m, rhs0, suffix), m, toEval));
       }
     }
   }
@@ -2816,7 +2849,7 @@ function* evalOpG(env: MinEnv, st: St, prev: Stack, x: Atom, b: Bindings): Gen<[
     if (r.tag === "ok") {
       const effects = applyReduceEffects(env, st, b, r.effects);
       if (effects.tag === "error") return [[finItem(prev, errAtom(x2, effects.msg), b)], st];
-      return [r.results.map((res) => evalResult(prev, res, b)), effects.state];
+      return [r.results.map((res) => evalResult(prev, res, b, x2)), effects.state];
     }
     if (r.tag === "runtimeError") return [[finItem(prev, errAtom(x2, r.msg), b)], st];
     if (r.tag === "incorrectArgument") return [[finItem(prev, errTextAtom(x2, r.msg), b)], st];
@@ -2846,16 +2879,16 @@ function* evalOpG(env: MinEnv, st: St, prev: Stack, x: Atom, b: Bindings): Gen<[
             }),
           )) as { ok?: readonly Atom[]; err?: string };
           if (settled.err !== undefined) return [[finItem(prev, errAtom(x2, settled.err), b)], st];
-          return [settled.ok!.map((res) => evalResult(prev, res, b)), st];
+          return [settled.ok!.map((res) => evalResult(prev, res, b, x2)), st];
         }
-        return [results.map((res) => evalResult(prev, res, b)), st];
+        return [results.map((res) => evalResult(prev, res, b, x2)), st];
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return [[finItem(prev, errAtom(x2, msg), b)], st];
       }
     }
   }
-  if (isEmbeddedOp(x2)) return [[{ stack: atomToStack(x2, prev), bnd: b }], st];
+  if (isEmbeddedOp(x2)) return [[{ stack: admitAtom(x2, prev), bnd: b }], st];
   return queryOp(env, st, prev, x2, b);
 }
 
@@ -2878,6 +2911,22 @@ function unifyOp(
       }
   if (matched) return ms;
   return [finItem(prev, e, b)];
+}
+
+/** Apply a chain-local binder without extending the source answer's frame. */
+function bindChainAnswer(
+  variableAtom: Extract<Atom, { kind: "var" }>,
+  answer: Atom,
+  template: Atom,
+): readonly Atom[] {
+  // Pinned Hyperon applies one local substitution here and returns the source bindings unchanged. Keep
+  // that hot path for legacy variables. Scoped variables use the identity-aware frame so another scope's
+  // same-spelled variable is not captured.
+  if (variableIdentity(variableAtom) === undefined)
+    return [applySubst([[variableAtom.name, answer]], template)];
+
+  const constrained = emptyBindingFrame.bind(variableAtom, answer);
+  return constrained.ok ? [constrained.value.instantiate(template)] : [];
 }
 
 // ---------- final-item helpers ----------
@@ -3848,7 +3897,7 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
       if (opOf(pf.atom) === "chain" && pf.atom.kind === "expr" && pf.atom.items.length === 4) {
         const v = pf.atom.items[2]!;
         const templ = pf.atom.items[3]!;
-        const nf = frame(makeExpr(env, [sym("chain"), res, v, templ]), pf.ret, pf.vars, false);
+        const nf = frame(makeExpr(env, [sym("chain"), res, v, templ]), pf.ret, pf.vars, "execute");
         return [[{ stack: cons(nf, pprev), bnd: it.bnd }], st];
       }
       return [[finItem(pprev, errAtom(pf.atom, "chain: corrupt frame"), it.bnd)], st];
@@ -3856,9 +3905,8 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
     if (pf.ret === "function") {
       if (opOf(res) === "return" && res.kind === "expr" && res.items.length === 2)
         return [[finItem(pprev, res.items[1]!, it.bnd)], st];
-      if (isEmbeddedOp(res))
-        return [[{ stack: atomToStack(res, cons(pf, pprev)), bnd: it.bnd }], st];
-      const target = pprev !== null ? pprev.head.atom : res;
+      if (isEmbeddedOp(res)) return [[{ stack: admitAtom(res, cons(pf, pprev)), bnd: it.bnd }], st];
+      const target = pf.callAtom ?? pf.atom;
       return [[finItem(pprev, errAtom(target, "NoReturn"), it.bnd)], st];
     }
     return [[], st]; // Ret.none on a finished non-top frame
@@ -3887,17 +3935,19 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
       break;
     case "chain":
       if (it2.length === 4 && it2[2]!.kind === "var") {
-        const v = (it2[2] as { name: string }).name;
-        const cont = applySubst([[v, it2[1]!]], it2[3]!);
-        // The first-arg evaluation that produced it2[1] is finished, so its internal variables can no longer
-        // be observed by anything but the continuation `cont` and the pending frames. Pruning the carried
-        // binding to those keeps a deep `chain` tail-recursion (minimal-MeTTa `div` is the worst case) from
-        // accumulating an O(n) binding that every later instantiate/merge re-scans. That cost made
-        // `(div 350000 5 0)` quadratic. The full stack is visible here (unlike inside a reduce-loop arg
-        // sub-evaluation), so the live set is complete; restrictBnd resolves transitively, so a value still
-        // reachable through a dropped variable is flattened into what is kept rather than lost.
-        const bnd = restrictBnd(env, chainLiveVars(cont, prev), it.bnd);
-        return [[{ stack: atomToStack(cont, prev), bnd }], st];
+        const continuations: Item[] = [];
+        for (const cont of bindChainAnswer(it2[2]!, it2[1]!, it2[3]!)) {
+          // The first-arg evaluation that produced it2[1] is finished, so its internal variables can no longer
+          // be observed by anything but the continuation `cont` and the pending frames. Pruning the carried
+          // binding to those keeps a deep `chain` tail-recursion (minimal-MeTTa `div` is the worst case) from
+          // accumulating an O(n) binding that every later instantiate/merge re-scans. That cost made
+          // `(div 350000 5 0)` quadratic. The full stack is visible here (unlike inside a reduce-loop arg
+          // sub-evaluation), so the live set is complete; restrictBnd resolves transitively, so a value still
+          // reachable through a dropped variable is flattened into what is kept rather than lost.
+          const bnd = restrictBnd(env, chainLiveVars(cont, prev), it.bnd);
+          continuations.push({ stack: admitAtom(cont, prev), bnd });
+        }
+        return [continuations, st];
       }
       break;
     case "unify":
@@ -3905,22 +3955,14 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
         return [unifyOp(env, prev, it2[1]!, it2[2]!, it2[3]!, it2[4]!, it.bnd), st];
       break;
     case "cons-atom":
-      if (it2.length === 3 && it2[2]!.kind === "expr")
-        return [[finItem(prev, makeExpr(env, [it2[1]!, ...it2[2]!.items]), it.bnd)], st];
-      if (it2.length === 3)
-        return [[finItem(prev, errAtom(a, "cons-atom: expected expression tail"), it.bnd)], st];
-      break;
-    case "decons-atom":
-      if (it2.length === 2 && it2[1]!.kind === "expr" && it2[1]!.items.length > 0) {
-        const [h, ...t] = it2[1]!.items;
-        return [[finItem(prev, makeExpr(env, [h!, makeExpr(env, t)]), it.bnd)], st];
-      }
-      if (it2.length === 2)
-        return [
-          [finItem(prev, errAtom(a, "decons-atom: expected non-empty expression"), it.bnd)],
-          st,
-        ];
-      break;
+    case "decons-atom": {
+      const result =
+        op === "cons-atom" ? applyConsAtom(it2.slice(1)) : applyDeconsAtom(it2.slice(1));
+      return [
+        [finItem(prev, result.ok ? result.atom : errTextAtom(a, result.fault.message), it.bnd)],
+        st,
+      ];
+    }
     case "context-space":
       if (it2.length === 1) return [[finItem(prev, activeSpaceAtom(env), it.bnd)], st];
       break;
@@ -4059,7 +4101,7 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
     case "collapse-bind": {
       if (it2.length !== 2) break;
       const [atoms, st2] = yield* interpretLoopG(env, fuel, st, [
-        { stack: atomToStack(it2[1]!, null), bnd: it.bnd },
+        { stack: admitAtom(it2[1]!, null), bnd: it.bnd },
       ]);
       if (collapseBindDiscardsBindings(prev)) {
         const pairs = atoms.map((pair) => makeExpr(env, [pair[0], unitA]));
@@ -4409,11 +4451,14 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
     default:
       break;
   }
-  if (isEmbeddedOp(a)) return [[finItem(prev, errAtom(a, "unsupported minimal op"), it.bnd)], st];
+  if (isEmbeddedOp(a)) {
+    const malformed = op === undefined ? undefined : malformedCoreInstructionAtom(a, op);
+    return [[finItem(prev, malformed ?? errAtom(a, "unsupported minimal op"), it.bnd)], st];
+  }
   return [
     [
       {
-        stack: cons(frame(top.atom, top.ret, top.vars, true), prev),
+        stack: cons(frame(top.atom, top.ret, top.vars, "deliver", top.callAtom), prev),
         bnd: it.bnd,
       },
     ],
@@ -6360,7 +6405,7 @@ function* countTailMatchG(
     st,
     [
       {
-        stack: atomToStack(expr([sym("metta"), countOnlyMatch(match), UNDEF, sym("&self")]), null),
+        stack: admitAtom(expr([sym("metta"), countOnlyMatch(match), UNDEF, sym("&self")]), null),
         bnd,
       },
     ],
@@ -6382,7 +6427,7 @@ function* tryCollapseRouteG(
   if (route === undefined) return undefined;
   // Drive the build prefix through the same type-directed `metta` evaluation the unfused path uses for the
   // whole call, so the add-atom side effects run and every build branch reduces to the `done` sentinel. A
-  // bare `atomToStack(buildExpr)` would treat the let* as data and return it unreduced. Count the build
+  // Bare `admitAtom(buildExpr)` would treat the let* as data and return it unreduced. Count the build
   // emissions with a sink instead of materialising them. A split compiled suffix is admitted only while each
   // dead call emits at most one branch; multi-branch side effects need a tail count at each branch state and
   // decline back to the interpreter.
@@ -6393,7 +6438,7 @@ function* tryCollapseRouteG(
     route.st,
     [
       {
-        stack: atomToStack(expr([sym("metta"), route.buildExpr, UNDEF, sym("&self")]), null),
+        stack: admitAtom(expr([sym("metta"), route.buildExpr, UNDEF, sym("&self")]), null),
         bnd: route.bnd,
       },
     ],
@@ -6688,16 +6733,13 @@ function streamCaseSource(
       for (const value of plan.foldValues()) {
         any = true;
         yield {
-          stack: atomToStack(expr([sym("metta"), bodyFor(value), UNDEF, sym("&self")]), null),
+          stack: admitAtom(expr([sym("metta"), bodyFor(value), UNDEF, sym("&self")]), null),
           bnd,
         };
       }
       if (!any)
         yield {
-          stack: atomToStack(
-            expr([sym("metta"), bodyFor(sym("Empty")), UNDEF, sym("&self")]),
-            null,
-          ),
+          stack: admitAtom(expr([sym("metta"), bodyFor(sym("Empty")), UNDEF, sym("&self")]), null),
           bnd,
         };
     },
@@ -6952,7 +6994,7 @@ function* mettaEvalG(
           lst,
           [
             {
-              stack: atomToStack(
+              stack: admitAtom(
                 expr([sym("metta"), countOnlyMatch(args[0]!.items[1]!), UNDEF, sym("&self")]),
                 null,
               ),
@@ -7235,7 +7277,7 @@ function* mettaEvalG(
           const runProducerPass = function* (start: St): Gen<[Array<[Atom, Bindings]>, St]> {
             const [pairs, st3] = yield* interpretLoopG(env, fuel, start, [
               {
-                stack: atomToStack(makeExpr(env, [sym("eval"), wApp]), null),
+                stack: admitAtom(makeExpr(env, [sym("eval"), wApp]), null),
                 bnd: lbnd,
               },
             ]);
@@ -7298,7 +7340,7 @@ function* mettaEvalG(
           } else {
             const [pairs, st3] = yield* interpretLoopG(env, fuel, cur2, [
               {
-                stack: atomToStack(makeExpr(env, [sym("eval"), wApp]), null),
+                stack: admitAtom(makeExpr(env, [sym("eval"), wApp]), null),
                 bnd: lbnd,
               },
             ]);
@@ -7370,13 +7412,13 @@ function* mettaEvalG(
   if (w.kind === "expr" && w.items.length > 0) {
     // expression-headed application
     const [ruleRes, st1] = yield* interpretLoopG(env, fuel, st, [
-      { stack: atomToStack(makeExpr(env, [sym("eval"), w]), null), bnd },
+      { stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd },
     ]);
     const reduced = ruleRes.filter((p) => !atomEq(p[0], w) && !atomEq(p[0], notReducibleA));
     if (reduced.length === 0) {
       const [tupleRes, st2] = yield* interpretLoopG(env, fuel, st1, [
         {
-          stack: atomToStack(
+          stack: admitAtom(
             makeExpr(env, [sym("eval"), makeExpr(env, [sym("interpret-tuple"), w, sym("&self")])]),
             null,
           ),
@@ -7394,7 +7436,7 @@ function* mettaEvalG(
 
   // bare symbol / variable / grounded
   const [pairs, st1] = yield* interpretLoopG(env, fuel, st, [
-    { stack: atomToStack(makeExpr(env, [sym("eval"), w]), null), bnd },
+    { stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd },
   ]);
   // an irreducible symbol stays itself; an Atom-typed result is inert; anything else evaluates on.
   return yield* reduceChildrenG(env, fuel, st1, pairs, (p) =>
@@ -7462,6 +7504,25 @@ function* mettaEvalExpectedG(
 // ---------- public API ----------
 const DEFAULT_FUEL = 2_000_000;
 
+export interface MinimalInterpretOptions {
+  readonly fuel?: number;
+  readonly state?: St;
+  readonly bindings?: Bindings;
+}
+
+function* interpretMinimalG(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  atom: Atom,
+): Gen<EvalRes> {
+  const [contextual, next] = yield* interpretLoopG(env, fuel, state, [
+    { stack: admitAtom(atom, null), bnd: bindings },
+  ]);
+  return [contextual.map(([result, resultBindings]) => [result, resultBindings]), next];
+}
+
 /** Type-directed evaluation of `a` (the sync driver: throws `AsyncInSyncError` if it reaches an async
  *  grounded op). This is the public synchronous entry point with the original signature. */
 /** A native V8 stack overflow (`RangeError: Maximum call stack size exceeded`). The machine threads its
@@ -7479,6 +7540,45 @@ function stackOverflowResult(
   a: Atom,
 ): [Array<[Atom, Bindings]>, St] {
   return [[[makeExpr(env, [sym("Error"), inst(env, bnd, a), sym("StackOverflow")]), bnd]], st];
+}
+
+/** Execute an atom directly as Minimal MeTTa control without full type-directed normalization. */
+export function interpretMinimal(
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions = {},
+): EvalRes {
+  const state = options.state ?? initSt();
+  const bindings = options.bindings ?? emptyBindings;
+  const fuel = options.fuel ?? DEFAULT_FUEL;
+  try {
+    return runGenSync(interpretMinimalG(env, fuel, state, bindings, atom));
+  } catch (error) {
+    if (isNativeStackOverflow(error)) return stackOverflowResult(env, state, bindings, atom);
+    throw error;
+  }
+}
+
+/** Async direct Minimal MeTTa execution with a pinned program and world snapshot. */
+export function interpretMinimalAsync(
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions & { readonly signal?: AbortSignal } = {},
+): Promise<EvalRes> {
+  const state = options.state ?? initSt();
+  const bindings = options.bindings ?? emptyBindings;
+  const fuel = options.fuel ?? DEFAULT_FUEL;
+  const pinned = pinAsyncEvaluation(env, state);
+  return runGenAsync(
+    interpretMinimalG(pinned.env, fuel, pinned.state, bindings, atom),
+    options.signal,
+  )
+    .catch((error: unknown) => {
+      if (isNativeStackOverflow(error))
+        return stackOverflowResult(pinned.env, pinned.state, bindings, atom);
+      throw error;
+    })
+    .finally(pinned.release);
 }
 
 function mettaEval(
