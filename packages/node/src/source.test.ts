@@ -51,7 +51,10 @@ describe("Node source runners", () => {
       {
         parEvalImpl: (_rulesSrc, branchSrcs) => {
           branchCalls.push(branchSrcs);
-          return [["77"], null];
+          return [
+            { results: ["77"], counterDelta: 0 },
+            { results: [], counterDelta: 0 },
+          ];
         },
       },
     );

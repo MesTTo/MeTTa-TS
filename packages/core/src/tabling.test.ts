@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 MesTTo
 //
 // SPDX-License-Identifier: MIT
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   buildEnv,
   initSt,
@@ -9,10 +9,17 @@ import {
   registerAsyncGroundedOperation,
   registerGroundedOperation,
 } from "./eval";
-import { stdTable } from "./builtins";
+import { isModedTableSafeGroundedOp, isTableSafeGroundedOp, stdTable } from "./builtins";
 import { parseAll } from "./parser";
 import { standardTokenizer, preludeAtoms, runProgram } from "./runner";
-import { analyzePurity, analyzeTableWorth, keyWellFormed } from "./tabling";
+import {
+  analyzeCompilerCandidates,
+  analyzeModedPurity,
+  analyzePurity,
+  analyzeTableWorth,
+  keyWellFormed,
+  MODED_IMPURE_OPS,
+} from "./tabling";
 import { expr, sym, gint, gfloat } from "./atom";
 import { format } from "./parser";
 import { TableSpace } from "./table-space";
@@ -51,6 +58,30 @@ describe("purity analysis", () => {
     expect(pure.has("b")).toBe(false);
   });
 
+  it("propagates impurity through a reducible bare symbol", () => {
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...atoms("(= unsafe-symbol-u6 (current-time))\n(= (through-symbol-u6) unsafe-symbol-u6)"),
+      ],
+      stdTable(),
+    );
+
+    const pure = analyzePurity(env);
+    expect(pure.has("unsafe-symbol-u6")).toBe(false);
+    expect(pure.has("through-symbol-u6")).toBe(false);
+  });
+
+  it("rejects a rule whose body applies an unknown variable head", () => {
+    const env = buildEnv(
+      [...preludeAtoms(), ...atoms("(= (invoke-u6 $function $value) ($function $value))")],
+      stdTable(),
+    );
+
+    expect(analyzePurity(env).has("invoke-u6")).toBe(false);
+    expect(analyzeCompilerCandidates(env).has("invoke-u6")).toBe(true);
+  });
+
   it("treats custom sync and async grounded operations as impure by default", () => {
     const gt = stdTable();
     gt.set("host-tick", () => ({ tag: "ok", results: [gint(1)] }));
@@ -85,6 +116,43 @@ describe("purity analysis", () => {
     expect(pure.has("clocked")).toBe(false);
     expect(pure.has("decoded")).toBe(false);
     expect(pure.has("freshened")).toBe(false);
+  });
+
+  it("uses separate ground and alpha-invariant built-in safety metadata", () => {
+    const table = stdTable();
+    const alphaSensitive = [
+      "atom_concat",
+      "concat",
+      "format-args",
+      "json-encode",
+      "msort",
+      "repr",
+      "sort",
+      "sort-atom",
+      "sort-strings",
+    ];
+
+    for (const name of alphaSensitive) {
+      const fn = table.get(name)!;
+      expect(isTableSafeGroundedOp(name, fn), name).toBe(true);
+      expect(isModedTableSafeGroundedOp(name, fn), name).toBe(false);
+    }
+    for (const name of ["current-time", "json-decode", "sealed"]) {
+      const fn = table.get(name)!;
+      expect(isTableSafeGroundedOp(name, fn), name).toBe(false);
+      expect(isModedTableSafeGroundedOp(name, fn), name).toBe(false);
+    }
+
+    const replacement = () => ({ tag: "ok" as const, results: [] });
+    expect(isTableSafeGroundedOp("repr", replacement)).toBe(false);
+    expect(isModedTableSafeGroundedOp("repr", replacement)).toBe(false);
+
+    const env = buildEnv(
+      [...preludeAtoms(), ...atoms("(= (rendered-u6 $value) (repr $value))")],
+      table,
+    );
+    expect(analyzePurity(env, new Set(MODED_IMPURE_OPS)).has("rendered-u6")).toBe(true);
+    expect(analyzeModedPurity(env).has("rendered-u6")).toBe(false);
   });
 
   it("invalidates cached analysis when a host operation is registered", () => {
@@ -147,6 +215,40 @@ describe("purity analysis", () => {
 });
 
 describe("tabling end to end", () => {
+  it("replays the uncached counter delta for ground table hits", () => {
+    const fib = "(= (fib $n) (unify $n 0 0 (unify $n 1 1 (+ (fib (- $n 1)) (fib (- $n 2))))))";
+    const env = buildEnv([...preludeAtoms(), ...atoms(fib)], stdTable());
+    env.tableSpace = new TableSpace();
+    env.pureFunctors = analyzePurity(env);
+    env.tableWorth = analyzeTableWorth(env, env.pureFunctors);
+    env.modedPureFunctors = analyzeModedPurity(env);
+    env.modedTableWorth = analyzeTableWorth(env, env.modedPureFunctors);
+    env.tablingDirty = false;
+    const call = atoms("(fib 8)")[0]!;
+
+    const [coldResults, coldState] = mettaEval(env, 100_000, initSt(), [], call);
+    const [warmResults, warmState] = mettaEval(env, 100_000, coldState, [], call);
+
+    expect(warmResults.map((pair) => format(pair[0]))).toEqual(
+      coldResults.map((pair) => format(pair[0])),
+    );
+    expect(coldState.counter).toBeGreaterThan(0);
+    expect(warmState.counter - coldState.counter).toBe(coldState.counter);
+  });
+
+  it("replays the uncached counter delta for irreducible ground memo hits", () => {
+    const env = buildEnv([...preludeAtoms(), ...atoms("(= (maybe A) yes)")], stdTable());
+    const call = atoms("(maybe B)")[0]!;
+
+    const [coldResults, coldState] = mettaEval(env, 10_000, initSt(), [], call);
+    const [warmResults, warmState] = mettaEval(env, 10_000, coldState, [], call);
+
+    expect(coldResults.map((pair) => format(pair[0]))).toEqual(["(maybe B)"]);
+    expect(warmResults.map((pair) => format(pair[0]))).toEqual(["(maybe B)"]);
+    expect(coldState.counter).toBeGreaterThan(0);
+    expect(warmState.counter - coldState.counter).toBe(coldState.counter);
+  });
+
   it("tabled fib agrees with untabled (fib 20) and computes fib(30) fast", () => {
     const fib = "(= (fib $n) (unify $n 0 0 (unify $n 1 1 (+ (fib (- $n 1)) (fib (- $n 2))))))";
     const small = `${fib}\n!(fib 20)`;
@@ -176,6 +278,57 @@ describe("tabling end to end", () => {
 });
 
 describe("tabling invalidation", () => {
+  it("does not cache an effect reached through a runtime bare-symbol rule", () => {
+    let clockCalls = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => 1000 + clockCalls++);
+    try {
+      const src = `
+        !(add-atom &self (= unsafe-symbol-u6 (current-time)))
+        !(add-atom &self (= (f-u6 Z) unsafe-symbol-u6))
+        !(add-atom &self (= (f-u6 (S $n)) ((f-u6 $n) (f-u6 $n))))
+        !(add-atom &self (= (h-u6) (f-u6 Z)))
+        !(add-atom &self (= (h-u6) (f-u6 Z)))
+        !(h-u6)
+      `;
+      const result = runProgram(src, 100_000, new Map(), { tabling: true }).at(-1)!;
+
+      expect(result.results.map(format)).toEqual(["1.0", "1.001"]);
+      expect(clockCalls).toBe(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      name: "a locally bound callable variable",
+      base: "(let $function (choose-u6) ($function))",
+    },
+    {
+      name: "a reducible expression head",
+      base: "((choose-u6))",
+    },
+  ])("does not cache an effect reached through $name", ({ base }) => {
+    let clockCalls = 0;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => 1000 + clockCalls++);
+    try {
+      const src = `
+        !(add-atom &self (= (choose-u6) current-time))
+        !(add-atom &self (= (dynamic-u6 Z) ${base}))
+        !(add-atom &self (= (dynamic-u6 (S $n)) ((dynamic-u6 $n) (dynamic-u6 $n))))
+        !(add-atom &self (= (dynamic-root-u6) (dynamic-u6 Z)))
+        !(add-atom &self (= (dynamic-root-u6) (dynamic-u6 Z)))
+        !(dynamic-root-u6)
+      `;
+      const result = runProgram(src, 100_000, new Map(), { tabling: true }).at(-1)!;
+
+      expect(result.results.map(format)).toEqual(["1.0", "1.001"]);
+      expect(clockCalls).toBe(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("runtime helper rule changes invalidate cached callers through the world rule version", () => {
     const src =
       "(= (fib $n) (if (< $n 2) (base) (+ (fib (- $n 1)) (fib (- $n 2)))))\n" +

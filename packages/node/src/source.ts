@@ -10,40 +10,51 @@ import {
   evalSequentialAllDirectives,
   parseAll,
   runProgramAsync,
+  runProgramAsyncAllDirectives,
   standardTokenizer,
   type AsyncGroundFn,
   type Atom,
   type QueryResult,
   type RunOptions,
 } from "@metta-ts/core";
-import { makeParEvalImpl, type ParEvalOptions } from "./par-hyperpose";
+import { makeParEvalAsyncImpl, type ParEvalOptions } from "./par-hyperpose";
 
-function withDefaultParallelism(
-  fuel: number,
-  opts: RunOptions | undefined,
-  parOptions?: ParEvalOptions,
-): RunOptions {
+function withSyncDefaults(opts: RunOptions | undefined): RunOptions {
   const base = opts ?? {};
   return {
     ...base,
     tabling: base.tabling ?? true,
-    parEvalImpl: base.parEvalImpl ?? makeParEvalImpl(fuel, parOptions),
   };
 }
 
-/** Run a MeTTa source string with an in-memory import map and Node's worker-thread hyperpose hook. */
+function withAsyncDefaults(
+  fuel: number,
+  opts: RunOptions | undefined,
+  parOptions?: ParEvalOptions,
+): RunOptions {
+  const base = withSyncDefaults(opts);
+  if (base.parEvalImpl !== undefined || base.parEvalAsyncImpl !== undefined) return base;
+  const experimental = base.experimental;
+  const workerPolicyCompatible =
+    base.tabling === true &&
+    experimental?.hashCons !== true &&
+    experimental?.trail !== true &&
+    experimental?.flatAtomspace !== false;
+  if (!workerPolicyCompatible) return base;
+  return {
+    ...base,
+    parEvalAsyncImpl: makeParEvalAsyncImpl(fuel, parOptions),
+  };
+}
+
+/** Run a MeTTa source string synchronously with an in-memory import map. */
 export function runSource(
   src: string,
   fuel = DEFAULT_FUEL,
   imports: Map<string, Atom[]> = new Map(),
   opts?: RunOptions,
 ): QueryResult[] {
-  return evalSequential(
-    parseAll(src, standardTokenizer()),
-    fuel,
-    imports,
-    withDefaultParallelism(fuel, opts),
-  );
+  return evalSequential(parseAll(src, standardTokenizer()), fuel, imports, withSyncDefaults(opts));
 }
 
 /** Run a source string and return one result entry for every top-level directive. */
@@ -57,7 +68,7 @@ export function runSourceAllDirectives(
     parseAll(src, standardTokenizer()),
     fuel,
     imports,
-    withDefaultParallelism(fuel, opts),
+    withSyncDefaults(opts),
   );
 }
 
@@ -70,13 +81,30 @@ export function runSourceAsync(
   opts?: RunOptions,
   parOptions?: ParEvalOptions,
 ): Promise<QueryResult[]> {
-  return runProgramAsync(
+  return runProgramAsync(src, asyncOps, fuel, imports, withAsyncDefaults(fuel, opts, parOptions));
+}
+
+/** Async source runner that returns one result entry for every top-level directive. */
+export function runSourceAllDirectivesAsync(
+  src: string,
+  asyncOps: Map<string, AsyncGroundFn> = new Map(),
+  fuel = DEFAULT_FUEL,
+  imports: Map<string, Atom[]> = new Map(),
+  opts?: RunOptions,
+  parOptions?: ParEvalOptions,
+): Promise<QueryResult[]> {
+  return runProgramAsyncAllDirectives(
     src,
     asyncOps,
     fuel,
     imports,
-    withDefaultParallelism(fuel, opts, parOptions),
+    withAsyncDefaults(fuel, opts, parOptions),
   );
 }
 
-export { makeParEvalImpl, type ParEvalOptions } from "./par-hyperpose";
+export {
+  activeHyperposeWorkerCount,
+  makeParEvalAsyncImpl,
+  makeParEvalImpl,
+  type ParEvalOptions,
+} from "./par-hyperpose";

@@ -19,6 +19,7 @@ import {
   parseAll,
   registerAsyncGroundedOperation,
   registerGroundedOperation,
+  runProgram,
   standardTokenizer,
   stdTable,
   sym,
@@ -109,6 +110,12 @@ describe("direct Minimal MeTTa control", () => {
     expect(run("(cons-atom eval ((missing)))")).toEqual(["(eval (missing))"]);
     expect(run("(decons-atom (eval (missing)))")).toEqual(["(eval ((missing)))"]);
     expect(run("(return (eval (missing)))")).toEqual(["(return (eval (missing)))"]);
+  });
+
+  it("keeps Hyperpose outside the direct Minimal instruction set", () => {
+    expect(run("(hyperpose (A B))")).toEqual(["(hyperpose (A B))"]);
+    expect(run("(eval (hyperpose (A B)))")).toEqual(["A", "B"]);
+    expect(runProgram("!(hyperpose (A B))")[0]?.results.map(format)).toEqual(["A", "B"]);
   });
 });
 

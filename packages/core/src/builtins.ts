@@ -38,23 +38,14 @@ import {
 } from "./number";
 import { format, parseAll } from "./parser";
 import { applySubst, type Subst } from "./substitution";
-import { Tokenizer } from "./tokenizer";
 import { readonlyMapSnapshot, readonlySetSnapshot } from "./readonly-collection";
+import { standardTokenizer } from "./standard-syntax";
 
 // A standalone tokenizer for `parse`/`sread` (number/bool literals), built here to avoid importing the runner
 // (which imports this module). Matches the runner's standardTokenizer.
-let parseTokenizer: Tokenizer | undefined;
-function makeTokenizer(): Tokenizer {
-  if (parseTokenizer === undefined) {
-    const t = new Tokenizer();
-    t.register(/^[+-]?\d+$/, (s) => gint(BigInt(s)));
-    t.register(/^[+-]?\d+\.\d+$/, (s) => gfloat(Number(s)));
-    t.register(/^[+-]?\d+(\.\d+)?[eE][-+]?\d+$/, (s) => gfloat(Number(s)));
-    t.register(/^True$/, () => gbool(true));
-    t.register(/^False$/, () => gbool(false));
-    parseTokenizer = t;
-  }
-  return parseTokenizer;
+let parseTokenizer: ReturnType<typeof standardTokenizer> | undefined;
+function makeTokenizer(): ReturnType<typeof standardTokenizer> {
+  return (parseTokenizer ??= standardTokenizer());
 }
 
 export type ReduceEffect =
@@ -123,6 +114,8 @@ export interface GroundedCallContext {
   /** Append-only successful import history. Removing imported atoms does not erase this audit log. */
   readonly moduleInstallations?: readonly GroundedModuleInstallation[];
   readonly capabilities?: ReadonlySet<string>;
+  /** Active evaluation cancellation. Async groundeds should stop promptly when it aborts. */
+  readonly signal?: AbortSignal;
 }
 
 export const DEFAULT_GROUNDED_CALL_CONTEXT: GroundedCallContext = Object.freeze({
@@ -1643,7 +1636,7 @@ const pettaEntries: Array<[string, GroundFn]> = [
  *  fallback), so a program that defines its own e.g. `sort`/`length` is not shadowed by the stdlib one. */
 export const pettaOpNames: ReadonlySet<string> = new Set(pettaEntries.map(([n]) => n));
 
-const TABLE_UNSAFE_GROUNDED_OPS: ReadonlySet<string> = new Set([
+const GROUND_TABLE_UNSAFE_GROUNDED_OPS: ReadonlySet<string> = new Set([
   "catalog-clear!",
   "catalog-list!",
   "catalog-update!",
@@ -1668,23 +1661,84 @@ const TABLE_UNSAFE_GROUNDED_OPS: ReadonlySet<string> = new Set([
   "test",
 ]);
 
+const MODED_TABLE_UNSAFE_GROUNDED_OPS: ReadonlySet<string> = new Set([
+  ...GROUND_TABLE_UNSAFE_GROUNDED_OPS,
+  "atom_concat",
+  "concat",
+  "format-args",
+  "json-encode",
+  "msort",
+  "repr",
+  "sort",
+  "sort-atom",
+  "sort-strings",
+]);
+
 const tableSafeGroundedFns = new Map<string, GroundFn>();
-for (const [name, fn] of [...mathEntries, ...coreEntries, ...stdEntries, ...pettaEntries])
-  if (!TABLE_UNSAFE_GROUNDED_OPS.has(name) && !tableSafeGroundedFns.has(name))
+const modedTableSafeGroundedFns = new Map<string, GroundFn>();
+for (const [name, fn] of [...mathEntries, ...coreEntries, ...stdEntries, ...pettaEntries]) {
+  if (!GROUND_TABLE_UNSAFE_GROUNDED_OPS.has(name) && !tableSafeGroundedFns.has(name))
     tableSafeGroundedFns.set(name, fn);
+  if (!MODED_TABLE_UNSAFE_GROUNDED_OPS.has(name) && !modedTableSafeGroundedFns.has(name))
+    modedTableSafeGroundedFns.set(name, fn);
+}
+
+const WORKER_REPLAY_SAFE_GROUNDED_OPS: ReadonlySet<string> = new Set([
+  "+",
+  "-",
+  "*",
+  "/",
+  "%",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "==",
+  "!=",
+  "and",
+  "or",
+  "not",
+  "xor",
+]);
+const workerReplaySafeGroundedFns = new Map<string, GroundFn>();
+for (const [name, fn] of [...coreEntries, ...stdEntries])
+  if (WORKER_REPLAY_SAFE_GROUNDED_OPS.has(name) && !workerReplaySafeGroundedFns.has(name))
+    workerReplaySafeGroundedFns.set(name, fn);
 
 const contextIndependentGroundedFns = new WeakSet<GroundFn>();
 for (const [, fn] of [...mathEntries, ...coreEntries, ...stdEntries, ...pettaEntries])
   contextIndependentGroundedFns.add(fn);
+
+// Every built-in except the two spread operations returns at most one atom. Incorrect arguments, runtime
+// errors, and no-reduce outcomes also occupy one terminal branch rather than adding alternatives.
+const singleResultGroundedFns = new Map<string, GroundFn>();
+for (const [name, fn] of [...mathEntries, ...coreEntries, ...stdEntries, ...pettaEntries])
+  if (name !== "superpose" && name !== "hyperpose" && !singleResultGroundedFns.has(name))
+    singleResultGroundedFns.set(name, fn);
 
 /** True only for the unchanged built-in function registered under this name. */
 export function isTableSafeGroundedOp(name: string, fn: GroundFn): boolean {
   return tableSafeGroundedFns.get(name) === fn;
 }
 
+/** True only for an unchanged built-in whose result is invariant under variable renaming. */
+export function isModedTableSafeGroundedOp(name: string, fn: GroundFn): boolean {
+  return modedTableSafeGroundedFns.get(name) === fn;
+}
+
+/** True only for unchanged scalar built-ins whose worker replay cannot admit or construct code. */
+export function isWorkerReplaySafeGroundedOp(name: string, fn: GroundFn): boolean {
+  return workerReplaySafeGroundedFns.get(name) === fn;
+}
+
 /** True for built-in functions whose implementation cannot observe the dynamic interpreter context. */
 export function isContextIndependentGroundedOp(fn: GroundFn): boolean {
   return contextIndependentGroundedFns.has(fn);
+}
+
+/** True only for an unchanged built-in whose successful result bag has cardinality at most one. */
+export function isSingleResultGroundedOp(name: string, fn: GroundFn): boolean {
+  return singleResultGroundedFns.get(name) === fn;
 }
 
 /** The arithmetic / boolean / list-surgery / math grounding core every KB starts with. */

@@ -34,8 +34,11 @@ export * from "@metta-ts/core";
 export {
   runSource,
   runSourceAllDirectives,
+  runSourceAllDirectivesAsync,
   runSourceAsync,
   makeParEvalImpl,
+  makeParEvalAsyncImpl,
+  activeHyperposeWorkerCount,
   type ParEvalOptions,
 } from "./source";
 export { ParallelFlatMatcher } from "./flat-parallel";

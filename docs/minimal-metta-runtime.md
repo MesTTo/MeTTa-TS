@@ -1,6 +1,6 @@
 # Minimal MeTTa runtime contract
 
-The `beta` runtime separates logical answers from control and host failures. Existing APIs still return `Atom[]` or `[Atom, Bindings]` pairs. The new types are available from `@metta-ts/core/runtime` until the cursor-based evaluator is ready to drive the existing APIs through an adapter. Keeping them in a subpath leaves the main `@metta-ts/core` bundle unchanged during the migration.
+The `beta` runtime separates logical answers from control and host failures. Existing APIs still return `Atom[]` or `[Atom, Bindings]` pairs. Outcome, resource, trace, and snapshot types are available from `@metta-ts/core/runtime`. Search cursor types and evaluator cursor factories are exported from `@metta-ts/core`.
 
 ## Outcomes
 
@@ -50,9 +50,51 @@ Worker execution will use grants derived from the same account. Unused grant cap
 
 Cancellation uses `AbortSignal` for notification and a serializable `CancellationReason` for the interpreter protocol. Cancellation still needs a task scope that joins child work and runs finalizers. An abort flag alone does not prove cleanup has finished.
 
+## Search cursors and scheduler policies
+
+`createMinimalSearchCursor` and `createMinimalAsyncSearchCursor` execute direct Minimal MeTTa control. `createMettaSearchCursor` and `createMettaAsyncSearchCursor` expose the full type-directed evaluator. Each answer contains the atom, its bindings, and the state at that answer boundary.
+
+`next({ maxSteps, signal })` returns one of five events:
+
+- `answer` returns one logical alternative;
+- `pending` reports a cooperative handoff after bounded progress without an answer. A zero-step `pending` is transient and cannot stand for an external wait. An asynchronous cursor that is waiting for I/O or another readiness event keeps its `next` promise unresolved until the source becomes ready or is cancelled;
+- `exhausted` carries the terminal state;
+- `cancelled` carries a serializable reason;
+- `fault` carries a host or scheduler failure.
+
+Exhaustion, cancellation, and fault are sticky terminal states. A later `next` returns the same terminal kind with zero additional steps. `close` is idempotent. Asynchronous close cancels and joins active reads and child cursors before it resolves. Invalid quotas are rejected even after termination, so callers cannot hide a contract error behind cursor state.
+
+The scheduler classes share that protocol:
+
+| Scheduler                          | Policy                                                                |
+| ---------------------------------- | --------------------------------------------------------------------- |
+| `SourceOrderedSyncCursor`          | Drain each source before starting the next source                     |
+| `SourceOrderedAsyncCursor`         | Preserve the same policy across asynchronous suspension               |
+| `FairSyncCursor`                   | Give each runnable branch a bounded round-robin turn                  |
+| `FairAsyncCursor`                  | Keep one active read per branch and publish ready answers fairly      |
+| `ParallelSourceOrderedAsyncCursor` | Run branches concurrently, then present complete bags in source order |
+| `OnceSyncCursor`                   | Return one answer and close the retained tail                         |
+| `OnceAsyncCursor`                  | Return one answer, then cancel and join the retained tail             |
+
+`drainSyncCursor` and `drainAsyncCursor` retain the legacy eager surface. A cursor may provide a bulk `drain` implementation to avoid one promise or adapter call per answer. The bulk path must return the same remaining ordered stream as repeated `next` calls.
+
+Superpose keeps the established MeTTa TS applicative cross-product and source order. Hyperpose evaluates each listed branch as one OR alternative and publishes answers in fair completion order. Both preserve duplicates, but their bags can differ because their argument admission differs. `once` selects the first answer event and closes the tail. `race` ignores empty branch completion and selects the first answer. `par` runs isolated branch worlds concurrently and presents results in source order before applying the deterministic world merge.
+
+An eager, non-streamed Hyperpose whose branches are compiled functional calls may use the host parallel evaluator. Each eligible branch has one answer position, so the worker result bag has the same source order as the scheduler's first round. Streamed branches and branches that can return several answers stay on the cursor scheduler. A worker answer includes formatted atoms and the branch's state-counter delta. A legacy atom-only bag is a protocol error because it cannot preserve state allocation. A valid legacy stateful bag can supply answers, but it cannot request local replay.
+
+Node and browser worker admission uses the same limits. `maxWorkers` defaults to at most 16 and is also bounded by the host's reported parallelism. `maxResultBytes` defaults to 65,536 bytes per worker result. The admitted result pool cannot exceed 1,073,741,824 bytes. `timeoutMs` defaults to 60,000 and cannot exceed 2,147,483,647, the largest delay that does not wrap in Node or browser timers. Invalid limits fail before workers or result buffers are created. A host returns `declined` before it accepts work, `completed` after every accepted task is joined, or `failed` after joining and retaining the failure. Local replay is allowed only after `declined` or for failed branch data inside `completed`. A rejection without one of those ownership certificates is terminal. Failure to prove quiescence is a `WorkerQuiescenceError`.
+
+Grounded async operations receive the active `AbortSignal` as `context.signal`. A cooperative operation should stop its timer, I/O request, or other pending host work when the signal aborts. The evaluator waits for that rejected or completed operation before asynchronous closure finishes.
+
 ## Trace identity
 
 Runtime IDs use the serializable form `<kind>:<namespace>:<sequence>`. Each kind has its own counter, so variable scopes, states, spaces, branches, effects, suspensions, spans, and events do not consume one shared sequence. Worker lanes append a disjoint namespace.
+
+Public root namespaces and lane components contain at most 128 characters. `makeRuntimeId`, the `RuntimeIdAllocator` constructor, and `fork` enforce that component bound. An allocator-generated descendant path can be longer because it joins several validated components. `parseRuntimeId` accepts those longer serialized namespaces and keeps the existing parser asymmetry.
+
+A lane without a dot or the reserved `_x_` prefix keeps its legacy spelling. Other lanes use an `_x_`-prefixed hexadecimal encoding, so one dotted lane cannot alias several nested lanes under the same root. Treat the complete runtime ID as opaque. Root namespaces retain their established spelling for compatibility.
+
+`fork` is the operation that creates a disjoint allocation lane. `clone` creates a deterministic replay snapshot, so the source and clone repeat the same future IDs if both continue. `parentAuthority` returns the replay snapshot that replaces a child when control rejoins its parent. Continuing both that snapshot and the retained parent can also repeat IDs.
 
 `TraceContext` carries a trace ID, span ID, branch ID, and state ID. Child branches retain the trace ID and record their parent span. The shape follows OpenTelemetry's rule that trace context is immutable and serializable after a span ends. See the OpenTelemetry JS [`SpanContext`](https://github.com/open-telemetry/opentelemetry-js/blob/d8894cf99074d487203e1b814d9c3679019b63d3/api/src/trace/span_context.ts).
 
@@ -167,6 +209,8 @@ The machine records whether a frame is executable control or a delivered value. 
 
 Every other instruction result is delivered as data. A delivered `(eval x)` is not executed merely because its head names an instruction. The `Frame.fin` field remains as a compatibility mirror while `Frame.control` records `execute` or `deliver` directly. The representation follows the explicit control and continuation split described by [Abstracting Abstract Machines](https://arxiv.org/abs/1007.4446), with a relational binding frame added for MeTTa.
 
+`hyperpose` is a full MeTTa scheduling operation, not an instruction in the direct Minimal set. A direct Minimal root such as `(hyperpose (A B))` is therefore delivered unchanged. `(eval (hyperpose (A B)))` explicitly requests one grounded reduction and produces `A` and `B`, but does not evaluate branch bodies through the fair scheduler. The full `mettaEval` and cursor entry points recognize `hyperpose`, evaluate each branch, and expose answers in fair completion order. The same admission rule keeps other full-language operations from acquiring control behavior merely because they appear at a Minimal root.
+
 ### One-step `eval`
 
 `(eval atom)` performs one reduction at the Minimal boundary:
@@ -232,4 +276,4 @@ The following public signatures remain unchanged during the migration:
 - `QueryResult` has only `query` and `results`.
 - `ReduceResult`, `GroundFn`, `Frame`, `Item`, `World`, `St`, and string-based `Bindings` remain exported.
 
-The cursor evaluator will expose typed outcomes beside these APIs. The legacy functions will drain the cursor through `projectLegacyOutcome` once the cursor owns the complete transition loop.
+The cursor evaluator exposes typed search events beside these APIs. Legacy functions retain their result signatures and use bulk compatibility drains over the same generator transition relation.

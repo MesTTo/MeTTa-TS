@@ -33,15 +33,27 @@ import {
 import { type Bindings, emptyBindings, prependValRaw, hasLoop, lookupVal } from "./bindings";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { instantiate } from "./instantiate";
-import { IMPURE_OPS } from "./tabling";
+import { analyzeCompilerCandidates, IMPURE_OPS } from "./tabling";
 import { type IntVal, addInt, subInt, mulInt, intDiv, intMod, isZero, cmpIntVal } from "./number";
 import { callGrounded } from "./builtins";
 import { type MinEnv, type St } from "./eval";
+import { legacyFreshVariableSuffix } from "./variable-scope";
 
 /** Thrown by a compiled node when it meets a case it cannot handle faithfully (division by zero);
  *  the caller catches it (along with a native stack `RangeError`) and re-runs the call in the
  *  interpreter, which is sound because the compiled subset is side-effect-free. */
 export const BAIL = Symbol("bail");
+
+const compiledBranchNamespace = (state: St): string | undefined =>
+  state.world.allocation.branchScoped ? state.world.allocation.ids.namespace : undefined;
+
+const compiledFreshVariableSuffix = (state: St, counter: number): string =>
+  legacyFreshVariableSuffix(counter, compiledBranchNamespace(state));
+
+const compiledBranchQualifier = (state: St): string => {
+  const namespace = compiledBranchNamespace(state);
+  return namespace === undefined ? "" : `@${namespace}`;
+};
 
 // A fixed-arity tuple of ints, the one non-scalar value the compiled core handles (PeTTa's iterate/
 // quad-step thread a `($t $i $sum)` state tuple). Wrapped in a class so it is distinct from the plain
@@ -65,7 +77,13 @@ interface FunctionalHolder {
   retType: Ty;
   paramTypes: Ty[];
   run: (vals: FrameVal[]) => FrameVal | boolean;
+  /** Bounded execution slice. Present only when every recursive cycle is a direct self tail call. */
+  cooperativeSlice?: (vals: FrameVal[], maxSteps: number) => FunctionalSliceResult;
 }
+type FunctionalSliceResult =
+  | { readonly kind: "pending"; readonly frame: FrameVal[]; readonly steps: number }
+  | { readonly kind: "done"; readonly value: FrameVal | boolean; readonly steps: number }
+  | { readonly kind: "bail"; readonly frame: FrameVal[]; readonly steps: number };
 interface CompiledAtomResult {
   readonly atom: Atom;
   readonly bnd: Bindings;
@@ -74,6 +92,16 @@ export interface CompiledRunResult {
   readonly results: readonly CompiledAtomResult[];
   readonly counterDelta: number;
   readonly state?: St;
+}
+
+export type CooperativeCompiledRunEvent =
+  | { readonly kind: "pending"; readonly steps: number }
+  | { readonly kind: "done"; readonly steps: number; readonly result: CompiledRunResult }
+  | { readonly kind: "bail"; readonly steps: number; readonly residualArgs: readonly Atom[] };
+
+export interface CooperativeCompiledRun {
+  /** Execute no more than `maxSteps` compiled body iterations. Terminal events are sticky. */
+  next(maxSteps: number): CooperativeCompiledRunEvent;
 }
 interface RewriteHolder {
   kind: "rewrite";
@@ -94,7 +122,11 @@ interface SymbolicHolder {
   kind: "symbolic";
   arity: number;
   clauseCount: number;
-  run: (partAtoms: readonly Atom[], counter: number) => CompiledRunResult | undefined;
+  run: (
+    partAtoms: readonly Atom[],
+    counter: number,
+    branchNamespace?: string,
+  ) => CompiledRunResult | undefined;
 }
 export interface CompiledImpureOps {
   readonly addAtom: (env: MinEnv, st: St, space: Atom, atom: Atom) => St | undefined;
@@ -397,6 +429,33 @@ function compileTail(
   return compileBody(a, scope, holders);
 }
 
+/** True when one evaluation of the compiled body is bounded and every recursive cycle is represented by
+ *  `compileTail` as a returned argument frame. Calls to another compiled holder are rejected because its
+ *  current `run` method is indivisible and could itself diverge. */
+function cooperativeFunctionalBody(
+  atom: Atom,
+  self: string,
+  holders: FunctionalFns,
+  tail = true,
+): boolean {
+  if (atom.kind !== "expr" || atom.items.length === 0) return true;
+  const head = atom.items[0]!;
+  if (head.kind !== "sym")
+    return atom.items.every((item) => cooperativeFunctionalBody(item, self, holders, false));
+  const op = head.name;
+  const args = atom.items.slice(1);
+  if (op === self)
+    return tail && args.every((item) => cooperativeFunctionalBody(item, self, holders, false));
+  if (holders.has(op)) return false;
+  if (tail && op === "if" && args.length === 3)
+    return (
+      cooperativeFunctionalBody(args[0]!, self, holders, false) &&
+      cooperativeFunctionalBody(args[1]!, self, holders, true) &&
+      cooperativeFunctionalBody(args[2]!, self, holders, true)
+    );
+  return args.every((item) => cooperativeFunctionalBody(item, self, holders, false));
+}
+
 const bailRun = (): FrameVal | boolean => {
   throw BAIL;
 };
@@ -449,6 +508,31 @@ function makeRun(
     const v = loop(vals);
     memo.set(key, v);
     return v;
+  };
+}
+
+function makeCooperativeSlice(node: Node): NonNullable<FunctionalHolder["cooperativeSlice"]> {
+  return (initial, maxSteps) => {
+    let frame = initial;
+    let remaining = maxSteps;
+    try {
+      for (; remaining > 0; remaining--) {
+        const value: unknown = node(frame);
+        if (Array.isArray(value)) {
+          frame = value as FrameVal[];
+          continue;
+        }
+        return {
+          kind: "done",
+          value: value as FrameVal | boolean,
+          steps: maxSteps - remaining + 1,
+        };
+      }
+      return { kind: "pending", frame, steps: maxSteps };
+    } catch (error) {
+      if (error !== BAIL && !(error instanceof RangeError)) throw error;
+      return { kind: "bail", frame, steps: maxSteps - remaining + 1 };
+    }
   };
 }
 
@@ -513,6 +597,145 @@ function varTypesOf(params: readonly ParamPat[], paramTypes: readonly Ty[]): Map
  *  arity. A plain var that actually holds a tuple is upgraded by inferVarType. */
 const paramTypesOf = (params: readonly ParamPat[]): Ty[] =>
   params.map((p) => (typeof p === "string" ? "int" : (`tuple${p.length}` as Ty)));
+
+type CooperativeCodeScope = ReadonlyMap<string, string>;
+
+function compiledIntSource(value: IntVal): string {
+  if (typeof value === "bigint") return `${value}n`;
+  return Object.is(value, -0) ? "-0" : String(value);
+}
+
+function cooperativeCodeScope(params: readonly ParamPat[]): CooperativeCodeScope {
+  const scope = new Map<string, string>();
+  params.forEach((param, index) => {
+    if (typeof param === "string") scope.set(param, `frame[${index}]`);
+    else param.forEach((name, item) => scope.set(name, `frame[${index}].v[${item}]`));
+  });
+  return scope;
+}
+
+function compileCooperativeExpression(
+  atom: Atom,
+  scope: CooperativeCodeScope,
+  holders: FunctionalFns,
+): string | undefined {
+  if (atom.kind === "var") return scope.get(atom.name);
+  if (atom.kind === "gnd") {
+    if (atom.value.g === "int") return compiledIntSource(atom.value.n);
+    if (atom.value.g === "bool") return atom.value.b ? "true" : "false";
+    return undefined;
+  }
+  if (atom.kind !== "expr" || atom.items.length === 0) return undefined;
+  const head = atom.items[0]!;
+  const isCall = head.kind === "sym" && (KNOWN_OPS.has(head.name) || holders.has(head.name));
+  if (!isCall) {
+    const items = atom.items.map((item) => compileCooperativeExpression(item, scope, holders));
+    if (items.some((item) => item === undefined)) return undefined;
+    return `new Tup([${items.join(",")}])`;
+  }
+  const op = (head as SymAtom).name;
+  const args = atom.items.slice(1);
+  const binary = (helper: string): string | undefined => {
+    if (args.length !== 2) return undefined;
+    const left = compileCooperativeExpression(args[0]!, scope, holders);
+    const right = compileCooperativeExpression(args[1]!, scope, holders);
+    return left === undefined || right === undefined ? undefined : `${helper}(${left},${right})`;
+  };
+  if (op === "+") return binary("addI");
+  if (op === "-") return binary("subI");
+  if (op === "*") return binary("mulI");
+  if (op === "/") return binary("divI");
+  if (op === "%") return binary("modI");
+  if (op === "<" || op === "<=" || op === ">" || op === ">=" || op === "==" || op === "!=") {
+    const compared = binary("cmpI");
+    const comparison = op === "==" ? "===" : op === "!=" ? "!==" : op;
+    return compared === undefined ? undefined : `(${compared}${comparison}0)`;
+  }
+  if (op === "if" && args.length === 3) {
+    const condition = compileCooperativeExpression(args[0]!, scope, holders);
+    const consequent = compileCooperativeExpression(args[1]!, scope, holders);
+    const alternate = compileCooperativeExpression(args[2]!, scope, holders);
+    return condition === undefined || consequent === undefined || alternate === undefined
+      ? undefined
+      : `(${condition}?${consequent}:${alternate})`;
+  }
+  if (op === "unify" && args.length === 4) {
+    const pattern = args[1]!;
+    if (pattern.kind !== "gnd" || pattern.value.g !== "int") return undefined;
+    const actual = compileCooperativeExpression(args[0]!, scope, holders);
+    const consequent = compileCooperativeExpression(args[2]!, scope, holders);
+    const alternate = compileCooperativeExpression(args[3]!, scope, holders);
+    return actual === undefined || consequent === undefined || alternate === undefined
+      ? undefined
+      : `(cmpI(${actual},${compiledIntSource(pattern.value.n)})===0?${consequent}:${alternate})`;
+  }
+  return undefined;
+}
+
+function compileCooperativeTail(
+  atom: Atom,
+  scope: CooperativeCodeScope,
+  holders: FunctionalFns,
+  self: string,
+): string | undefined {
+  if (atom.kind === "expr" && atom.items.length > 0 && atom.items[0]!.kind === "sym") {
+    const op = atom.items[0]!.name;
+    const args = atom.items.slice(1);
+    if (op === "if" && args.length === 3) {
+      const condition = compileCooperativeExpression(args[0]!, scope, holders);
+      const consequent = compileCooperativeTail(args[1]!, scope, holders, self);
+      const alternate = compileCooperativeTail(args[2]!, scope, holders, self);
+      if (condition === undefined || consequent === undefined || alternate === undefined)
+        return undefined;
+      return `if(${condition}){${consequent}}else{${alternate}}`;
+    }
+    if (op === self) {
+      const next = args.map((arg) => compileCooperativeExpression(arg, scope, holders));
+      if (next.some((item) => item === undefined)) return undefined;
+      return `frame=[${next.join(",")}];continue;`;
+    }
+  }
+  const value = compileCooperativeExpression(atom, scope, holders);
+  return value === undefined
+    ? undefined
+    : `return {kind:"done",value:${value},steps:maxSteps-remaining};`;
+}
+
+/** Compile a direct self-tail body to one quota-aware loop. The generated source contains only compiler
+ *  templates and numeric literals. User symbols never become JavaScript identifiers or source text. */
+function compileCooperativeSlice(
+  body: Atom,
+  params: readonly ParamPat[],
+  holders: FunctionalFns,
+  self: string,
+): NonNullable<FunctionalHolder["cooperativeSlice"]> | undefined {
+  const tail = compileCooperativeTail(body, cooperativeCodeScope(params), holders, self);
+  if (tail === undefined) return undefined;
+  const source = `"use strict";const {Tup,BAIL,addI,subI,mulI,divI,modI,cmpI}=R;return function(frame,maxSteps){let remaining=maxSteps;try{for(;;){if(remaining===0)return {kind:"pending",frame,steps:maxSteps};remaining--;${tail}}}catch(error){if(error===BAIL||error instanceof RangeError)return {kind:"bail",frame,steps:maxSteps-remaining};throw error}}`;
+  const checkedDiv =
+    (divide: (left: IntVal, right: IntVal) => IntVal) =>
+    (left: IntVal, right: IntVal): IntVal => {
+      if (isZero(right)) throw BAIL;
+      return divide(left, right);
+    };
+  try {
+    const factory = new Function("R", source) as (
+      runtime: object,
+    ) => NonNullable<FunctionalHolder["cooperativeSlice"]>;
+    return factory({
+      Tup,
+      BAIL,
+      addI: addInt,
+      subI: subInt,
+      mulI: mulInt,
+      divI: checkedDiv(intDiv),
+      modI: checkedDiv(intMod),
+      cmpI: cmpIntVal,
+    });
+  } catch {
+    return undefined;
+  }
+}
 
 /** Infer a plain-var parameter's type from its first use as an argument to a compiled function: if it is
  *  passed where that function expects a tuple, it is that tuple type. Returns undefined if only used as int. */
@@ -904,7 +1127,11 @@ function compileSymbolic(env: MinEnv, functor: string): SymbolicHolder | undefin
   }
   if (arity === undefined) return undefined;
   const clauseCount = clauses.length;
-  const run = (partAtoms: readonly Atom[], counter: number): CompiledRunResult | undefined => {
+  const run = (
+    partAtoms: readonly Atom[],
+    counter: number,
+    branchNamespace?: string,
+  ): CompiledRunResult | undefined => {
     const results: CompiledAtomResult[] = [];
     for (let i = 0; i < clauseCount; i++) {
       const clause = clauses[i]!;
@@ -924,7 +1151,11 @@ function compileSymbolic(env: MinEnv, functor: string): SymbolicHolder | undefin
         if (bnds.length === 0) break;
       }
       if (bnds.length > 0) {
-        const atom = buildSymTpl(clause.tpl, slots, "#" + (counter + i));
+        const atom = buildSymTpl(
+          clause.tpl,
+          slots,
+          legacyFreshVariableSuffix(counter + i, branchNamespace),
+        );
         for (const bnd of bnds)
           results.push({
             atom,
@@ -1629,7 +1860,7 @@ function compileNondetGroup(
         const app = expr([sym(fn), ...args]);
         const out: Array<readonly [Atom, Bindings]> = [];
         for (const clause of cls) {
-          const suffix = "#" + ctr.c;
+          const suffix = compiledFreshVariableSuffix(st, ctr.c);
           ctr.c += 1;
           for (const b0 of matchAtomsScoped(clause.lhs, app, suffix))
             if (!hasLoop(b0)) execBody(clause.body, b0, suffix, out);
@@ -1760,7 +1991,7 @@ function compileNondetGroup(
         if (a.kind === "var") {
           const c = a as CellVar;
           if (c.name === "") {
-            c.name = "_c#" + String(cellNameC);
+            c.name = `_c#${cellNameC}${compiledBranchQualifier(st)}`;
             cellNameC += 1;
           }
           return variable(c.name);
@@ -1964,7 +2195,7 @@ function compileNondetGroup(
         const results: CompiledAtomResult[] = [];
         const entryCells = new Map<string, Slim>();
         const args = partAtoms.map((a) => jitRuntime.slimOfAtom(a, entryCells));
-        const namer = { c: 0 };
+        const namer = { c: 0, branchQualifier: compiledBranchQualifier(st) };
         try {
           if (strategy === "frontier" && jg.prepareFrontier?.(entry, args, stBox) !== true)
             return undefined;
@@ -2795,7 +3026,7 @@ function compileImperative(env: MinEnv, compiled: CompiledFns): void {
  *  Phase 1 infers return types (fixpoint, optimistic over recursion). Phase 2 compiles bodies with
  *  those types and drops any that fail end-to-end (a call to an uncompilable function fails too). */
 export function compileEnv(env: MinEnv): CompiledFns {
-  const pure = env.pureFunctors ?? new Set<string>();
+  const pure = analyzeCompilerCandidates(env);
   const cand: Cand = new Map();
   for (const f of pure) {
     const h = singleClauseHead(env, f);
@@ -2853,8 +3084,16 @@ export function compileEnv(env: MinEnv): CompiledFns {
       }
     }
     if (!removed) {
-      for (const [f, { node, arity }] of result)
-        holders.get(f)!.run = makeRun(arity, node, selfCallCount(cand.get(f)!.body, f) >= 2);
+      for (const [f, { node, arity }] of result) {
+        const holder = holders.get(f)!;
+        const definition = cand.get(f)!;
+        const body = definition.body;
+        holder.run = makeRun(arity, node, selfCallCount(body, f) >= 2);
+        if (cooperativeFunctionalBody(body, f, holders))
+          holder.cooperativeSlice =
+            compileCooperativeSlice(body, definition.params, holders, f) ??
+            makeCooperativeSlice(node);
+      }
       const compiled: CompiledFns = new Map(holders);
       for (const f of pure) {
         if (compiled.has(f)) continue;
@@ -2880,6 +3119,83 @@ export function compileEnv(env: MinEnv): CompiledFns {
   }
 }
 
+function functionalFrameArgs(partAtoms: readonly Atom[]): FrameVal[] | undefined {
+  const vals: FrameVal[] = [];
+  for (const atom of partAtoms) {
+    if (atom.kind === "gnd" && atom.value.g === "int") vals.push(atom.value.n);
+    else if (
+      atom.kind === "expr" &&
+      atom.items.length > 0 &&
+      atom.items.every((item) => item.kind === "gnd" && item.value.g === "int")
+    )
+      vals.push(new Tup(atom.items.map((item) => (item as { value: { n: IntVal } }).value.n)));
+    else return undefined;
+  }
+  return vals;
+}
+
+function functionalAtom(value: FrameVal | boolean): Atom {
+  return typeof value === "boolean"
+    ? gbool(value)
+    : value instanceof Tup
+      ? expr(value.v.map((number) => gint(number)))
+      : gint(value);
+}
+
+function functionalResult(value: FrameVal | boolean): CompiledRunResult {
+  return {
+    results: [{ atom: functionalAtom(value), bnd: emptyBindings }],
+    counterDelta: 0,
+  };
+}
+
+/** Start a quota-stepped compiled call when its body has no indivisible recursive edge. */
+export function startCooperativeCompiledRun(
+  env: MinEnv,
+  op: string,
+  partAtoms: readonly Atom[],
+): CooperativeCompiledRun | undefined {
+  const holder = env.compiled?.get(op);
+  if (
+    holder === undefined ||
+    holder.kind !== "functional" ||
+    holder.cooperativeSlice === undefined ||
+    partAtoms.length !== holder.arity
+  )
+    return undefined;
+  const initial = functionalFrameArgs(partAtoms);
+  if (initial === undefined) return undefined;
+  const slice = holder.cooperativeSlice;
+  let frame = initial;
+  let terminal:
+    | { readonly kind: "done"; readonly result: CompiledRunResult }
+    | { readonly kind: "bail"; readonly residualArgs: readonly Atom[] }
+    | undefined;
+  return {
+    next(maxSteps: number): CooperativeCompiledRunEvent {
+      if (!Number.isSafeInteger(maxSteps) || maxSteps <= 0)
+        throw new RangeError("maxSteps must be a positive safe integer");
+      if (terminal !== undefined) return { ...terminal, steps: 0 };
+      let steps = 0;
+      const result = slice(frame, maxSteps);
+      steps = result.steps;
+      if (result.kind === "pending") {
+        frame = result.frame;
+        return { kind: "pending", steps };
+      }
+      if (result.kind === "bail") {
+        terminal = {
+          kind: "bail",
+          residualArgs: result.frame.map((value) => functionalAtom(value)),
+        };
+        return { ...terminal, steps };
+      }
+      terminal = { kind: "done", result: functionalResult(result.value) };
+      return { ...terminal, steps };
+    },
+  };
+}
+
 /** Run a compiled function, returning an ordered result bag, or `undefined` to fall back to the interpreter
  *  when the call falls outside the proven subset. */
 export function runCompiled(
@@ -2894,7 +3210,7 @@ export function runCompiled(
   const h = env.compiled?.get(op);
   if (h === undefined || partAtoms.length !== h.arity) return undefined;
   if (h.kind === "rewrite") return h.run(partAtoms);
-  if (h.kind === "symbolic") return h.run(partAtoms, st.counter);
+  if (h.kind === "symbolic") return h.run(partAtoms, st.counter, compiledBranchNamespace(st));
   if (h.kind === "nondet") {
     if (ops === undefined) return undefined;
     return h.run(env, partAtoms, st, ops, fuel);
@@ -2908,26 +3224,10 @@ export function runCompiled(
     return { results: [{ atom: r.value, bnd: emptyBindings }], counterDelta: 0, state: r.st };
   }
   // An argument is a ground int, or a flat tuple of ground ints `(i1 i2 ...)` (the iterate/quad-step state).
-  const vals: FrameVal[] = [];
-  for (const a of partAtoms) {
-    if (a.kind === "gnd" && a.value.g === "int") vals.push(a.value.n);
-    else if (
-      a.kind === "expr" &&
-      a.items.length > 0 &&
-      a.items.every((x) => x.kind === "gnd" && x.value.g === "int")
-    )
-      vals.push(new Tup(a.items.map((x) => (x as { value: { n: IntVal } }).value.n)));
-    else return undefined;
-  }
+  const vals = functionalFrameArgs(partAtoms);
+  if (vals === undefined) return undefined;
   try {
-    const r = h.run(vals);
-    const atom =
-      typeof r === "boolean"
-        ? gbool(r)
-        : r instanceof Tup
-          ? expr(r.v.map((n) => gint(n)))
-          : gint(r);
-    return { results: [{ atom, bnd: emptyBindings }], counterDelta: 0 };
+    return functionalResult(h.run(vals));
   } catch (e) {
     if (e === BAIL || e instanceof RangeError) return undefined;
     throw e;

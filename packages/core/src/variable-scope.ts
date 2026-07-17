@@ -54,6 +54,13 @@ export class VariableScopeAllocator {
   }
 }
 
+/** Build the legacy name suffix used while the evaluator still keys bindings by display name. */
+export function legacyFreshVariableSuffix(counter: number, branchNamespace?: string): string {
+  if (!Number.isSafeInteger(counter) || counter < 0)
+    throw new RangeError("fresh-variable counter must be a non-negative safe integer");
+  return branchNamespace === undefined ? `#${counter}` : `#${counter}@${branchNamespace}`;
+}
+
 /**
  * Admit legacy variables into one syntax scope. Variables already carrying an identity are preserved.
  * Repeated legacy names inside the atom receive the same slot.

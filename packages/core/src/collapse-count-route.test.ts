@@ -14,7 +14,7 @@ import { parseAll, format } from "./parser";
 import { pettaStdlibAtoms } from "./petta-stdlib";
 import { preludeAtoms, standardTokenizer } from "./runner";
 import { stdlibAtoms } from "./stdlib";
-import { analyzePurity, analyzeTableWorth, MODED_IMPURE_OPS } from "./tabling";
+import { analyzeModedPurity, analyzePurity, analyzeTableWorth } from "./tabling";
 import { TableSpace } from "./table-space";
 import { importsForBaseDir } from "./oracle-corpus";
 
@@ -40,7 +40,7 @@ function buildDefaultTestEnv(imports: Map<string, Atom[]>) {
   env.imports = new RevisionMap(withBuiltinModules(imports));
   env.tableSpace = new TableSpace();
   env.pureFunctors = analyzePurity(env);
-  env.modedPureFunctors = analyzePurity(env, MODED_IMPURE_OPS);
+  env.modedPureFunctors = analyzeModedPurity(env);
   env.tableWorth = analyzeTableWorth(env, env.pureFunctors);
   env.modedTableWorth = analyzeTableWorth(env, env.modedPureFunctors);
   env.tablingDirty = false;

@@ -45,13 +45,12 @@ async function runCliSource(
   opts: RunOptions | undefined,
   includeNonBang: boolean,
 ): Promise<QueryResult[]> {
-  // A callable head can be constructed at runtime, so source text cannot soundly prove that `hyperpose`
-  // is unreachable. Install the worker hook for every normal CLI run; workers are created only if the
-  // evaluator reaches `(once (hyperpose ...))`.
-  const { runSource, runSourceAllDirectives } = await import("./source");
+  // Worker races must terminate and join every losing thread before evaluation continues, which requires
+  // the async driver even when the MeTTa program itself has no async grounded operations.
+  const { runSourceAsync, runSourceAllDirectivesAsync } = await import("./source");
   return includeNonBang
-    ? runSourceAllDirectives(src, fuel, imports, opts)
-    : runSource(src, fuel, imports, opts);
+    ? runSourceAllDirectivesAsync(src, new Map(), fuel, imports, opts)
+    : runSourceAsync(src, new Map(), fuel, imports, opts);
 }
 
 /** Run the file, buffering every byte it would print (query results plus eval-time `println!`/`print!`),

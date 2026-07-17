@@ -64,6 +64,7 @@ import {
   type GroundingTable,
   groundedOperationType,
   isContextIndependentGroundedOp,
+  isSingleResultGroundedOp,
   isTableSafeGroundedOp,
   pettaOpNames,
   type ReduceEffect,
@@ -72,15 +73,31 @@ import {
 import {
   type CompiledFns,
   type CompiledImpureOps,
+  type CompiledRunResult,
+  type CooperativeCompiledRunEvent,
   compileDependentNondetGroup,
   compileEnv,
   runCompiled,
   runCompiledEffectCount,
+  startCooperativeCompiledRun,
 } from "./compile";
 import { runChoicePlan, runDistinctChoicePlan, runDistinctChoicePlanBound } from "./choice-plan";
+import {
+  aggregateCleanupFailures,
+  cleanupFailureLeaves,
+  combineInitiatingAndCleanupFailure,
+  selectWorkerQuiescenceFailure,
+} from "./cleanup-fault";
 import { runDistinctIntRelation } from "./distinct-int";
 import { readEnv } from "./env";
 import { FlatAtomSpace } from "./flat-atomspace";
+import {
+  closeGeneratorAsync as closeDrivenGeneratorAsync,
+  closeGeneratorSync as closeDrivenGeneratorSync,
+  ExclusiveAsyncScope,
+  finishGeneratorAsync as finishDrivenGeneratorAsync,
+  GeneratorUnwindFailures,
+} from "./generator-lifecycle";
 import { instantiate } from "./instantiate";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { applyConsAtom, applyDeconsAtom } from "./minimal-instruction";
@@ -88,20 +105,50 @@ import { addInt, type IntVal, subInt } from "./number";
 import { format } from "./parser";
 import { readonlyMapSnapshot, readonlySetSnapshot } from "./readonly-collection";
 import { asRevisionMap, collectionRevision, RevisionMap, RevisionSet } from "./revision-collection";
+import { isWorkerQuiescenceError } from "./worker-protocol";
+import {
+  DEFAULT_SEARCH_QUANTUM,
+  FairAsyncCursor,
+  FairSyncCursor,
+  OnceAsyncCursor,
+  OnceSyncCursor,
+  ParallelSourceOrderedAsyncCursor,
+  SourceOrderedAsyncCursor,
+  drainAsyncCursor,
+  drainSyncCursor,
+  type AsyncSearchCursor,
+  type SearchBatchEvent,
+  type SearchDrainResult,
+  type SearchEvent,
+  type SearchNextOptions,
+  type SyncSearchCursor,
+} from "./search-cursor";
+import { runStructuredTaskGroup } from "./structured-task-group";
+import { normalizeCancellationReason, type CancellationReason } from "./resources";
+import {
+  containsOpaqueApplication,
+  isVariableHeadedPattern,
+  scanReductionDependencies,
+} from "./reduction-dependency";
 import { stdlibDocAtoms } from "./stdlib";
 import { applySubst, type Subst } from "./substitution";
 import {
+  analyzeModedPurity as analyzeModedPurityRef,
   analyzePurity as analyzePurityRef,
   analyzeTableWorth,
   functorCallCount,
   IMPURE_OPS,
+  isModedTablingImpureHead,
   isTablingImpureHead,
   keyWellFormed,
   MODED_IMPURE_OPS,
 } from "./tabling";
 import { type ActiveTableEntry, TableSpace, type TableKey } from "./table-space";
 import { Trail, unifyTrail } from "./trail";
-import { uniqueVariablesInAtoms } from "./variable-scope";
+import { tryFormatTransportAtom } from "./standard-syntax";
+import { isRuntimeId, RuntimeIdAllocator, type StateId } from "./trace";
+import { legacyFreshVariableSuffix, uniqueVariablesInAtoms } from "./variable-scope";
+import { isWorkerReplaySafeAtom } from "./worker-replay";
 import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 
 // Constructor / normal-form short-circuit, on by default. `METTA_CTOR_SC=0` disables it for A/B measurement.
@@ -129,9 +176,167 @@ export type HostImportFn = (
 // A suspension is any Promise the async driver awaits; each yield site knows its resolved type. The
 // grounded boundary yields a Promise<ReduceResult>; the concurrency primitives yield Promise<[pairs,St]>.
 type Susp = Promise<unknown>;
-type Gen<R> = Generator<Susp, R, unknown>;
+const DRIVER_EFFECT = Symbol("driver-effect");
+interface DriverEffect<R = unknown> {
+  readonly effect: typeof DRIVER_EFFECT;
+  readonly operation: string;
+  runSync(maxSteps?: number): R;
+  runAsync(signal: AbortSignal, maxSteps?: number): R | Promise<R>;
+}
+
+const driverEffect = <R>(
+  operation: string,
+  runSync: (maxSteps?: number) => R,
+  runAsync: (signal: AbortSignal, maxSteps?: number) => R | Promise<R>,
+): DriverEffect<R> => ({ effect: DRIVER_EFFECT, operation, runSync, runAsync });
+
+function isDriverEffect(value: GenYield): value is DriverEffect {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "effect" in value &&
+    value.effect === DRIVER_EFFECT
+  );
+}
+
+const MINIMAL_CURSOR_SIGNAL = Symbol("minimal-cursor-signal");
+interface MinimalCursorProgressSignal {
+  readonly signal: typeof MINIMAL_CURSOR_SIGNAL;
+  readonly kind: "progress";
+  readonly state: St;
+  readonly steps: number;
+}
+interface MinimalCursorAnswerSignal {
+  readonly signal: typeof MINIMAL_CURSOR_SIGNAL;
+  readonly kind: "answer";
+  readonly pair: ContextualPair;
+  readonly state: St;
+  readonly steps: number;
+}
+type MinimalCursorSignal = MinimalCursorProgressSignal | MinimalCursorAnswerSignal;
+type CursorModeKind = "answers" | "progress" | "cooperative";
+interface CursorBudget {
+  active: boolean;
+  remaining: number;
+  pendingSteps: number;
+}
+interface CursorMode {
+  readonly kind: CursorModeKind;
+  readonly budget: CursorBudget;
+  readonly nested: CursorMode;
+}
+
+function makeCursorMode(kind: CursorModeKind, budget: CursorBudget): CursorMode {
+  budget.active = true;
+  const progress = { kind: "progress", budget } as CursorMode;
+  (progress as { nested: CursorMode }).nested = progress;
+  if (kind === "progress") return progress;
+  const root = { kind, budget } as CursorMode;
+  (root as { nested: CursorMode }).nested = kind === "cooperative" ? root : progress;
+  return root;
+}
+
+const nestedCursorMode = (cursor: CursorMode | undefined): CursorMode | undefined => cursor?.nested;
+type GenYield = Susp | MinimalCursorSignal | DriverEffect;
+type Gen<R> = Generator<GenYield, R, unknown>;
 type EvalRes = [Array<[Atom, Bindings]>, St];
 type ContextualPair = [Atom, Bindings, MinEnv?];
+type CursorEvalRes = [ContextualPair[], St];
+interface AnswerEmissionLifecycle {
+  unwinding: boolean;
+}
+interface MettaAnswerEmitter {
+  readonly emitted: WeakSet<ContextualPair>;
+  emittedCount: number;
+  readonly lifecycle: AnswerEmissionLifecycle;
+  readonly cursor?: CursorMode;
+  readonly accept?: (pair: ContextualPair, state: St) => Gen<St>;
+}
+
+function recordCursorSteps(cursor: CursorMode, steps: number): void {
+  if (steps === 0) return;
+  if (!Number.isSafeInteger(steps) || steps < 0 || steps > cursor.budget.remaining)
+    throw new RangeError(
+      `cursor attempted to charge ${String(steps)} steps with ${String(cursor.budget.remaining)} remaining`,
+    );
+  cursor.budget.remaining -= steps;
+  cursor.budget.pendingSteps += steps;
+}
+
+function takeCursorSteps(budget: CursorBudget): number {
+  const steps = budget.pendingSteps;
+  budget.pendingSteps = 0;
+  return steps;
+}
+
+function* flushCursorProgressG(cursor: CursorMode, state: St): Gen<void> {
+  if (cursor.budget.remaining !== 0 || cursor.budget.pendingSteps === 0) return;
+  yield {
+    signal: MINIMAL_CURSOR_SIGNAL,
+    kind: "progress",
+    state,
+    steps: takeCursorSteps(cursor.budget),
+  };
+}
+
+function* emitCursorAnswerG(cursor: CursorMode, pair: ContextualPair, state: St): Gen<void> {
+  yield {
+    signal: MINIMAL_CURSOR_SIGNAL,
+    kind: "answer",
+    pair,
+    state,
+    steps: takeCursorSteps(cursor.budget),
+  };
+}
+
+interface PreEvaluatedApplication {
+  readonly originalArgs: readonly Atom[];
+  readonly queryVars: readonly string[];
+  readonly signature: Atom[] | undefined;
+}
+
+function* emitMettaAnswersG(
+  emitter: MettaAnswerEmitter | undefined,
+  pairs: readonly ContextualPair[],
+  state: St,
+): Gen<St> {
+  if (emitter === undefined) return state;
+  let current = state;
+  for (const pair of pairs) {
+    if (emitter.emitted.has(pair)) continue;
+    emitter.emitted.add(pair);
+    emitter.emittedCount += 1;
+    if (emitter.accept !== undefined) {
+      current = yield* emitter.accept(pair, current);
+    } else {
+      if (emitter.cursor === undefined) {
+        yield {
+          signal: MINIMAL_CURSOR_SIGNAL,
+          kind: "answer",
+          pair,
+          state: current,
+          steps: 0,
+        };
+      } else {
+        yield* emitCursorAnswerG(emitter.cursor, pair, current);
+      }
+    }
+  }
+  return current;
+}
+
+function* emitReturnedMettaAnswersG(
+  emitter: MettaAnswerEmitter,
+  pairs: readonly ContextualPair[],
+  state: St,
+  emittedAtStart = 0,
+): Gen<St> {
+  if (emitter.lifecycle.unwinding) return state;
+  const emittedDuringEvaluation = emitter.emittedCount - emittedAtStart;
+  if (emittedDuringEvaluation < 0 || emittedDuringEvaluation > pairs.length)
+    throw new Error("streamed MeTTa answers do not match the returned answer bag");
+  return yield* emitMettaAnswersG(emitter, pairs.slice(emittedDuringEvaluation), state);
+}
 interface CandidateSource extends Iterable<Atom> {
   readonly counterPadding?: number;
   readonly synthetic?: true;
@@ -168,39 +373,115 @@ export class AsyncInSyncError extends Error {
 }
 
 let pendingAsyncOp = "?";
+const NEVER_ABORTED_SIGNAL = new AbortController().signal;
 function runGenSync<R>(gen: Gen<R>): R {
-  const r = gen.next();
-  if (!r.done) throw new AsyncInSyncError(pendingAsyncOp);
-  return r.value;
+  const failures = new GeneratorUnwindFailures();
+  let result = gen.next();
+  while (!result.done) {
+    try {
+      if (isDriverEffect(result.value)) {
+        result = gen.next(result.value.runSync());
+        continue;
+      }
+      if (isMinimalCursorSignal(result.value))
+        throw new Error("minimal cursor signal reached the eager generator driver");
+      throw new AsyncInSyncError(pendingAsyncOp);
+    } catch (error) {
+      failures.record(error);
+      try {
+        result = gen.throw(error);
+      } catch (cleanupError) {
+        failures.record(cleanupError);
+        throw failures.failure("synchronous evaluation and generator unwind both failed");
+      }
+    }
+  }
+  if (failures.active)
+    throw failures.failure("synchronous evaluation and generator unwind both failed");
+  return result.value;
 }
+
+async function finishGeneratorAsync<R>(
+  generator: Gen<R>,
+  initial: IteratorResult<GenYield, R>,
+  signal: AbortSignal,
+): Promise<void> {
+  await finishDrivenGeneratorAsync(generator, initial, signal, async (value, activeSignal) => {
+    if (isMinimalCursorSignal(value)) return undefined;
+    return isDriverEffect(value) ? value.runAsync(activeSignal) : await value;
+  });
+}
+
 /** Drive a generator asynchronously, awaiting each yielded Promise. An optional `signal` makes the
  *  evaluation cancellable: it is checked at every suspension point, so a losing `race` branch stops at
  *  its next await (cooperative cancellation; JS cannot preempt a running synchronous computation). */
 async function runGenAsync<R>(gen: Gen<R>, signal?: AbortSignal): Promise<R> {
+  signal?.throwIfAborted();
+  const failures = new GeneratorUnwindFailures();
   let r = gen.next();
   while (!r.done) {
     try {
-      signal?.throwIfAborted();
-      const v = await r.value;
-      signal?.throwIfAborted();
+      if (isMinimalCursorSignal(r.value))
+        throw new Error("minimal cursor signal reached the eager generator driver");
+      const v = isDriverEffect(r.value)
+        ? await r.value.runAsync(signal ?? NEVER_ABORTED_SIGNAL)
+        : await r.value;
+      if (signal?.aborted === true) throw signal.reason;
       r = gen.next(v);
     } catch (error) {
+      if (signal?.aborted === true) failures.record(signal.reason ?? error);
+      failures.record(error);
       // Inject suspension failures into the generator so nested transaction and resource `finally`
       // blocks run before the failure reaches the caller.
-      r = gen.throw(error);
+      let injected: IteratorResult<GenYield, R>;
+      try {
+        injected = gen.throw(error);
+      } catch (cleanupError) {
+        failures.record(cleanupError);
+        throw failures.failure("evaluation and generator unwind both failed");
+      }
+      if (signal?.aborted === true) {
+        try {
+          await finishGeneratorAsync(gen, injected, signal);
+        } catch (cleanupError) {
+          failures.record(cleanupError);
+        }
+        throw failures.failure("evaluation cancellation and generator cleanup both failed");
+      }
+      r = injected;
     }
   }
+  if (failures.active) throw failures.failure("evaluation and generator unwind both failed");
   return r.value;
+}
+
+function isMinimalCursorSignal(value: GenYield): value is MinimalCursorSignal {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "signal" in value &&
+    value.signal === MINIMAL_CURSOR_SIGNAL
+  );
 }
 
 /** The grounded-operation boundary: a sync op returns immediately; an async op (in `env.agt`) yields its
  *  Promise, which the async driver awaits and the sync driver rejects. */
+interface CompleteGroundedCallContext extends GroundedCallContext {
+  readonly generation: number;
+  readonly typeEnvironment: NonNullable<GroundedCallContext["typeEnvironment"]>;
+  readonly groundingEnvironment: NonNullable<GroundedCallContext["groundingEnvironment"]>;
+  readonly imports: NonNullable<GroundedCallContext["imports"]>;
+  readonly moduleInstallations: NonNullable<GroundedCallContext["moduleInstallations"]>;
+  readonly capabilities: NonNullable<GroundedCallContext["capabilities"]>;
+}
+
+interface SignalledGroundedCallContext extends CompleteGroundedCallContext {
+  readonly signal: AbortSignal;
+}
+
 interface CachedGroundedContext {
   readonly syncRegistry: GroundingTable;
   readonly asyncRegistry: Map<string, AsyncGroundFn>;
-  readonly syncSize: number;
-  readonly asyncSize: number;
-  readonly groundingVersion: number;
   readonly typeProgramVersion: number;
   readonly syncRevision: number | undefined;
   readonly asyncRevision: number | undefined;
@@ -209,10 +490,31 @@ interface CachedGroundedContext {
   readonly capabilities: ReadonlySet<string> | undefined;
   readonly capabilityRevision: number | undefined;
   readonly evaluationContext: GroundedCallContext;
-  readonly context: GroundedCallContext;
+  readonly context: CompleteGroundedCallContext;
 }
 
-const groundedContextCache = new WeakMap<World, WeakMap<MinEnv, CachedGroundedContext>>();
+interface GroundedContextIdentity {
+  readonly generation: number;
+  contexts?: WeakMap<MinEnv, CachedGroundedContext>;
+}
+
+const groundedContextIdentities = new WeakMap<World, GroundedContextIdentity>();
+interface SignalledGroundedContext {
+  readonly signal: AbortSignal;
+  readonly context: SignalledGroundedCallContext;
+}
+const signalledGroundedContexts = new WeakMap<
+  CompleteGroundedCallContext,
+  SignalledGroundedContext
+>();
+
+function groundedContextIdentity(world: World): GroundedContextIdentity {
+  const cached = groundedContextIdentities.get(world);
+  if (cached?.generation === world.generation) return cached;
+  const identity = { generation: world.generation };
+  groundedContextIdentities.set(world, identity);
+  return identity;
+}
 
 interface CachedGroundingEnvironment {
   readonly syncRegistry: GroundingTable;
@@ -370,14 +672,14 @@ function groundingEnvironmentFor(
   return value;
 }
 
-function groundedCallContext(env: MinEnv, world: World): GroundedCallContext {
-  let byEnvironment = groundedContextCache.get(world);
+function groundedCallContext(env: MinEnv, world: World): CompleteGroundedCallContext {
+  const identity = groundedContextIdentity(world);
+  let byEnvironment = identity.contexts;
   if (byEnvironment === undefined) {
     byEnvironment = new WeakMap();
-    groundedContextCache.set(world, byEnvironment);
+    identity.contexts = byEnvironment;
   }
   const cached = byEnvironment.get(env);
-  const groundingVersion = env.groundingVersion ?? 0;
   const typeProgramVersion = env.typeProgramVersion ?? 0;
   const syncRevision = collectionRevision(env.gt);
   const asyncRevision = collectionRevision(env.agt);
@@ -389,9 +691,6 @@ function groundedCallContext(env: MinEnv, world: World): GroundedCallContext {
     cached !== undefined &&
     cached.syncRegistry === env.gt &&
     cached.asyncRegistry === env.agt &&
-    cached.syncSize === env.gt.size &&
-    cached.asyncSize === env.agt.size &&
-    cached.groundingVersion === groundingVersion &&
     cached.typeProgramVersion === typeProgramVersion &&
     syncRevision !== undefined &&
     asyncRevision !== undefined &&
@@ -426,7 +725,7 @@ function groundedCallContext(env: MinEnv, world: World): GroundedCallContext {
       capabilityRevision,
     ),
   );
-  const context: GroundedCallContext = Object.freeze({
+  const context: CompleteGroundedCallContext = Object.freeze({
     currentSpace: base.currentSpace,
     visibleSpaces: Object.freeze(base.visibleSpaces.slice()),
     expectedType: base.expectedType,
@@ -450,9 +749,6 @@ function groundedCallContext(env: MinEnv, world: World): GroundedCallContext {
   byEnvironment.set(env, {
     syncRegistry: env.gt,
     asyncRegistry: env.agt,
-    syncSize: env.gt.size,
-    asyncSize: env.agt.size,
-    groundingVersion,
     typeProgramVersion,
     syncRevision,
     asyncRevision,
@@ -466,6 +762,44 @@ function groundedCallContext(env: MinEnv, world: World): GroundedCallContext {
   return context;
 }
 
+function groundedCallContextWithSignal(
+  env: MinEnv,
+  world: World,
+  signal: AbortSignal,
+): SignalledGroundedCallContext {
+  const base = groundedCallContext(env, world);
+  const cached = signalledGroundedContexts.get(base);
+  if (cached?.signal === signal) return cached.context;
+  // Keep this object literal fixed-shape. Reflecting and replaying every property descriptor here made a
+  // short async grounded call spend more time constructing its context than running the operation. The
+  // accessors retain the base context's lazy snapshots while every public field remains an enumerable own
+  // property, including `signal`.
+  const context: SignalledGroundedCallContext = Object.freeze({
+    currentSpace: base.currentSpace,
+    visibleSpaces: base.visibleSpaces,
+    expectedType: base.expectedType,
+    generation: world.generation,
+    get typeEnvironment() {
+      return base.typeEnvironment;
+    },
+    get groundingEnvironment() {
+      return base.groundingEnvironment;
+    },
+    get imports() {
+      return base.imports;
+    },
+    get moduleInstallations() {
+      return base.moduleInstallations;
+    },
+    get capabilities() {
+      return base.capabilities;
+    },
+    signal,
+  });
+  signalledGroundedContexts.set(base, { signal, context });
+  return context;
+}
+
 function* callGroundedG(
   env: MinEnv,
   world: World,
@@ -475,7 +809,19 @@ function* callGroundedG(
   const af = env.agt.get(op);
   if (af !== undefined) {
     pendingAsyncOp = op;
-    return (yield af(args, groundedCallContext(env, world))) as ReduceResult;
+    return (yield driverEffect(
+      op,
+      () => {
+        throw new AsyncInSyncError(op);
+      },
+      (signal) =>
+        af(
+          args,
+          signal === NEVER_ABORTED_SIGNAL
+            ? groundedCallContext(env, world)
+            : groundedCallContextWithSignal(env, world, signal),
+        ),
+    )) as ReduceResult;
   }
   const sf = env.gt.get(op);
   if (sf === undefined) return { tag: "noReduce" };
@@ -499,12 +845,23 @@ function* callHostImportG(
 ): Gen<ReduceResult | undefined> {
   const hostImport = env.hostImport;
   if (hostImport === undefined) return undefined;
-  const result = hostImport(space, file, groundedCallContext(env, world));
-  if (isPromiseLike(result)) {
-    pendingAsyncOp = "import!";
-    return (yield result) as ReduceResult;
-  }
-  return result;
+  pendingAsyncOp = "import!";
+  return (yield driverEffect(
+    "import!",
+    () => {
+      const result = hostImport(space, file, groundedCallContext(env, world));
+      if (isPromiseLike(result)) throw new AsyncInSyncError("import!");
+      return result;
+    },
+    (signal) =>
+      hostImport(
+        space,
+        file,
+        signal === NEVER_ABORTED_SIGNAL
+          ? groundedCallContext(env, world)
+          : groundedCallContextWithSignal(env, world, signal),
+      ),
+  )) as ReduceResult;
 }
 
 // ---------- machine types ----------
@@ -577,66 +934,92 @@ function opOf(a: Atom): string | undefined {
     : undefined;
 }
 
-/** Parallel `hyperpose`: when `arg` is `(hyperpose (b1 … bn))` with every branch a pure, ground call and a
- *  Node worker pool is installed (`env.parEval`), evaluate the branches in parallel OS threads and return the
- *  flattened results in branch order. PeTTa forks a thread per branch; our cooperative concurrency cannot,
- *  because a branch compiled to a native loop runs to completion without yielding, so an expensive leading
- *  branch starves a cheap later one. Each branch is re-evaluated from the program's static rules in a worker,
- *  so it is only safe when (1) the branch is pure (reads/writes no space, no IO) and ground, and (2) no rule
- *  was added at runtime (the worker would not have it). Then it is identical to evaluating the branch in line.
- *  `firstOnly` (for `(once (hyperpose …))`) makes the pool stop and return as soon as one branch finishes.
- *  Returns `undefined` (caller falls back to sequential evaluation) when any precondition fails. */
-function hyperposeBranchSources(
+function isStaticProgramWorld(world: World): boolean {
+  return (
+    world.generation === 0 &&
+    world.moduleInstallations.length === 0 &&
+    world.transactionDepth === 0 &&
+    world.spaces.size === 0 &&
+    world.store.size === 0 &&
+    world.tokens.size === 0 &&
+    world.selfExtra === null &&
+    world.flatSelfExtra === undefined &&
+    world.selfRules.size === 0 &&
+    world.selfVarRules.length === 0 &&
+    world.removedStatic === null &&
+    !world.hasTypeMutations &&
+    world.maxStackDepth === 0
+  );
+}
+
+function legacyHyperposeBranchSources(
   env: MinEnv,
   world: World,
-  bnd: Bindings,
-  arg: Atom,
+  bindings: Bindings,
+  argument: Atom,
 ): string[] | undefined {
-  if (world.selfRules.size > 0) return undefined;
-  if (world.removedStatic !== null) return undefined;
-  const a = inst(env, bnd, arg);
-  if (a.kind !== "expr" || opOf(a) !== "hyperpose" || a.items.length !== 2) return undefined;
-  const tup = a.items[1]!;
-  if (tup.kind !== "expr" || tup.items.length === 0) return undefined;
-  const branches = tup.items;
-  for (const b of branches) {
-    const h = opOf(b);
-    if (!b.ground || h === undefined || env.pureFunctors?.has(h) !== true) return undefined;
+  if (!isStaticProgramWorld(world)) return undefined;
+  const call = inst(env, bindings, argument);
+  if (call.kind !== "expr" || opOf(call) !== "hyperpose" || call.items.length !== 2)
+    return undefined;
+  const tuple = call.items[1]!;
+  if (tuple.kind !== "expr" || tuple.items.length === 0) return undefined;
+  const safeFunctors = env.workerReplaySafeFunctors;
+  if (safeFunctors === undefined) return undefined;
+  const sources: string[] = [];
+  for (const branch of tuple.items) {
+    if (!branch.ground || !isWorkerReplaySafeAtom(env, branch, safeFunctors)) return undefined;
+    const source = tryFormatTransportAtom(branch, "value");
+    if (source === undefined) return undefined;
+    sources.push(source);
   }
-  return branches.map(format);
+  return sources;
 }
 
-function flattenBranchResults(perBranch: readonly (Atom[] | null)[]): Atom[] {
-  const out: Atom[] = [];
-  for (const r of perBranch) if (r !== null) for (const at of r) out.push(at);
-  return out;
-}
-
-function tryParHyperpose(
+function legacyHyperposeEffect(
   env: MinEnv,
-  world: World,
-  bnd: Bindings,
-  arg: Atom,
-  firstOnly: boolean,
-): Atom[] | undefined {
-  if (env.parEval === undefined) return undefined;
-  const branchSrcs = hyperposeBranchSources(env, world, bnd, arg);
-  if (branchSrcs === undefined) return undefined;
-  return flattenBranchResults(env.parEval(branchSrcs, firstOnly));
+  state: St,
+  fuel: number,
+  bindings: Bindings,
+  argument: Atom,
+): DriverEffect<{ readonly atoms: Atom[]; readonly counterDelta: number } | undefined> | undefined {
+  if (env.parEval === undefined && env.parEvalAsync === undefined) return undefined;
+  const branchSources = legacyHyperposeBranchSources(env, state.world, bindings, argument);
+  if (branchSources === undefined) return undefined;
+  const select = (
+    branches: readonly ({ readonly atoms: Atom[]; readonly counterDelta: number } | null)[],
+  ): { readonly atoms: Atom[]; readonly counterDelta: number } | undefined => {
+    if (branches.some((branch) => branch === null)) return undefined;
+    const completed = branches as readonly {
+      readonly atoms: Atom[];
+      readonly counterDelta: number;
+    }[];
+    const selected = completed.find((branch) => branch.atoms.length > 0) ?? {
+      atoms: [],
+      counterDelta: Math.max(0, ...completed.map((branch) => branch.counterDelta)),
+    };
+    if (
+      selected.atoms.some((atom) => !atom.ground) ||
+      selected.counterDelta > Number.MAX_SAFE_INTEGER - state.counter
+    )
+      return undefined;
+    return selected;
+  };
+  return driverEffect(
+    "legacy-hyperpose",
+    () => {
+      if (env.parEval === undefined) throw new AsyncInSyncError("legacy-hyperpose");
+      return select(env.parEval(branchSources, true, fuel, state.counter));
+    },
+    async (signal) =>
+      select(
+        env.parEvalAsync !== undefined
+          ? await env.parEvalAsync(branchSources, true, signal, fuel, state.counter)
+          : env.parEval!(branchSources, true, fuel, state.counter),
+      ),
+  );
 }
 
-function tryParHyperposeAsync(
-  env: MinEnv,
-  world: World,
-  bnd: Bindings,
-  arg: Atom,
-  firstOnly: boolean,
-): Promise<Atom[]> | undefined {
-  if (env.parEvalAsync === undefined) return undefined;
-  const branchSrcs = hyperposeBranchSources(env, world, bnd, arg);
-  if (branchSrcs === undefined) return undefined;
-  return env.parEvalAsync(branchSrcs, firstOnly).then(flattenBranchResults);
-}
 const EMBEDDED = new Set([
   "eval",
   "evalc",
@@ -683,12 +1066,6 @@ function isEmbeddedOp(a: Atom): boolean {
 }
 
 const varsCopy = (prev: Stack): readonly string[] => (prev !== null ? prev.head.vars : []);
-
-function isVariableHeaded(a: Atom): boolean {
-  if (a.kind === "var") return true;
-  if (a.kind === "expr" && a.items.length > 0) return isVariableHeaded(a.items[0]!);
-  return false;
-}
 
 function headKey(a: Atom): string | undefined {
   if (a.kind === "sym") return a.name;
@@ -848,8 +1225,8 @@ export interface MinEnv {
   mutexes: Map<string, Promise<void>>;
   /** Optional per-run hash-cons table for immutable terms. */
   intern?: InternTable;
-  /** Ground expressions already observed to reduce to themselves for the current rule set. */
-  evaluatedAtoms: WeakSet<Atom>;
+  /** Ground expressions proven to reduce only to themselves, with the exact counter delta to replay. */
+  evaluatedAtoms: WeakMap<Atom, number>;
   // Clause indexing over &self atoms, so `match` scales past a linear scan (Prolog-style clause indexing).
   // `factIndex` maps an atom's head key (functor for an expression, name for a symbol) to its atoms;
   // used for variable/expression first-argument queries. `argIndex` is the finer index, keyed by
@@ -870,9 +1247,9 @@ export interface MinEnv {
   distinctGroundDepth?: number | undefined;
   /** Functor names proven tabling-safe by `analyzePurity`; recomputed when equations change. */
   pureFunctors?: Set<string> | undefined;
-  /** Functor names proven safe for MODED tabling by `analyzePurity(env, MODED_IMPURE_OPS)` — a superset of
-   *  `pureFunctors` (only `empty`, which is genuinely pure, is treated more permissively); recomputed
-   *  alongside it. */
+  /** Static functors whose complete rule graph can be replayed by an isolated worker. */
+  workerReplaySafeFunctors?: Set<string> | undefined;
+  /** Functor names proven safe for variant tabling by `analyzeModedPurity`. */
   modedPureFunctors?: Set<string> | undefined;
   /** Pure functors whose rule SCC has branching recursion, so ground tabling is likely useful. */
   tableWorth?: Set<string> | undefined;
@@ -889,9 +1266,20 @@ export interface MinEnv {
    *  a branch that errored or (under firstOnly) lost the race. It re-evaluates each branch from the program's
    *  rules in a worker, so it is only used when a branch is pure and the space carries no runtime additions,
    *  so it is identical to evaluating in line. */
-  parEval?: (branchSrcs: string[], firstOnly: boolean) => (Atom[] | null)[];
+  parEval?: (
+    branchSrcs: string[],
+    firstOnly: boolean,
+    remainingFuel: number,
+    initialCounter: number,
+  ) => ({ readonly atoms: Atom[]; readonly counterDelta: number } | null)[];
   /** Async host-worker equivalent, used by browser Web Workers and other non-blocking hosts. */
-  parEvalAsync?: (branchSrcs: string[], firstOnly: boolean) => Promise<(Atom[] | null)[]>;
+  parEvalAsync?: (
+    branchSrcs: string[],
+    firstOnly: boolean,
+    signal: AbortSignal,
+    remainingFuel: number,
+    initialCounter: number,
+  ) => Promise<({ readonly atoms: Atom[]; readonly counterDelta: number } | null)[]>;
   /** Compiled pure deterministic functions (the int/bool functional core); undefined when disabled. */
   compiled?: CompiledFns | undefined;
   /** Set when an equation changed, so the compiler re-runs before the next query. */
@@ -1162,7 +1550,7 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     groundingVersion: 0,
     capabilities: new RevisionSet(DEFAULT_RUNTIME_CAPABILITIES),
     mutexes: new Map(),
-    evaluatedAtoms: new WeakSet(),
+    evaluatedAtoms: new WeakMap(),
     factIndex: new Map(),
     argIndex: new Map(),
     nonGroundAtPos: new Map(),
@@ -1182,6 +1570,7 @@ function invalidateTabling(env: MinEnv): void {
   runtimePureCache.clear();
   runtimeModedPureCache.clear();
   runtimeTableWorthCache.clear();
+  env.workerReplaySafeFunctors = undefined;
   if (env.compiled !== undefined) {
     env.compiled.clear();
     env.compileDirty = true;
@@ -1194,7 +1583,7 @@ function invalidateTabling(env: MinEnv): void {
 }
 
 function invalidateGroundedRegistration(env: MinEnv): void {
-  env.evaluatedAtoms = new WeakSet();
+  env.evaluatedAtoms = new WeakMap();
   invalidateTabling(env);
   // Compiled nodes inline the standard grounded arithmetic and comparison semantics. A host can replace
   // those names, so this environment must stay on dispatch-aware interpretation after registration.
@@ -1358,7 +1747,7 @@ function ensureTablingAnalysis(env: MinEnv): void {
   retireCachedProgramSnapshot(env);
   env.pureFunctors = analyzePurityRef(env);
   env.tableWorth = analyzeTableWorth(env, env.pureFunctors);
-  env.modedPureFunctors = analyzePurityRef(env, MODED_IMPURE_OPS);
+  env.modedPureFunctors = analyzeModedPurityRef(env);
   env.modedTableWorth = analyzeTableWorth(env, env.modedPureFunctors);
   env.tablingDirty = false;
 }
@@ -1424,7 +1813,8 @@ function ensureCompiled(env: MinEnv, query: Atom): void {
 /** Runtime `add-atom`/`import!` can add equations into `selfRules`, so clear static table state and let the
  *  runtime versioned purity/worth gates decide whether those new rules can be memoised. */
 function disableTabling(env: MinEnv): void {
-  env.evaluatedAtoms = new WeakSet();
+  env.evaluatedAtoms = new WeakMap();
+  env.workerReplaySafeFunctors = undefined;
   env.compiled = undefined;
   env.compileDirty = undefined;
   env.compiledComplete = undefined;
@@ -1478,13 +1868,13 @@ export function addAtomToEnv(env: MinEnv, x: Atom, replaceTypeSignature = true):
       }
   }
   if (opOf(atom) === "=" && atom.kind === "expr" && atom.items.length === 3) {
-    env.evaluatedAtoms = new WeakSet();
+    env.evaluatedAtoms = new WeakMap();
     const lhs = atom.items[1]!;
     const rhs = atom.items[2]!;
     const k = headKey(lhs);
     if (k === undefined) {
       env.varRules.push([lhs, rhs]);
-      if (isVariableHeaded(lhs)) env.varRulesVar.push([lhs, rhs]);
+      if (isVariableHeadedPattern(lhs)) env.varRulesVar.push([lhs, rhs]);
     } else {
       const cur = env.ruleIndex.get(k);
       if (cur === undefined) env.ruleIndex.set(k, [[lhs, rhs]]);
@@ -1524,11 +1914,12 @@ interface EnvironmentMutationSnapshot {
   readonly types: Map<string, Atom[]>;
   readonly exprTypes: Array<[Atom, Atom]>;
   readonly typeCache: WeakMap<Atom, Atom[]> | undefined;
-  readonly evaluatedAtoms: WeakSet<Atom>;
+  readonly evaluatedAtoms: WeakMap<Atom, number>;
   readonly compiled: CompiledFns | undefined;
   readonly compileDirty: boolean | undefined;
   readonly compiledComplete: boolean | undefined;
   readonly pureFunctors: Set<string> | undefined;
+  readonly workerReplaySafeFunctors: Set<string> | undefined;
   readonly modedPureFunctors: Set<string> | undefined;
   readonly tableWorth: Set<string> | undefined;
   readonly modedTableWorth: Set<string> | undefined;
@@ -1546,6 +1937,7 @@ function snapshotEnvironmentMutations(env: MinEnv): EnvironmentMutationSnapshot 
     compileDirty: env.compileDirty,
     compiledComplete: env.compiledComplete,
     pureFunctors: env.pureFunctors,
+    workerReplaySafeFunctors: env.workerReplaySafeFunctors,
     modedPureFunctors: env.modedPureFunctors,
     tableWorth: env.tableWorth,
     modedTableWorth: env.modedTableWorth,
@@ -1568,6 +1960,8 @@ function restoreEnvironmentMutations(env: MinEnv, snapshot: EnvironmentMutationS
   else env.compiledComplete = snapshot.compiledComplete;
   if (snapshot.pureFunctors === undefined) env.pureFunctors = undefined;
   else env.pureFunctors = snapshot.pureFunctors;
+  if (snapshot.workerReplaySafeFunctors === undefined) env.workerReplaySafeFunctors = undefined;
+  else env.workerReplaySafeFunctors = snapshot.workerReplaySafeFunctors;
   if (snapshot.modedPureFunctors === undefined) env.modedPureFunctors = undefined;
   else env.modedPureFunctors = snapshot.modedPureFunctors;
   if (snapshot.tableWorth === undefined) env.tableWorth = undefined;
@@ -1879,7 +2273,7 @@ export interface World {
   /** Nested transaction depth used to reject host imports that cannot be rolled back. */
   transactionDepth: number;
   spaces: Map<string, NamedSpace>;
-  store: Map<number, Atom>;
+  store: Map<number | StateId, Atom>;
   tokens: Map<string, Atom>;
   // `&self` runtime additions as a persistent O(1)-append log (was a wholesale-copied `Atom[]`).
   selfExtra: AtomLog;
@@ -1914,6 +2308,13 @@ export interface World {
   // host's step budget (the `fuel` argument) is the resource ceiling and is never changed by a pragma, so a
   // program cannot raise its own limits past what the embedder allows.
   maxStackDepth: number;
+  /** Allocation authority for state and space handles. Fan-out branches receive disjoint child lanes. */
+  allocation: RuntimeAllocationLane;
+}
+
+interface RuntimeAllocationLane {
+  readonly ids: RuntimeIdAllocator;
+  readonly branchScoped: boolean;
 }
 export interface St {
   counter: number;
@@ -1949,30 +2350,82 @@ export const initSt = (): St => ({
     typeViewProgramVersion: undefined,
     typeViewOwner: undefined,
     maxStackDepth: 0,
+    allocation: {
+      ids: new RuntimeIdAllocator("metta"),
+      branchScoped: false,
+    },
   },
 });
-function cloneWorld(w: World): World {
-  return {
+
+function makeWorldView(
+  w: World,
+  allocation: RuntimeAllocationLane,
+  spaces: World["spaces"],
+  store: World["store"],
+  tokens: World["tokens"],
+  selfRules: World["selfRules"],
+  removedStaticHeads: World["removedStaticHeads"],
+  contextIdentity: GroundedContextIdentity,
+): World {
+  const view: World = {
     generation: w.generation,
     moduleInstallations: w.moduleInstallations,
     transactionDepth: w.transactionDepth,
-    spaces: new Map(w.spaces),
-    store: new Map(w.store),
-    tokens: new Map(w.tokens),
+    spaces,
+    store,
+    tokens,
     selfExtra: w.selfExtra,
     flatSelfExtra: w.flatSelfExtra,
-    selfRules: new Map(w.selfRules),
+    selfRules,
     selfVarRules: w.selfVarRules,
     selfRuleVersion: w.selfRuleVersion,
     removedStatic: w.removedStatic,
-    removedStaticHeads: new Set(w.removedStaticHeads),
+    removedStaticHeads,
     removedStaticVarRules: w.removedStaticVarRules,
     hasTypeMutations: w.hasTypeMutations,
     typeView: w.typeView,
     typeViewProgramVersion: w.typeViewProgramVersion,
     typeViewOwner: w.typeViewOwner,
     maxStackDepth: w.maxStackDepth,
+    allocation,
   };
+  groundedContextIdentities.set(view, contextIdentity);
+  return view;
+}
+
+function cloneWorld(w: World): World {
+  return makeWorldView(
+    w,
+    {
+      ids: w.allocation.ids.clone(),
+      branchScoped: w.allocation.branchScoped,
+    },
+    new Map(w.spaces),
+    new Map(w.store),
+    new Map(w.tokens),
+    new Map(w.selfRules),
+    new Set(w.removedStaticHeads),
+    groundedContextIdentity(w),
+  );
+}
+
+/** Fork a branch view over copy-on-write world components. Evaluator mutations replace a component or
+ *  call `cloneWorld` before mutating its Map, Set, or rule index, so an untouched branch can share them. */
+function forkWorldView(
+  w: World,
+  allocation: RuntimeAllocationLane,
+  contextIdentity = groundedContextIdentity(w),
+): World {
+  return makeWorldView(
+    w,
+    allocation,
+    w.spaces,
+    w.store,
+    w.tokens,
+    w.selfRules,
+    w.removedStaticHeads,
+    contextIdentity,
+  );
 }
 
 interface PinnedAsyncEvaluation {
@@ -2180,12 +2633,16 @@ function createCachedPinnedProgram(root: MinEnv, stamp: ProgramSnapshotStamp): C
     ...(root.evaluationContext === undefined
       ? {}
       : { evaluationContext: copyEvaluationContext(root.evaluationContext) }),
-    evaluatedAtoms: new WeakSet(),
+    evaluatedAtoms: new WeakMap(),
     typeCache: new WeakMap(),
     tableSpace:
       root.tableSpace === undefined ? undefined : new TableSpace(root.tableSpace.resourceBudget()),
     compiled: root.compiled === undefined ? undefined : new Map(root.compiled),
     pureFunctors: root.pureFunctors === undefined ? undefined : new Set(root.pureFunctors),
+    workerReplaySafeFunctors:
+      root.workerReplaySafeFunctors === undefined
+        ? undefined
+        : new Set(root.workerReplaySafeFunctors),
     modedPureFunctors:
       root.modedPureFunctors === undefined ? undefined : new Set(root.modedPureFunctors),
     tableWorth: root.tableWorth === undefined ? undefined : new Set(root.tableWorth),
@@ -2470,7 +2927,215 @@ function applyAtomDelta(into: Atom[], added: readonly Atom[], removed: readonly 
   return out;
 }
 
+interface NamedSpaceDelta {
+  readonly name: string;
+  readonly introduced: boolean;
+  readonly added: readonly Atom[];
+  readonly removed: readonly Atom[];
+}
+
+interface StoreWrite {
+  readonly key: number | StateId;
+  readonly introduced: boolean;
+  readonly value: Atom;
+}
+
+interface WorldDelta {
+  readonly generationDelta: number;
+  readonly moduleInstallations: readonly GroundedModuleInstallation[];
+  readonly selfAdded: readonly Atom[];
+  readonly selfRemoved: readonly Atom[];
+  readonly spaces: readonly NamedSpaceDelta[];
+  readonly store: readonly StoreWrite[];
+  readonly tokens: readonly (readonly [string, Atom])[];
+  readonly removedStatic: readonly Atom[];
+  readonly hasTypeMutations: boolean;
+  readonly maxStackDepth: number | undefined;
+}
+
+interface BranchStateDelta {
+  readonly counter: number;
+  readonly world: WorldDelta;
+}
+
+/** Capture only the mutations made after `base`; inherited branch-prefix state is not part of the delta. */
+function captureWorldDelta(base: World, branch: World): WorldDelta {
+  const generationDelta = branch.generation - base.generation;
+  if (!Number.isSafeInteger(generationDelta) || generationDelta < 0)
+    throw new Error("branch continuation moved its world generation backwards");
+  if (branch === base)
+    return {
+      generationDelta,
+      moduleInstallations: [],
+      selfAdded: [],
+      selfRemoved: [],
+      spaces: [],
+      store: [],
+      tokens: [],
+      removedStatic: [],
+      hasTypeMutations: false,
+      maxStackDepth: undefined,
+    };
+  if (branch.moduleInstallations.length < base.moduleInstallations.length)
+    throw new Error("branch removed an installed module from its inherited world");
+  const self =
+    base.selfExtra === branch.selfExtra && base.flatSelfExtra === branch.flatSelfExtra
+      ? { added: [], removed: [] }
+      : multisetDelta(runtimeAtoms(base), runtimeAtoms(branch));
+  const spaces: NamedSpaceDelta[] = [];
+  if (base.spaces !== branch.spaces)
+    for (const [name, value] of branch.spaces) {
+      const introduced = !base.spaces.has(name);
+      const baseValue = base.spaces.get(name);
+      const delta =
+        baseValue === value
+          ? { added: [], removed: [] }
+          : multisetDelta(namedSpaceAtoms(baseValue), namedSpaceAtoms(value));
+      if (introduced || delta.added.length > 0 || delta.removed.length > 0)
+        spaces.push({ name, introduced, added: delta.added, removed: delta.removed });
+    }
+  const store: StoreWrite[] = [];
+  if (base.store !== branch.store)
+    for (const [key, value] of branch.store)
+      if (!Object.is(base.store.get(key), value))
+        store.push({ key, introduced: !base.store.has(key), value });
+  const tokens: Array<readonly [string, Atom]> = [];
+  if (base.tokens !== branch.tokens)
+    for (const [name, value] of branch.tokens)
+      if (!Object.is(base.tokens.get(name), value)) tokens.push([name, value]);
+  const removedStatic =
+    base.removedStatic === branch.removedStatic
+      ? []
+      : logToArray(branch.removedStatic).filter(
+          (atom) => !logToArray(base.removedStatic).some((candidate) => atomEq(candidate, atom)),
+        );
+  return {
+    generationDelta,
+    moduleInstallations: branch.moduleInstallations.slice(base.moduleInstallations.length),
+    selfAdded: self.added,
+    selfRemoved: self.removed,
+    spaces,
+    store,
+    tokens,
+    removedStatic,
+    hasTypeMutations: branch.hasTypeMutations,
+    maxStackDepth: branch.maxStackDepth === base.maxStackDepth ? undefined : branch.maxStackDepth,
+  };
+}
+
+/** Apply a captured branch write set to an already merged world in deterministic journal order. */
+function applyWorldDelta(env: MinEnv, into: World, delta: WorldDelta): World {
+  const selfChanged = delta.selfAdded.length > 0 || delta.selfRemoved.length > 0;
+  const staticAtoms = logToArray(into.removedStatic);
+  for (const atom of delta.removedStatic)
+    if (!staticAtoms.some((candidate) => atomEq(candidate, atom))) staticAtoms.push(atom);
+  const staticChanged = staticAtoms.length !== logSize(into.removedStatic);
+  const changed =
+    delta.generationDelta > 0 ||
+    delta.moduleInstallations.length > 0 ||
+    selfChanged ||
+    delta.spaces.length > 0 ||
+    delta.store.length > 0 ||
+    delta.tokens.length > 0 ||
+    staticChanged ||
+    delta.maxStackDepth !== undefined;
+  if (!changed) return into;
+
+  const selfExtra = selfChanged
+    ? applyAtomDelta(runtimeAtoms(into), delta.selfAdded, delta.selfRemoved)
+    : runtimeAtoms(into);
+  const spaces = new Map(into.spaces);
+  for (const space of delta.spaces) {
+    if (
+      space.introduced &&
+      spaces.has(space.name) &&
+      space.name.startsWith("&") &&
+      isRuntimeId(space.name.slice(1), "space")
+    )
+      throw new Error(`branch allocation collision for space '${space.name}'`);
+    spaces.set(
+      space.name,
+      logFromArray(
+        applyAtomDelta(namedSpaceAtoms(spaces.get(space.name)), space.added, space.removed),
+      ),
+    );
+  }
+  const store = new Map(into.store);
+  for (const write of delta.store) {
+    if (
+      write.introduced &&
+      store.has(write.key) &&
+      typeof write.key === "string" &&
+      isRuntimeId(write.key, "state")
+    )
+      throw new Error(`branch allocation collision for state '${write.key}'`);
+    store.set(write.key, write.value);
+  }
+  const tokens = new Map(into.tokens);
+  for (const [name, value] of delta.tokens) tokens.set(name, value);
+  const staticRemovals = staticRemovalState(staticAtoms);
+  const flat = selfChanged
+    ? into.flatSelfExtra === undefined
+      ? undefined
+      : FlatAtomSpace.fromAtoms(selfExtra)
+    : into.flatSelfExtra;
+  const merged: World = {
+    generation: checkedGenerationAdvance(into.generation, delta.generationDelta),
+    moduleInstallations: Object.freeze([...into.moduleInstallations, ...delta.moduleInstallations]),
+    transactionDepth: into.transactionDepth,
+    spaces,
+    store,
+    tokens,
+    selfExtra: selfChanged
+      ? flat === undefined
+        ? logFromArray(selfExtra)
+        : emptyLog
+      : into.selfExtra,
+    flatSelfExtra: flat,
+    selfRules: selfChanged ? new Map() : into.selfRules,
+    selfVarRules: selfChanged ? [] : into.selfVarRules,
+    selfRuleVersion:
+      selfChanged || staticChanged ? nextRuntimeRuleSetVersion() : into.selfRuleVersion,
+    removedStatic: staticRemovals.removedStatic,
+    removedStaticHeads: staticRemovals.removedStaticHeads,
+    removedStaticVarRules: staticRemovals.removedStaticVarRules,
+    hasTypeMutations: into.hasTypeMutations || delta.hasTypeMutations,
+    typeView: undefined,
+    typeViewProgramVersion: undefined,
+    typeViewOwner: undefined,
+    maxStackDepth: delta.maxStackDepth ?? into.maxStackDepth,
+    allocation: {
+      ids: into.allocation.ids.clone(),
+      branchScoped: into.allocation.branchScoped,
+    },
+  };
+  groundedContextIdentities.set(merged, groundedContextIdentity(into));
+  if (selfChanged) indexSelfRules(merged, selfExtra);
+  if (merged.hasTypeMutations) {
+    const owner = rootEvaluationEnvironment(env);
+    merged.typeView = buildWorldTypeView(owner, merged);
+    merged.typeViewProgramVersion = owner.typeProgramVersion ?? 0;
+    merged.typeViewOwner = owner;
+  }
+  return merged;
+}
+
+function captureBranchStateDelta(base: St, branch: St): BranchStateDelta {
+  const counter = branch.counter - base.counter;
+  if (!Number.isSafeInteger(counter) || counter < 0)
+    throw new Error("branch continuation moved its fresh-variable counter backwards");
+  return { counter, world: captureWorldDelta(base.world, branch.world) };
+}
+
+function applyBranchStateDelta(env: MinEnv, into: St, delta: BranchStateDelta): St {
+  return {
+    counter: checkedCounterAdvance(into.counter, delta.counter),
+    world: applyWorldDelta(env, into.world, delta.world),
+  };
+}
+
 function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): World {
+  if (branches.every((branch) => branch.generation === base.generation)) return base;
   // The concurrent-branch merge works on materialized arrays (par is off the hot path); the result is
   // rebuilt into a log. The atom order is preserved so merged `&self` content matches the array version.
   const baseSelf = runtimeAtoms(base);
@@ -2480,6 +3145,8 @@ function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): Worl
   const tokens = new Map(base.tokens);
   const moduleInstallations = base.moduleInstallations.slice();
   const staticRemovals = mergeStaticRemovals(base, branches);
+  const introducedOpaqueSpaces = new Set<string>();
+  const introducedOpaqueStates = new Set<StateId>();
   let changed = false;
   let selfChanged = false;
   let maxStackDepth = base.maxStackDepth;
@@ -2496,6 +3163,11 @@ function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): Worl
       selfExtra = applyAtomDelta(selfExtra, d.added, d.removed);
     }
     for (const [k, v] of w.spaces) {
+      if (!base.spaces.has(k) && k.startsWith("&") && isRuntimeId(k.slice(1), "space")) {
+        if (introducedOpaqueSpaces.has(k))
+          throw new Error(`branch allocation collision for space '${k}'`);
+        introducedOpaqueSpaces.add(k);
+      }
       const baseV = namedSpaceAtoms(base.spaces.get(k));
       const sd = multisetDelta(baseV, namedSpaceAtoms(v));
       if (base.spaces.has(k) && sd.added.length === 0 && sd.removed.length === 0) continue;
@@ -2505,11 +3177,17 @@ function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): Worl
         logFromArray(applyAtomDelta(namedSpaceAtoms(spaces.get(k)), sd.added, sd.removed)),
       );
     }
-    for (const [k, v] of w.store)
+    for (const [k, v] of w.store) {
+      if (typeof k === "string" && !base.store.has(k) && isRuntimeId(k, "state")) {
+        if (introducedOpaqueStates.has(k))
+          throw new Error(`branch allocation collision for state '${k}'`);
+        introducedOpaqueStates.add(k);
+      }
       if (!Object.is(base.store.get(k), v)) {
         changed = true;
         store.set(k, v);
       }
+    }
     for (const [k, v] of w.tokens)
       if (!Object.is(base.tokens.get(k), v)) {
         changed = true;
@@ -2554,6 +3232,10 @@ function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): Worl
     typeViewProgramVersion: undefined,
     typeViewOwner: undefined,
     maxStackDepth,
+    allocation: {
+      ids: base.allocation.ids.clone(),
+      branchScoped: base.allocation.branchScoped,
+    },
   };
   if (selfChanged) indexSelfRules(merged, selfExtra);
   if (merged.hasTypeMutations) {
@@ -2585,30 +3267,127 @@ function mutexKey(a: Atom): string {
   }
 }
 
+function awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (complete: () => void): void => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      complete();
+    };
+    const onAbort = (): void => finish(() => reject(signal.reason));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error: unknown) => finish(() => reject(error)),
+    );
+    if (signal.aborted) onAbort();
+  });
+}
+
+async function runWithMutexAsync(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  name: string,
+  body: Atom,
+  signal: AbortSignal,
+): Promise<EvalRes> {
+  const prior = env.mutexes.get(name) ?? Promise.resolve();
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  // A lock node never rejects. A cancelled waiter resolves its node without entering the body, so later
+  // waiters still remain behind the current holder and the queue cannot become poisoned.
+  const chained = prior.then(
+    () => held,
+    () => held,
+  );
+  env.mutexes.set(name, chained);
+  try {
+    await awaitWithSignal(prior, signal);
+    signal.throwIfAborted();
+    return await mettaEvalAsyncOwned(env, fuel, state, bindings, body, signal);
+  } finally {
+    release();
+    void chained.then(() => {
+      if (env.mutexes.get(name) === chained) env.mutexes.delete(name);
+    });
+  }
+}
+
 function resolveTok(w: World, a: Atom): Atom {
   if (a.kind === "sym") return w.tokens.get(a.name) ?? a;
   return a;
 }
-const stateHandle = (id: number): Atom => expr([sym("State"), gint(id)]);
-function stateId(w: World, a: Atom): number | undefined {
-  const r = resolveTok(w, a);
-  if (opOf(r) === "State" && r.kind === "expr" && r.items.length === 2) {
-    const g = r.items[1]!;
-    if (g.kind === "gnd" && g.value.g === "int") return Number(g.value.n);
+type StateCellId = number | StateId;
+
+const stateHandle = (id: StateCellId): Atom =>
+  expr([sym("State"), typeof id === "number" ? gint(id) : sym(id)]);
+
+function parsedStateId(a: Atom): StateCellId | undefined {
+  if (opOf(a) !== "State" || a.kind !== "expr" || a.items.length !== 2) return undefined;
+  const id = a.items[1]!;
+  if (id.kind === "gnd" && id.value.g === "int") {
+    const value = Number(id.value.n);
+    return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
   }
-  return undefined;
+  return id.kind === "sym" && isRuntimeId(id.name, "state") ? id.name : undefined;
 }
+
+function stateId(w: World, a: Atom): StateCellId | undefined {
+  const r = resolveTok(w, a);
+  return parsedStateId(r);
+}
+
+interface RuntimeAllocation<T> {
+  readonly value: T;
+  readonly nextCounter: number;
+}
+
+function allocateStateCell(state: St): RuntimeAllocation<StateCellId> {
+  if (state.world.allocation.branchScoped) {
+    let id: StateId;
+    do id = state.world.allocation.ids.next("state");
+    while (state.world.store.has(id));
+    return { value: id, nextCounter: state.counter + 1 };
+  }
+  let id = state.counter;
+  while (state.world.store.has(id)) id += 1;
+  return { value: id, nextCounter: id + 1 };
+}
+
+function allocateSpaceName(state: St): RuntimeAllocation<string> {
+  if (state.world.allocation.branchScoped) {
+    let name: string;
+    do name = `&${state.world.allocation.ids.next("space")}`;
+    while (state.world.spaces.has(name) || state.world.tokens.has(name));
+    return { value: name, nextCounter: state.counter + 1 };
+  }
+  let counter = state.counter;
+  let name = `&space-${counter}`;
+  while (state.world.spaces.has(name) || state.world.tokens.has(name)) {
+    counter += 1;
+    name = `&space-${counter}`;
+  }
+  return { value: name, nextCounter: counter + 1 };
+}
+
 function spaceName(w: World, a: Atom): string | undefined {
+  if (a.kind === "sym" && a.name.startsWith("&") && isRuntimeId(a.name.slice(1), "space"))
+    return a.name;
   const r = resolveTok(w, a);
   return r.kind === "sym" ? r.name : undefined;
 }
 function resolveStates(w: World, a: Atom): Atom {
   if (w.store.size === 0) return a; // no state cells: identity, skip the tree clone (hot path)
   if (a.kind === "expr") {
-    if (opOf(a) === "State" && a.items.length === 2) {
-      const g = a.items[1]!;
-      if (g.kind === "gnd" && g.value.g === "int") return w.store.get(Number(g.value.n)) ?? a;
-    }
+    const id = parsedStateId(a);
+    if (id !== undefined) return w.store.get(id) ?? a;
     return expr(a.items.map((x) => resolveStates(w, x)));
   }
   return a;
@@ -2658,14 +3437,12 @@ function subTokens(w: World, a: Atom, intern?: InternTable): Atom {
 function wrapStatesExpr(w: World, a: ExprAtom, memo: Map<Atom, Atom>): Atom {
   const cached = memo.get(a);
   if (cached !== undefined) return cached;
-  if (opOf(a) === "State" && a.items.length === 2) {
-    const g = a.items[1]!;
-    if (g.kind === "gnd" && g.value.g === "int") {
-      const v = w.store.get(Number(g.value.n));
-      const result = v !== undefined ? expr([sym("StateValue"), v]) : a;
-      memo.set(a, result);
-      return result;
-    }
+  const state = parsedStateId(a);
+  if (state !== undefined) {
+    const value = w.store.get(state);
+    const result = value !== undefined ? expr([sym("StateValue"), value]) : a;
+    memo.set(a, result);
+    return result;
   }
   const its = a.items;
   let items: Atom[] | null = null;
@@ -2725,19 +3502,32 @@ function ruleVars(lhs: Atom, rhs: Atom): string[] {
   return vs;
 }
 
-// The fresh-rename substitution for one rule application: each rule variable to `name#counter`.
-function freshenSub(counter: number, lhs: Atom, rhs: Atom): Subst {
+function branchVariableNamespace(world: World): string | undefined {
+  return world.allocation.branchScoped ? world.allocation.ids.namespace : undefined;
+}
+
+function worldFreshVariableSuffix(world: World, counter: number): string {
+  return legacyFreshVariableSuffix(counter, branchVariableNamespace(world));
+}
+
+// The fresh-rename substitution for one rule application: each rule variable receives one shared suffix.
+function freshenSub(suffix: string, lhs: Atom, rhs: Atom): Subst {
   // A ground lhs and rhs have no variables, so the substitution is empty. Short-circuit before `ruleVars`
   // walks the whole term: a `match` over N ground facts freshens each candidate `freshenRule(fact, fact)`,
   // and the facts are distinct (no ruleVarsCache hit), so this turns the count's per-candidate cost from
   // O(term size) to O(1) — the difference between O(N·depth) and O(N) on a deep-term space like matespace.
   if (lhs.ground && rhs.ground) return [];
   const vs = ruleVars(lhs, rhs);
-  return vs.length === 0 ? [] : vs.map((v) => [v, variable(v + "#" + String(counter))]);
+  return vs.length === 0 ? [] : vs.map((v) => [v, variable(v + suffix)]);
 }
 
-export function freshenRule(counter: number, lhs: Atom, rhs: Atom): [Atom, Atom] {
-  const sub = freshenSub(counter, lhs, rhs);
+export function freshenRule(
+  counter: number,
+  lhs: Atom,
+  rhs: Atom,
+  branchNamespace?: string,
+): [Atom, Atom] {
+  const sub = freshenSub(legacyFreshVariableSuffix(counter, branchNamespace), lhs, rhs);
   if (sub.length === 0) return [lhs, rhs];
   return [applySubst(sub, lhs), applySubst(sub, rhs)];
 }
@@ -2770,7 +3560,7 @@ function queryOpWithCandidates(
   cands: Array<[Atom, Atom]>,
   noRule: Atom = notReducibleA,
 ): [Item[], St] {
-  if (isVariableHeaded(toEval)) return [[finItem(prev, noRule, b)], st];
+  if (isVariableHeadedPattern(toEval)) return [[finItem(prev, noRule, b)], st];
   const out: Item[] = [];
   let counter = st.counter;
   for (const [lhs0, rhs0] of cands) {
@@ -2786,7 +3576,7 @@ function queryOpWithCandidates(
     // on the (already-walked) result, so each application avoids the two applySubst clones that freshening
     // cost. The scoped path is byte-identical, since the fresh names (`name<suffix>`) are the same. The RHS
     // is instantiated only when a match actually fires.
-    const suffix = "#" + counter;
+    const suffix = worldFreshVariableSuffix(st.world, counter);
     counter += 1;
     for (const mb of matchAtomsScoped(lhs0, toEval, suffix)) {
       for (const m of merge(b, mb)) {
@@ -2807,7 +3597,7 @@ function queryOp(env: MinEnv, st: St, prev: Stack, toEval: Atom, b: Bindings): [
 // grounded op of the same name (those ops are a fallback, not an override).
 function hasRuleFor(env: MinEnv, w: World, counter: number, a: Atom): boolean {
   for (const [lhs, rhs] of candidatesW(env, w, a)) {
-    const [fl] = freshenRule(counter, lhs, rhs);
+    const [fl] = freshenRule(counter, lhs, rhs, branchVariableNamespace(w));
     if (matchAtoms(fl, a).length > 0) return true;
   }
   return false;
@@ -2865,27 +3655,48 @@ function* evalOpG(env: MinEnv, st: St, prev: Stack, x: Atom, b: Bindings): Gen<[
       const args = x2.items
         .slice(1)
         .map((a) => resolveStates(st.world, subTokens(st.world, a, env.intern)));
-      try {
-        const results = head.exec(args, groundedCallContext(env, st.world));
-        if (results instanceof Promise) {
-          // Async executor: suspend exactly like a named async grounded op (callGroundedG). Wrap so
-          // the driver never sees a rejection, then yield: the async driver awaits it, the sync
-          // driver throws AsyncInSyncError (runGenSync rejects any suspension).
-          pendingAsyncOp = "<grounded-exec>";
-          const settled = (yield results.then(
-            (rs) => ({ ok: rs }),
-            (e: unknown) => ({
-              err: e instanceof Error ? e.message : String(e),
-            }),
-          )) as { ok?: readonly Atom[]; err?: string };
-          if (settled.err !== undefined) return [[finItem(prev, errAtom(x2, settled.err), b)], st];
-          return [settled.ok!.map((res) => evalResult(prev, res, b, x2)), st];
-        }
-        return [results.map((res) => evalResult(prev, res, b, x2)), st];
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return [[finItem(prev, errAtom(x2, msg), b)], st];
-      }
+      pendingAsyncOp = "<grounded-exec>";
+      type GroundedExecResult =
+        | { readonly tag: "ok"; readonly results: readonly Atom[] }
+        | { readonly tag: "error"; readonly message: string };
+      const settled = (yield driverEffect(
+        "<grounded-exec>",
+        (): GroundedExecResult => {
+          let results: readonly Atom[] | Promise<readonly Atom[]>;
+          try {
+            results = head.exec!(args, groundedCallContext(env, st.world));
+          } catch (error) {
+            if (isWorkerQuiescenceError(error)) throw error;
+            return {
+              tag: "error",
+              message: error instanceof Error ? error.message : String(error),
+            };
+          }
+          if (isPromiseLike(results)) throw new AsyncInSyncError("<grounded-exec>");
+          return { tag: "ok", results };
+        },
+        async (signal): Promise<GroundedExecResult> => {
+          try {
+            const results = await head.exec!(
+              args,
+              signal === NEVER_ABORTED_SIGNAL
+                ? groundedCallContext(env, st.world)
+                : groundedCallContextWithSignal(env, st.world, signal),
+            );
+            signal.throwIfAborted();
+            return { tag: "ok", results };
+          } catch (error) {
+            if (isWorkerQuiescenceError(error)) throw error;
+            signal.throwIfAborted();
+            return {
+              tag: "error",
+              message: error instanceof Error ? error.message : String(error),
+            };
+          }
+        },
+      )) as GroundedExecResult;
+      if (settled.tag === "error") return [[finItem(prev, errAtom(x2, settled.message), b)], st];
+      return [settled.results.map((res) => evalResult(prev, res, b, x2)), st];
     }
   }
   if (isEmbeddedOp(x2)) return [[{ stack: admitAtom(x2, prev), bnd: b }], st];
@@ -2953,21 +3764,6 @@ function exhaustedPair(env: MinEnv, it: Item): ContextualPair {
       ? emptyA
       : makeExpr(active, [sym("Error"), inst(active, it.bnd, f.head.atom), sym("StackOverflow")]);
   return selected === undefined ? [atom, it.bnd] : [atom, it.bnd, selected];
-}
-
-// A depth-bound cut result: `(Error <atom> StackOverflow)`, what exhaustedPair (and the fuel-exhausted path)
-// emit when a branch hits `max-stack-depth`. It is terminal: re-evaluating it starts a fresh interpreter
-// stack that is cut at depth 1 again under a tight bound, wrapping another `(Error (eval …) StackOverflow)`
-// each time, so the reducer must never feed it back through eval.
-function isStackOverflowAtom(a: Atom): boolean {
-  return (
-    a.kind === "expr" &&
-    a.items.length === 3 &&
-    a.items[0]!.kind === "sym" &&
-    (a.items[0] as { name: string }).name === "Error" &&
-    a.items[2]!.kind === "sym" &&
-    (a.items[2] as { name: string }).name === "StackOverflow"
-  );
 }
 
 // Resolve an atom to its transitive value under `b`, following variable→value chains but stopping at
@@ -3590,7 +4386,7 @@ function matchConj(
       const pInst = inst(env, b, p);
       const source = getCandidates(pInst);
       for (const atom of source) {
-        const atom2 = freshenRule(counter, atom, atom)[0];
+        const atom2 = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
         counter += 1;
         for (const mb of matchAtoms(pInst, atom2))
           for (const m of merge(b, mb)) if (!hasLoop(m)) next.push(m);
@@ -3656,7 +4452,7 @@ function splitConjGoals(
     let relational = true;
     const source = getCandidates(pInst);
     for (const atom of source) {
-      const fresh = freshenRule(counter, atom, atom)[0];
+      const fresh = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
       counter += 1;
       for (const mb of matchAtoms(pInst, fresh)) {
         const t = new Map<string, Atom>();
@@ -3742,7 +4538,7 @@ function matchConjJoin(
       for (const atom of source) {
         let fresh = cache?.get(atom);
         if (fresh === undefined) {
-          fresh = freshenRule(counter, atom, atom)[0];
+          fresh = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
           counter += 1;
           cache?.set(atom, fresh);
         }
@@ -3781,7 +4577,13 @@ function matchConjCount(
   // single trail seeded from b0.
   if (groundRels.length === 0) {
     for (const p of patterns) if (atomHasCustomGrounded(p)) return undefined;
-    return countTrailDFS(seededTrail(b0), getCandidates, patterns, c0);
+    return countTrailDFS(
+      seededTrail(b0),
+      getCandidates,
+      patterns,
+      c0,
+      branchVariableNamespace(st.world),
+    );
   }
   for (const p of otherPatterns) if (atomHasCustomGrounded(p)) return undefined;
   // One trail, synced to the wcoJoin descent: each join variable binds in place on the way down and undoes
@@ -3807,7 +4609,14 @@ function matchConjCount(
         count += 1;
         return;
       }
-      const tc = countTrailDFS(tr, getCandidates, otherPatterns, counter, tailFreshCaches);
+      const tc = countTrailDFS(
+        tr,
+        getCandidates,
+        otherPatterns,
+        counter,
+        branchVariableNamespace(st.world),
+        tailFreshCaches,
+      );
       if (tc === undefined) {
         bailed = true;
         return;
@@ -3883,7 +4692,13 @@ function getDocOf(env: MinEnv, w: World, atom: Atom): Atom {
 }
 
 // ---------- the step function ----------
-function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[ItemBatch, St]> {
+function* interpretStack1G(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  it: Item,
+  cursor?: CursorMode,
+): Gen<[ItemBatch, St]> {
   env = refreshEvaluationEnvironment(env, st.world);
   if (it.stack === null) return [[], st];
   const top = it.stack.head;
@@ -3982,6 +4797,7 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
         it.bnd,
         atom,
         expectedType,
+        nestedCursorMode(cursor),
       );
       if (op === "metta-thread") {
         const out: Item[] = [];
@@ -3995,7 +4811,14 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
     }
     case "capture": {
       if (it2.length !== 2) break;
-      const [pairs, st2] = yield* mettaEvalG(env, fuel, st, it.bnd, it2[1]!);
+      const [pairs, st2] = yield* mettaEvalG(
+        env,
+        fuel,
+        st,
+        it.bnd,
+        it2[1]!,
+        nestedCursorMode(cursor),
+      );
       return [pairs.map((p) => finItem(prev, p[0], it.bnd)), st2];
     }
     case "get-type":
@@ -4019,7 +4842,15 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
         typeEnv = selected;
       }
       const x = op === "get-type-space" ? it2[2]! : it2[1]!;
-      return yield* getTypeOpG(typeEnv, fuel, st, prev, inst(typeEnv, it.bnd, x), it.bnd);
+      return yield* getTypeOpG(
+        typeEnv,
+        fuel,
+        st,
+        prev,
+        inst(typeEnv, it.bnd, x),
+        it.bnd,
+        nestedCursorMode(cursor),
+      );
     }
     case "check-types":
       if (it2.length === 2) {
@@ -4100,9 +4931,24 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
       ];
     case "collapse-bind": {
       if (it2.length !== 2) break;
-      const [atoms, st2] = yield* interpretLoopG(env, fuel, st, [
-        { stack: admitAtom(it2[1]!, null), bnd: it.bnd },
-      ]);
+      let atoms: ContextualPair[];
+      let st2: St;
+      if (cursor === undefined) {
+        [atoms, st2] = yield* interpretLoopG(env, fuel, st, [
+          { stack: admitAtom(it2[1]!, null), bnd: it.bnd },
+        ]);
+      } else {
+        const [answers, terminal] = yield* drainMinimalScheduleG(
+          env,
+          fuel,
+          st,
+          it.bnd,
+          it2[1]!,
+          cursor,
+        );
+        atoms = answers.map((answer) => [answer.atom, answer.bindings]);
+        st2 = terminal;
+      }
       if (collapseBindDiscardsBindings(prev)) {
         const pairs = atoms.map((pair) => makeExpr(env, [pair[0], unitA]));
         return [[finItem(prev, makeExpr(env, pairs), it.bnd)], st2];
@@ -4146,6 +4992,7 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
           { counter: st.counter, world: entered },
           it.bnd,
           it2[1]!,
+          nestedCursorMode(cursor),
         );
         committed = pairs.length > 0 && pairs.some((p) => !isErrorAtom(p[0]));
         if (!committed)
@@ -4162,65 +5009,90 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
     }
     // TS-native concurrency (async-only; see docs/.../concurrency-primitives.md).
     case "par": {
-      // Evaluate every branch concurrently on the same immutable starting world, union their results,
-      // and merge their effects as multiset deltas (add-only effects commute; conflicts -> with-mutex).
       const branches = it2.slice(1);
-      pendingAsyncOp = "par";
-      const results = (yield Promise.all(
-        branches.map((br) => mettaEvalAsyncOwned(env, fuel, st, it.bnd, br)),
-      )) as EvalRes[];
-      const out: Item[] = [];
-      let counter = st.counter;
-      const worlds: World[] = [];
-      for (const [pairs, st2] of results) {
-        for (const p of pairs) out.push(finItem(prev, p[0], it.bnd));
-        worlds.push(st2.world);
-        if (st2.counter > counter) counter = st2.counter;
+      const direct =
+        cursor === undefined ? yield* tryDirectParG(env, fuel, st, it.bnd, branches) : undefined;
+      if (direct?.kind === "complete")
+        return [
+          direct.answers.map((answer) => finItem(prev, answer.atom, answer.bindings)),
+          direct.state,
+        ];
+      const schedule =
+        direct?.kind === "resume"
+          ? direct.schedule
+          : parSchedule(env, fuel, st, it.bnd, branches, direct === undefined);
+      if (cursor === undefined) {
+        const result = (yield schedule.drainEffect()) as SearchDrainResult<
+          InternalSearchAnswer,
+          St
+        >;
+        switch (result.kind) {
+          case "exhausted":
+            return [
+              result.values.map((answer) => finItem(prev, answer.atom, answer.bindings)),
+              result.terminal,
+            ];
+          case "cancelled":
+            throw schedulerCancellationError("par", result.reason);
+          case "fault":
+            throw result.error;
+        }
       }
-      return [out, { counter, world: mergeWorlds(env, st.world, worlds) }];
+      const out: Item[] = [];
+      let exhausted = false;
+      const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
+      try {
+        for (;;) {
+          const event = (yield schedule.nextEffect()) as SearchEvent<InternalSearchAnswer, St>;
+          yield* chargeSchedulerStepsG(cursor, st, event.steps);
+          switch (event.kind) {
+            case "answer":
+              out.push(finItem(prev, event.value.atom, event.value.bindings));
+              break;
+            case "pending":
+              break;
+            case "exhausted":
+              exhausted = true;
+              return [out, event.terminal];
+            case "cancelled":
+              throw schedulerCancellationError("par", event.reason);
+            case "fault":
+              throw event.error;
+          }
+        }
+      } catch (error) {
+        unwind.active = true;
+        unwind.error = error;
+        throw error;
+      } finally {
+        if (!exhausted)
+          yield* closeScheduleG(
+            schedule,
+            { code: "parent-closed", message: "par tail closed" },
+            unwind,
+          );
+      }
     }
     case "race": {
-      // First branch to produce a non-empty result wins; the losers are cancelled via the scope's
-      // AbortSignal at their next await. "Skipped" here means a branch that yields no results or
-      // throws at the JS level (an abort); a branch that returns MeTTa `(Error ...)` atoms produces
-      // a non-empty result like any other value, so it can win the race.
       const branches = it2.slice(1);
-      pendingAsyncOp = "race";
-      const winner = (yield (async (): Promise<EvalRes> => {
-        const ac = new AbortController();
-        try {
-          return await Promise.any(
-            branches.map(async (br) => {
-              const r = await mettaEvalAsyncOwned(env, fuel, st, it.bnd, br, ac.signal);
-              if (r[0].length === 0) throw new Error("empty branch");
-              return r;
-            }),
-          );
-        } catch {
-          return [[], st];
-        } finally {
-          ac.abort();
-        }
-      })()) as EvalRes;
-      return [winner[0].map((p) => finItem(prev, p[0], it.bnd)), winner[1]];
+      const schedule = raceSchedule(env, fuel, st, it.bnd, branches);
+      return yield* takeFirstScheduledAnswerG("race", schedule, prev, st, cursor);
     }
     case "once": {
-      // Cut nondeterminism to the first result. Works in both drivers (yield* propagates); it is only
-      // async when its argument is (e.g. (once (par ...))).
       if (it2.length !== 2) break;
-      // `(once (hyperpose (b1 … bn)))` with pure ground branches: race them in worker threads (Node only)
-      // and return the first to finish, so an expensive leading branch cannot starve a cheap later one.
-      const par = tryParHyperpose(env, st.world, it.bnd, it2[1]!, true);
-      if (par !== undefined) {
-        const first = par.length > 0 ? [par[0]!] : [];
-        return [first.map((a) => finItem(prev, a, it.bnd)), st];
-      }
-      const parAsync = tryParHyperposeAsync(env, st.world, it.bnd, it2[1]!, true);
-      if (parAsync !== undefined) {
-        pendingAsyncOp = "hyperpose";
-        const results = (yield parAsync) as Atom[];
-        const first = results.length > 0 ? [results[0]!] : [];
-        return [first.map((a) => finItem(prev, a, it.bnd)), st];
+      // Keep the host's batch worker callback usable until the streamed worker ABI replaces it. The local
+      // scheduler is used whenever the callback is absent or the branch set is not proven pure and ground.
+      const legacyWorker =
+        cursor === undefined ? legacyHyperposeEffect(env, st, fuel, it.bnd, it2[1]!) : undefined;
+      if (legacyWorker !== undefined) {
+        const result = (yield legacyWorker) as
+          | { readonly atoms: Atom[]; readonly counterDelta: number }
+          | undefined;
+        if (result !== undefined) {
+          const first = result.atoms[0];
+          const workerState = { counter: st.counter + result.counterDelta, world: st.world };
+          return [first === undefined ? [] : [finItem(prev, first, it.bnd)], workerState];
+        }
       }
       const namedMatch = tryFastNamedOnceMatch(env, st, it2[1]!, it.bnd);
       if (namedMatch !== undefined) {
@@ -4228,41 +5100,34 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
           namedMatch.value === undefined ? [] : [finItem(prev, namedMatch.value, it.bnd)];
         return [first, namedMatch.state];
       }
-      const [pairs, st2] = yield* mettaEvalG(env, fuel, st, it.bnd, it2[1]!);
-      const first = pairs.length > 0 ? [pairs[0]!] : [];
-      return [first.map((p) => finItem(prev, p[0], p[1])), st2];
+      const schedule = onceSchedule(env, fuel, st, it.bnd, it2[1]!);
+      return yield* takeFirstScheduledAnswerG("once", schedule, prev, st, cursor);
     }
     case "with-mutex": {
-      // Serialise the body against other `with-mutex` sections of the same name (canonical async
-      // Promise-chain lock; release in finally so a throwing/empty body still unlocks).
       if (it2.length !== 3) break;
       const name = mutexKey(inst(env, it.bnd, it2[1]!));
       const body = it2[2]!;
       pendingAsyncOp = "with-mutex";
-      const result = (yield (async (): Promise<EvalRes> => {
-        const prior = env.mutexes.get(name) ?? Promise.resolve();
-        let release!: () => void;
-        const held = new Promise<void>((r) => (release = r));
-        const chained = prior.then(() => held);
-        env.mutexes.set(name, chained);
-        await prior;
-        try {
-          return await mettaEvalAsyncOwned(env, fuel, st, it.bnd, body);
-        } finally {
-          release();
-          // Drop the entry once this is the tail of the chain, so the map does not grow unbounded.
-          if (env.mutexes.get(name) === chained) env.mutexes.delete(name);
-        }
-      })()) as EvalRes;
+      const result = (yield driverEffect(
+        "with-mutex",
+        () => {
+          throw new AsyncInSyncError("with-mutex");
+        },
+        (signal) => runWithMutexAsync(env, fuel, st, it.bnd, name, body, signal),
+      )) as EvalRes;
       return [result[0].map((p) => finItem(prev, p[0], it.bnd)), result[1]];
     }
     case "new-state": {
       if (it2.length !== 2) break;
-      const id = st.counter;
       const w = cloneWorld(st.world);
+      const allocation = allocateStateCell({ counter: st.counter, world: w });
+      const id = allocation.value;
       w.store.set(id, inst(env, it.bnd, it2[1]!));
       w.generation = nextWorldGeneration(st.world);
-      return [[finItem(prev, stateHandle(id), it.bnd)], { counter: id + 1, world: w }];
+      return [
+        [finItem(prev, stateHandle(id), it.bnd)],
+        { counter: allocation.nextCounter, world: w },
+      ];
     }
     case "get-state": {
       if (it2.length !== 2) break;
@@ -4289,12 +5154,12 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
     }
     case "new-space":
     case "new-mork-space": {
-      const id = st.counter;
-      const name = "&space-" + String(id);
       const w = cloneWorld(st.world);
+      const allocation = allocateSpaceName({ counter: st.counter, world: w });
+      const name = allocation.value;
       w.spaces.set(name, emptyLog);
       w.generation = nextWorldGeneration(st.world);
-      return [[finItem(prev, sym(name), it.bnd)], { counter: id + 1, world: w }];
+      return [[finItem(prev, sym(name), it.bnd)], { counter: allocation.nextCounter, world: w }];
     }
     case "fork-space": {
       if (it2.length !== 2) break;
@@ -4306,12 +5171,12 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
         ];
       const srcAtoms =
         src === "&self" ? selfAtoms(env, st.world) : namedSpaceAtoms(st.world.spaces.get(src));
-      const id = st.counter;
-      const name = "&space-" + String(id);
       const w = cloneWorld(st.world);
+      const allocation = allocateSpaceName({ counter: st.counter, world: w });
+      const name = allocation.value;
       w.spaces.set(name, logFromArray(srcAtoms));
       w.generation = nextWorldGeneration(st.world);
-      return [[finItem(prev, sym(name), it.bnd)], { counter: id + 1, world: w }];
+      return [[finItem(prev, sym(name), it.bnd)], { counter: allocation.nextCounter, world: w }];
     }
     case "add-atom":
       if (it2.length === 3) {
@@ -4631,6 +5496,7 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
       typeViewProgramVersion: typesChanged ? undefined : w0.typeViewProgramVersion,
       typeViewOwner: typesChanged ? undefined : w0.typeViewOwner,
       maxStackDepth: w0.maxStackDepth,
+      allocation: w0.allocation,
     };
   }
   const spaces = new Map(w0.spaces);
@@ -4847,12 +5713,13 @@ function* getTypeOpG(
   prev: Stack,
   xi: Atom,
   b: Bindings,
+  cursor?: CursorMode,
 ): Gen<[Item[], St]> {
   const emit = function* (st0: St): Gen<[Item[], St]> {
     let acc: Item[] = [];
     let cur = st0;
     for (const t of getTypesForQuery(env, st.world, typePrep(env, st.world, xi))) {
-      const [rs, st2] = yield* mettaEvalG(env, fuel, cur, b, t);
+      const [rs, st2] = yield* mettaEvalG(env, fuel, cur, b, t, cursor);
       acc = [...acc, ...rs.map((p) => finItem(prev, p[0], b))];
       cur = st2;
     }
@@ -5521,6 +6388,7 @@ function countTrailDFS(
   getCandidates: (pInst: Atom) => CandidateSource,
   patterns: readonly Atom[],
   counter0: number,
+  branchNamespace: string | undefined,
   freshCaches?: ReadonlyArray<Map<Atom, Atom>>,
 ): { count: number; counter: number } | undefined {
   let counter = counter0;
@@ -5554,7 +6422,7 @@ function countTrailDFS(
       // counter then advances exactly as matchConjJoin's freshCache, keeping the fold's gensym in step.
       let fresh = cache?.get(cand);
       if (fresh === undefined) {
-        fresh = freshenRule(counter, cand, cand)[0];
+        fresh = freshenRule(counter, cand, cand, branchNamespace)[0];
         counter += 1;
         cache?.set(cand, fresh);
       }
@@ -5576,7 +6444,13 @@ function matchCountTrail(
   b0: Bindings,
 ): { count: number; counter: number } | undefined {
   for (const p of patterns) if (atomHasCustomGrounded(p)) return undefined;
-  return countTrailDFS(seededTrail(b0), getCandidates, patterns, st.counter);
+  return countTrailDFS(
+    seededTrail(b0),
+    getCandidates,
+    patterns,
+    st.counter,
+    branchVariableNamespace(st.world),
+  );
 }
 
 interface MatchPlan {
@@ -5597,7 +6471,7 @@ function* matchSingleSolutions(
   const pInst = inst(env, b0, pattern);
   const source = getCandidates(pInst);
   for (const atom of source) {
-    const fresh = freshenRule(counter, atom, atom)[0];
+    const fresh = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
     counter += 1;
     for (const mb of matchAtoms(pInst, fresh))
       for (const m of merge(b0, mb)) if (!hasLoop(m)) yield m;
@@ -5718,10 +6592,15 @@ function* interpretLoopG(
   // this to count results without ever materialising them. The array, the collapsed tuple, and the length
   // walk are all O(N) structures the fold avoids.
   sink?: (pair: ContextualPair) => void,
+  cursor?: CursorMode,
 ): Gen<[ContextualPair[], St]> {
+  if (cursor?.kind === "answers" && sink !== undefined)
+    throw new Error("a cursor cannot also use an eager result sink");
   const done: ContextualPair[] = [];
+  const pendingAnswers: ContextualPair[] | undefined = cursor?.kind === "answers" ? [] : undefined;
   const emit = (pair: ContextualPair): void => {
-    if (sink !== undefined) sink(pair);
+    if (pendingAnswers !== undefined) pendingAnswers.push(pair);
+    else if (sink !== undefined) sink(pair);
     else done.push(pair);
   };
   // Worklist as an explicit stack. Popping the end is O(1); the previous `queue.slice(1)` plus
@@ -5747,6 +6626,25 @@ function* interpretLoopG(
   } else {
     for (let i = work.length - 1; i >= 0; i--) stack.push(work[i]!);
   }
+  const cursorNeedsFlush = (steps: number): boolean => {
+    if (cursor === undefined) return false;
+    recordCursorSteps(cursor, steps);
+    return (
+      (pendingAnswers !== undefined && pendingAnswers.length > 0) ||
+      (cursor.budget.remaining === 0 && cursor.budget.pendingSteps > 0)
+    );
+  };
+  const flushCursor = function* (): Gen<void> {
+    if (cursor === undefined) return;
+    if (pendingAnswers === undefined || pendingAnswers.length === 0) {
+      yield* flushCursorProgressG(cursor, cur);
+      return;
+    }
+    for (const pair of pendingAnswers) {
+      yield* emitCursorAnswerG(cursor, pair, cur);
+    }
+    pendingAnswers.length = 0;
+  };
   const pullSourceItem = (): boolean => {
     while (stack.length === 0 && source !== undefined) {
       const next = source.next();
@@ -5766,12 +6664,16 @@ function* interpretLoopG(
     return stack.length > 0;
   };
   let f = fuel;
-  while (pullSourceItem()) {
+  for (;;) {
+    const hasWork = pullSourceItem();
+    if (cursorNeedsFlush(0)) yield* flushCursor();
+    if (!hasWork) break;
     if (f <= 0) {
       for (let i = stack.length - 1; i >= 0; i--) {
         const it = stack[i]!;
         emit(isFinal(it) ? finalPair(env, it) : exhaustedPair(env, it));
       }
+      if (cursorNeedsFlush(0)) yield* flushCursor();
       return [done, cur];
     }
     let it = stack.pop()!;
@@ -5808,10 +6710,11 @@ function* interpretLoopG(
       for (let p = it.stack; p !== null; p = p.tail) depth++;
       if (depth >= cur.world.maxStackDepth) {
         emit(isFinal(it) ? finalPair(activeEnv, it) : exhaustedPair(activeEnv, it));
+        if (cursorNeedsFlush(1)) yield* flushCursor();
         continue;
       }
     }
-    const [results, st2] = yield* interpretStack1G(activeEnv, f - 1, cur, it);
+    const [results, st2] = yield* interpretStack1G(activeEnv, f - 1, cur, it, cursor);
     cur = st2;
     f -= 1;
     if (isItemSource(results)) {
@@ -5827,6 +6730,7 @@ function* interpretLoopG(
         };
         beginSource(sourceWithScope, true);
       }
+      if (cursorNeedsFlush(1)) yield* flushCursor();
       continue;
     }
     // Finals stream out immediately in result order (inlined to keep the no-sink case a direct push, no
@@ -5838,11 +6742,13 @@ function* interpretLoopG(
           ? { ...raw, evaluationScope }
           : raw;
       if (isFinal(r)) {
-        if (sink !== undefined) sink(finalPair(activeEnv, r));
+        if (pendingAnswers !== undefined) pendingAnswers.push(finalPair(activeEnv, r));
+        else if (sink !== undefined) sink(finalPair(activeEnv, r));
         else done.push(finalPair(activeEnv, r));
       } else more.push(r);
     }
     for (let i = more.length - 1; i >= 0; i--) stack.push(more[i]!);
+    if (cursorNeedsFlush(1)) yield* flushCursor();
   }
   return [done, cur];
 }
@@ -5866,19 +6772,23 @@ function* reduceChildrenG(
   st: St,
   pairs: ContextualPair[],
   onTerminal: (p: ContextualPair) => Array<[Atom, Bindings]> | undefined,
+  cursor?: CursorMode,
+  emitter?: MettaAnswerEmitter,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
   const out: Array<[Atom, Bindings]> = [];
   let cur = st;
   for (const p of pairs) {
+    const before = out.length;
     const term = onTerminal(p);
     if (term !== undefined) {
       out.push(...term);
     } else {
       const selected = refreshEvaluationEnvironment(p[2] ?? env, cur.world);
-      const [more, st3] = yield* mettaEvalG(selected, fuel - 1, cur, p[1], p[0]);
+      const [more, st3] = yield* mettaEvalG(selected, fuel - 1, cur, p[1], p[0], cursor);
       cur = st3;
       out.push(...more);
     }
+    if (emitter !== undefined) cur = yield* emitMettaAnswersG(emitter, out.slice(before), cur);
   }
   return [out, cur];
 }
@@ -5888,12 +6798,6 @@ function* reduceChildrenG(
 // copy-on-write `selfRules`, and a static function may call a runtime-defined helper. Runtime table keys
 // therefore use the whole world's `selfRuleVersion`, not just the queried functor's own rule array. A stale
 // entry simply has a different key and is never hit; the bounded table store evicts it later.
-function collectHeadSyms(a: Atom, out: Set<string>): void {
-  if (a.kind === "expr" && a.items.length > 0) {
-    if (a.items[0]!.kind === "sym") out.add((a.items[0] as { name: string }).name);
-    for (const it of a.items) collectHeadSyms(it, out);
-  }
-}
 // A functor with runtime rules is tabling-safe iff its rules (static + this world's runtime) reference only
 // pure ops, transitively. Mirrors analyzePurity but over the combined rule set; cached by functor + version
 // so it is computed once per rule-set, not per call. A self/mutual-recursion cycle is treated as pure (the
@@ -5906,6 +6810,7 @@ function runtimeFunctorPureWith(
   w: World,
   op: string,
   impureOps: ReadonlySet<string>,
+  isImpureHead: typeof isTablingImpureHead,
   cache: Map<string, boolean>,
 ): boolean {
   // A variable-headed rule (e.g. the `|->` lambda applicator) can rewrite ANY call, so its mere presence
@@ -5913,7 +6818,7 @@ function runtimeFunctorPureWith(
   // shared table's assumptions. In both cases, decline to table rather than versioning partial rule views.
   if (
     staticRuleSetChanged(w) ||
-    env.varRules.some(([lhs]) => isVariableHeaded(lhs)) ||
+    env.varRules.some(([lhs]) => isVariableHeadedPattern(lhs)) ||
     w.selfVarRules.length > 0
   )
     return false;
@@ -5925,11 +6830,12 @@ function runtimeFunctorPureWith(
     if (seen.has(f)) return true;
     seen.add(f);
     const rules = [...(env.ruleIndex.get(f) ?? []), ...(w.selfRules.get(f) ?? [])];
+    const hasRule = (name: string): boolean => env.ruleIndex.has(name) || w.selfRules.has(name);
     for (const [, rhs] of rules) {
-      const heads = new Set<string>();
-      collectHeadSyms(rhs, heads);
-      for (const h of heads) {
-        if (isTablingImpureHead(env, h, impureOps)) return false;
+      const dependencies = scanReductionDependencies([rhs], hasRule);
+      if (containsOpaqueApplication(rhs)) return false;
+      for (const h of dependencies.names) {
+        if (isImpureHead(env, h, impureOps)) return false;
         if ((env.ruleIndex.has(h) || w.selfRules.has(h)) && !visit(h, seen)) return false;
       }
     }
@@ -5940,9 +6846,16 @@ function runtimeFunctorPureWith(
   return pure;
 }
 const runtimeFunctorPure = (env: MinEnv, w: World, op: string): boolean =>
-  runtimeFunctorPureWith(env, w, op, IMPURE_OPS, runtimePureCache);
+  runtimeFunctorPureWith(env, w, op, IMPURE_OPS, isTablingImpureHead, runtimePureCache);
 const runtimeFunctorPureModed = (env: MinEnv, w: World, op: string): boolean =>
-  runtimeFunctorPureWith(env, w, op, MODED_IMPURE_OPS, runtimeModedPureCache);
+  runtimeFunctorPureWith(
+    env,
+    w,
+    op,
+    MODED_IMPURE_OPS,
+    isModedTablingImpureHead,
+    runtimeModedPureCache,
+  );
 
 function runtimeFunctorTableWorth(env: MinEnv, w: World, op: string, moded: boolean): boolean {
   const staticWorth = (moded ? env.modedTableWorth : env.tableWorth)?.has(op) ?? false;
@@ -5961,11 +6874,30 @@ function runtimeFunctorTableWorth(env: MinEnv, w: World, op: string, moded: bool
 
 type CompletedTableKey = TableKey;
 
-function containsImpureHead(env: MinEnv, a: Atom, impureOps: ReadonlySet<string>): boolean {
-  if (a.kind !== "expr" || a.items.length === 0) return false;
-  const h = a.items[0]!;
-  if (h.kind === "sym" && isTablingImpureHead(env, h.name, impureOps)) return true;
-  return a.items.some((it) => containsImpureHead(env, it, impureOps));
+function containsImpureHead(
+  env: MinEnv,
+  world: World,
+  atom: Atom,
+  impureOps: ReadonlySet<string>,
+  moded: boolean,
+): boolean {
+  const hasRule = (name: string): boolean => env.ruleIndex.has(name) || world.selfRules.has(name);
+  const scan = scanReductionDependencies([atom], hasRule);
+  if (containsOpaqueApplication(atom)) return true;
+  const runtimeRulesVisible = world.selfRules.size > 0 || world.selfVarRules.length > 0;
+  const staticPure = moded ? env.modedPureFunctors : env.pureFunctors;
+  for (const name of scan.names) {
+    const isImpureHead = moded ? isModedTablingImpureHead : isTablingImpureHead;
+    if (isImpureHead(env, name, impureOps)) return true;
+    if (!hasRule(name)) continue;
+    const pure = runtimeRulesVisible
+      ? moded
+        ? runtimeFunctorPureModed(env, world, name)
+        : runtimeFunctorPure(env, world, name)
+      : (staticPure?.has(name) ?? false);
+    if (!pure) return true;
+  }
+  return false;
 }
 
 function groundTableVersionIfAdmissible(
@@ -5980,14 +6912,14 @@ function groundTableVersionIfAdmissible(
   if (runtimeRulesVisible) {
     return runtimeFunctorPure(env, world, op) &&
       runtimeFunctorTableWorth(env, world, op, false) &&
-      !containsImpureHead(env, call, IMPURE_OPS)
+      !containsImpureHead(env, world, call, IMPURE_OPS, false)
       ? runtimeVersion
       : undefined;
   }
   return (env.pureFunctors?.has(op) ?? false) &&
     (env.tableWorth?.has(op) ?? false) &&
     !staticRuleSetChanged(world) &&
-    !containsImpureHead(env, call, IMPURE_OPS)
+    !containsImpureHead(env, world, call, IMPURE_OPS, false)
     ? runtimeVersion
     : undefined;
 }
@@ -6014,8 +6946,13 @@ function dedupGroundPairs(pairs: readonly [Atom, Bindings][]): Array<[Atom, Bind
   return out;
 }
 
-function rememberGroundTable(env: MinEnv, key: CompletedTableKey, results: readonly Atom[]): void {
-  env.tableSpace?.rememberCompleted(key, 0, results);
+function rememberGroundTable(
+  env: MinEnv,
+  key: CompletedTableKey,
+  results: readonly Atom[],
+  counterDelta: number,
+): void {
+  env.tableSpace?.rememberCompleted(key, 0, results, counterDelta);
 }
 
 function rememberModedTable(
@@ -6023,8 +6960,35 @@ function rememberModedTable(
   key: CompletedTableKey,
   numCallVars: number,
   results: readonly Atom[],
+  counterDelta: number,
 ): void {
-  env.tableSpace?.rememberCompleted(key, numCallVars, results);
+  env.tableSpace?.rememberCompleted(key, numCallVars, results, counterDelta);
+}
+
+function modedReplayFreshVariableCount(results: readonly Atom[], numCallVars: number): number {
+  let count = 0;
+  for (const result of results) {
+    const variables: string[] = [];
+    collectVars(result, variables, new Set());
+    for (const variableName of variables) {
+      if (!variableName.startsWith("%")) continue;
+      const index = Number(variableName.slice(1));
+      if (Number.isInteger(index) && index >= numCallVars) count += 1;
+    }
+  }
+  return count;
+}
+
+function checkedCounterAdvance(counter: number, delta: number): number {
+  if (!Number.isSafeInteger(delta) || delta < 0 || delta > Number.MAX_SAFE_INTEGER - counter)
+    throw new RangeError("evaluation counter is exhausted");
+  return counter + delta;
+}
+
+function checkedGenerationAdvance(generation: number, delta: number): number {
+  if (!Number.isSafeInteger(delta) || delta < 0 || delta > Number.MAX_SAFE_INTEGER - generation)
+    throw new RangeError("world generation is exhausted");
+  return generation + delta;
 }
 
 /** Freshen one cached moded-tabling answer for this call instance: substitute the
@@ -6049,7 +7013,12 @@ function freshenModedResult(
     if (!v.startsWith("%")) continue;
     const n = Number(v.slice(1));
     if (Number.isInteger(n) && n >= numCallVars) {
-      rels.push(makeValRel(v, variable("_tab#" + counter)));
+      rels.push(
+        makeValRel(
+          v,
+          variable(`_tab${legacyFreshVariableSuffix(counter, branchVariableNamespace(st.world))}`),
+        ),
+      );
       counter++;
     }
   }
@@ -6252,7 +7221,7 @@ function prepareCollapseRoute(
   if (lhs.kind !== "expr" || lhs.items.length !== call.items.length || !canMatchShallow(lhs, call))
     return undefined;
 
-  const suffix = "#" + st.counter;
+  const suffix = worldFreshVariableSuffix(st.world, st.counter);
   const matches: Bindings[] = [];
   for (const mb of matchAtomsScoped(lhs, call, suffix))
     for (const m of merge(bnd, mb)) if (!hasLoop(m)) matches.push(m);
@@ -6373,6 +7342,7 @@ function* countTailMatchG(
   st: St,
   bnd: Bindings,
   match: ExprAtom,
+  cursor?: CursorMode,
 ): Gen<{ count: number; state: St }> {
   const agg = countAggregateEnabled() ? tryCountAggregate(env, st, bnd, match) : undefined;
   if (agg !== undefined)
@@ -6412,6 +7382,7 @@ function* countTailMatchG(
     () => {
       count++;
     },
+    nestedCursorMode(cursor),
   );
   return { count, state: stC };
 }
@@ -6422,6 +7393,7 @@ function* tryCollapseRouteG(
   st: St,
   bnd: Bindings,
   call: Atom,
+  cursor?: CursorMode,
 ): Gen<{ count: number; state: St } | undefined> {
   const route = prepareCollapseRoute(env, st, bnd, call);
   if (route === undefined) return undefined;
@@ -6446,6 +7418,7 @@ function* tryCollapseRouteG(
       if (!atomEq(item[0], DONE_UNIT)) throw new Error("collapse route build yielded non-unit");
       buildCount += 1;
     },
+    nestedCursorMode(cursor),
   );
   if (buildCount === 0) return { count: 0, state: stAfterPrefix };
   let stAfterBuild = stAfterPrefix;
@@ -6466,7 +7439,7 @@ function* tryCollapseRouteG(
     }
   }
   const tailStart = stAfterBuild.counter;
-  const tail = yield* countTailMatchG(env, fuel, stAfterBuild, route.bnd, route.tailMatch);
+  const tail = yield* countTailMatchG(env, fuel, stAfterBuild, route.bnd, route.tailMatch, cursor);
   const tailDelta = tail.state.counter - tailStart;
   return {
     count: tail.count * buildCount,
@@ -6756,32 +7729,466 @@ function* reduceRulePairsG(
   wApp: Atom,
   pairs: readonly ContextualPair[],
   opReturnsAtom: boolean,
+  cursor?: CursorMode,
+  emitter?: MettaAnswerEmitter,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
   const out: Array<[Atom, Bindings]> = [];
   let cur = st;
   for (const p of pairs) {
+    const before = out.length;
     const selected = refreshEvaluationEnvironment(p[2] ?? env, cur.world);
     const pb = mergeRestrict(selected, queryVars, partB, p[1]);
     if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
       // wApp did not reduce (a constructor application / data term). Cache a ground one so the next visit
       // short-circuits instead of re-walking it.
-      if (wApp.ground) env.evaluatedAtoms.add(wApp);
       out.push([wApp, partB]);
     } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
       out.push([p[0], pb]);
-    } else if (isStackOverflowAtom(p[0])) {
-      // Terminal depth-cut: keep it as the result; re-evaluating it would re-cut and grow.
+    } else if (isErrorAtom(p[0])) {
+      // Error atoms are terminal data in Minimal MeTTa. Re-evaluating one can repeatedly wrap or reproduce
+      // the same host failure instead of publishing it.
       out.push([p[0], pb]);
     } else {
-      const [more, st4] = yield* mettaEvalG(selected, fuel - 1, cur, pb, p[0]);
+      const [more, st4] = yield* mettaEvalG(selected, fuel - 1, cur, pb, p[0], cursor);
       cur = st4;
       for (const m of more) {
         out.push([m[0], mergeRestrict(selected, queryVars, pb, m[1])]);
       }
     }
     enforceDistinctLimit(env, out.length);
+    if (emitter !== undefined && !distinctGroundEnabled(env))
+      cur = yield* emitMettaAnswersG(emitter, out.slice(before), cur);
   }
   return [out, cur];
+}
+
+function* reduceDirectAsyncGroundedApplicationG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  bnd: Bindings,
+  wApp: ExprAtom,
+  op: string,
+  args: readonly Atom[],
+  queryVars: readonly string[],
+  opReturnsAtom: boolean,
+  cursor?: CursorMode,
+  emitter?: MettaAnswerEmitter,
+): Gen<[Array<[Atom, Bindings]>, St]> {
+  const groundedArgs = args.map((arg) =>
+    resolveStates(st.world, subTokens(st.world, arg, env.intern)),
+  );
+  const result = yield* callGroundedG(env, st.world, op, groundedArgs);
+  return yield* finishDirectGroundedApplicationG(
+    env,
+    fuel,
+    st,
+    bnd,
+    wApp,
+    queryVars,
+    opReturnsAtom,
+    result,
+    cursor,
+    emitter,
+  );
+}
+
+/** Continue a direct grounded application after its one host call has settled. Keeping invocation and
+ *  reduction separate lets a finite batch of admitted async calls share structured cancellation without
+ *  replaying a host effect when one returned atom still needs ordinary MeTTa evaluation. */
+function* finishDirectGroundedApplicationG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  bnd: Bindings,
+  wApp: ExprAtom,
+  queryVars: readonly string[],
+  opReturnsAtom: boolean,
+  result: ReduceResult,
+  cursor?: CursorMode,
+  emitter?: MettaAnswerEmitter,
+): Gen<[Array<[Atom, Bindings]>, St]> {
+  let items: Item[];
+  let next = st;
+  switch (result.tag) {
+    case "ok": {
+      const effects = applyReduceEffects(env, st, bnd, result.effects);
+      if (effects.tag === "error") {
+        items = [finItem(null, errAtom(wApp, effects.msg), bnd)];
+      } else {
+        next = effects.state;
+        items = result.results.map((atom) => evalResult(null, atom, bnd, wApp));
+      }
+      break;
+    }
+    case "runtimeError":
+      items = [finItem(null, errAtom(wApp, result.msg), bnd)];
+      break;
+    case "incorrectArgument":
+      items = [finItem(null, errTextAtom(wApp, result.msg), bnd)];
+      break;
+    case "noReduce":
+      [items, next] = queryOp(env, st, null, wApp, bnd);
+      break;
+  }
+  const [pairs, reducedState] = yield* interpretLoopG(
+    env,
+    fuel,
+    next,
+    items,
+    undefined,
+    nestedCursorMode(cursor),
+  );
+  return yield* reduceRulePairsG(
+    env,
+    fuel,
+    reducedState,
+    queryVars,
+    [],
+    wApp,
+    pairs,
+    opReturnsAtom,
+    cursor,
+    emitter,
+  );
+}
+
+class SchedulerCancellationError extends Error {
+  readonly reason: CancellationReason;
+
+  constructor(operation: string, reason: CancellationReason) {
+    super(`${operation} cancelled: ${reason.message ?? reason.code}`);
+    this.name = "SchedulerCancellationError";
+    this.reason = reason;
+  }
+}
+
+function schedulerCancellationError(
+  operation: string,
+  reason: CancellationReason,
+): SchedulerCancellationError {
+  return new SchedulerCancellationError(operation, reason);
+}
+
+interface SchedulerUnwindFailure {
+  active: boolean;
+  error: unknown;
+}
+
+function* closeScheduleG<T, R>(
+  schedule: DualModeSearchCursor<T, R>,
+  reason: CancellationReason,
+  initiating: SchedulerUnwindFailure,
+): Gen<void> {
+  try {
+    yield schedule.closeEffect(reason);
+  } catch (cleanupError) {
+    if (!initiating.active) throw cleanupError;
+    throw Object.is(cleanupError, initiating.error)
+      ? initiating.error
+      : combineInitiatingAndCleanupFailure(
+          initiating.error,
+          cleanupError,
+          "scheduler operation and cleanup both failed",
+        );
+  }
+}
+
+function* chargeSchedulerStepsG(
+  cursor: CursorMode | undefined,
+  state: St,
+  steps: number,
+): Gen<void> {
+  if (cursor === undefined) return;
+  recordCursorSteps(cursor, steps);
+  yield* flushCursorProgressG(cursor, state);
+}
+
+function* takeFirstScheduledAnswerG(
+  operation: "race" | "once",
+  schedule: DualModeSearchCursor<MinimalSearchAnswer, St>,
+  continuation: Stack,
+  state: St,
+  cursor: CursorMode | undefined,
+): Gen<[Item[], St]> {
+  let finished = false;
+  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
+  try {
+    for (;;) {
+      const event = (yield schedule.nextEffect()) as SearchEvent<MinimalSearchAnswer, St>;
+      yield* chargeSchedulerStepsG(cursor, state, event.steps);
+      switch (event.kind) {
+        case "answer":
+          finished = true;
+          return [
+            [finItem(continuation, event.value.atom, event.value.bindings)],
+            restoreAllocationAuthority(state, event.value.state),
+          ];
+        case "pending":
+          break;
+        case "exhausted":
+          finished = true;
+          return [[], event.terminal];
+        case "cancelled":
+          throw schedulerCancellationError(operation, event.reason);
+        case "fault":
+          throw event.error;
+      }
+    }
+  } catch (error) {
+    unwind.active = true;
+    unwind.error = error;
+    throw error;
+  } finally {
+    if (!finished)
+      yield* closeScheduleG(
+        schedule,
+        {
+          code: "parent-closed",
+          message: `${operation} tail closed`,
+        },
+        unwind,
+      );
+  }
+}
+
+function* evaluateChoiceBranchesG(
+  operation: "superpose" | "hyperpose",
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  call: Atom,
+  argument: Atom,
+  cursor: CursorMode | undefined,
+  emitter: MettaAnswerEmitter | undefined,
+): Gen<EvalRes> {
+  if (argument.kind !== "expr")
+    return [[[errTextAtom(call, `${operation} expects one expression`), bindings]], state];
+  if (operation === "superpose") {
+    const out: Array<[Atom, Bindings]> = [];
+    const sourceEmitter: MettaAnswerEmitter = {
+      emitted: new WeakSet(),
+      emittedCount: 0,
+      lifecycle: emitter?.lifecycle ?? { unwinding: false },
+      accept: function* (pair, answerState): Gen<St> {
+        const expanded: ContextualPair[] =
+          pair[0].kind === "expr"
+            ? (pair[0].items[0]?.kind === "sym" && pair[0].items[0].name === ","
+                ? pair[0].items.slice(1)
+                : pair[0].items
+              ).map(
+                (atom): ContextualPair =>
+                  pair[2] === undefined ? [atom, pair[1]] : [atom, pair[1], pair[2]],
+              )
+            : [
+                pair[2] === undefined
+                  ? [errTextAtom(call, "superpose expects one expression"), pair[1]]
+                  : [errTextAtom(call, "superpose expects one expression"), pair[1], pair[2]],
+              ];
+        for (const expandedPair of expanded) out.push([expandedPair[0], expandedPair[1]]);
+        return yield* emitMettaAnswersG(emitter, expanded, answerState);
+      },
+    };
+    const [sourcePairs, sourceState] = yield* mettaEvalG(
+      env,
+      fuel,
+      state,
+      bindings,
+      argument,
+      cursor,
+      sourceEmitter,
+    );
+    const terminal = yield* emitReturnedMettaAnswersG(sourceEmitter, sourcePairs, sourceState);
+    return [out, terminal];
+  }
+  const branches =
+    argument.items[0]?.kind === "sym" && argument.items[0].name === ","
+      ? argument.items.slice(1)
+      : argument.items;
+  const schedule = fairSchedule(operation, env, fuel, state, bindings, branches);
+  const out: Array<[Atom, Bindings]> = [];
+  let current = state;
+  let continuationCounter = state.counter;
+  let continuationIndex = 0;
+  const hasContinuation = emitter?.accept !== undefined;
+  const continuationDeltas: BranchStateDelta[] = [];
+  let exhausted = false;
+  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
+  try {
+    for (;;) {
+      const event = (yield schedule.nextEffect()) as SearchEvent<MinimalSearchAnswer, St>;
+      yield* chargeSchedulerStepsG(cursor, current, event.steps);
+      switch (event.kind) {
+        case "answer": {
+          current = hasContinuation
+            ? isolateAnswerContinuation(
+                event.value.state,
+                continuationIndex++,
+                Math.max(continuationCounter, event.value.state.counter),
+              )
+            : event.value.state;
+          const pair: [Atom, Bindings] = [event.value.atom, event.value.bindings];
+          out.push(pair);
+          if (emitter !== undefined) {
+            const continuationStart = current;
+            current = yield* emitMettaAnswersG(emitter, [pair], current);
+            if (hasContinuation) {
+              continuationCounter = current.counter;
+              continuationDeltas.push(captureBranchStateDelta(continuationStart, current));
+            }
+          }
+          break;
+        }
+        case "pending":
+          break;
+        case "exhausted":
+          exhausted = true;
+          current = event.terminal;
+          for (const delta of continuationDeltas)
+            current = applyBranchStateDelta(env, current, delta);
+          return [out, current];
+        case "cancelled":
+          throw schedulerCancellationError(operation, event.reason);
+        case "fault":
+          throw event.error;
+      }
+    }
+  } catch (error) {
+    unwind.active = true;
+    unwind.error = error;
+    throw error;
+  } finally {
+    if (!exhausted)
+      yield* closeScheduleG(
+        schedule,
+        { code: "parent-closed", message: `${operation} tail closed` },
+        unwind,
+      );
+  }
+}
+
+function* runCompiledCooperativelyG(
+  env: MinEnv,
+  op: string,
+  args: readonly Atom[],
+  state: St,
+  cursor: CursorMode,
+): Gen<
+  | { readonly kind: "done"; readonly result: CompiledRunResult }
+  | { readonly kind: "bail"; readonly residualArgs: readonly Atom[] }
+  | undefined
+> {
+  const run = startCooperativeCompiledRun(env, op, args);
+  if (run === undefined) return undefined;
+  for (;;) {
+    const event = (yield driverEffect(
+      `compiled:${op}`,
+      (maxSteps) => run.next(maxSteps ?? DEFAULT_SEARCH_QUANTUM),
+      async (signal, maxSteps) => {
+        signal.throwIfAborted();
+        const result = run.next(maxSteps ?? DEFAULT_SEARCH_QUANTUM);
+        signal.throwIfAborted();
+        return result;
+      },
+    )) as CooperativeCompiledRunEvent;
+    yield* chargeSchedulerStepsG(cursor, state, event.steps);
+    if (event.kind === "pending") continue;
+    return event.kind === "done"
+      ? { kind: "done", result: event.result }
+      : { kind: "bail", residualArgs: event.residualArgs };
+  }
+}
+
+function argumentMayProduceAlternatives(env: MinEnv, world: World, argument: Atom): boolean {
+  if (argument.kind === "gnd") return false;
+  if (argument.kind === "var") return true;
+  if (argument.kind === "sym")
+    return (
+      (env.ruleIndex.get(argument.name)?.length ?? 0) > 0 ||
+      (world.selfRules.get(argument.name)?.length ?? 0) > 0 ||
+      env.varRulesVar.length > 0 ||
+      world.selfVarRules.length > 0
+    );
+  if (argument.items.length === 0) return false;
+  if (isNormalForm(env, world, argument)) return false;
+  const operation = opOf(argument);
+  if (operation === undefined) return true;
+  const grounded = env.gt.get(operation);
+  if (grounded !== undefined && isSingleResultGroundedOp(operation, grounded)) return false;
+  const compiled = env.compiled?.get(operation);
+  return !(
+    compiled?.kind === "functional" &&
+    !world.selfRules.has(operation) &&
+    !staticRulesChangedFor(world, operation) &&
+    world.selfVarRules.length === 0
+  );
+}
+
+interface DirectAsyncGroundedApplication {
+  readonly application: ExprAtom;
+  readonly op: string;
+  readonly args: readonly Atom[];
+  readonly queryVars: readonly string[];
+  readonly opReturnsAtom: boolean;
+}
+
+function directAsyncGroundedApplication(
+  env: MinEnv,
+  state: St,
+  input: Atom,
+): DirectAsyncGroundedApplication | undefined {
+  if (input.kind !== "expr" || input.items[0]?.kind !== "sym") return undefined;
+  const op = input.items[0].name;
+  if (!env.agt.has(op)) return undefined;
+  if (pettaOpNames.has(op) && hasRuleFor(env, state.world, state.counter, input)) return undefined;
+  const args = input.items.slice(1);
+  const signature = typeViewFor(env, state.world).sigs.get(op);
+  if (checkApplication(env, state.world, op, args, signature) !== null) return undefined;
+  const mask = LAZY_ARGS_OPS.has(op)
+    ? args.map(() => false)
+    : LEATTA_EVAL_ARGS_OPS.has(op)
+      ? args.map(() => true)
+      : argMask(signature, args.length);
+  if (
+    !args.every(
+      (argument, index) =>
+        mask[index] !== true || (argument.ground && isNormalForm(env, state.world, argument)),
+    )
+  )
+    return undefined;
+  return {
+    application: input,
+    op,
+    args,
+    queryVars: queryVarsOf(args),
+    opReturnsAtom:
+      signature !== undefined &&
+      signature.length > 0 &&
+      atomEq(signature[signature.length - 1]!, sym("Atom")),
+  };
+}
+
+function rememberGroundEvaluation(
+  env: MinEnv,
+  input: Atom,
+  bindings: Bindings,
+  start: St,
+  pairs: readonly [Atom, Bindings][],
+  end: St,
+): void {
+  if (
+    input.kind !== "expr" ||
+    !input.ground ||
+    pairs.length !== 1 ||
+    !atomEq(pairs[0]![0], input) ||
+    pairs[0]![1] !== bindings ||
+    end.world !== start.world
+  )
+    return;
+  const counterDelta = end.counter - start.counter;
+  if (Number.isSafeInteger(counterDelta) && counterDelta >= 0)
+    env.evaluatedAtoms.set(input, counterDelta);
 }
 
 function* mettaEvalG(
@@ -6790,12 +8197,57 @@ function* mettaEvalG(
   st: St,
   bnd: Bindings,
   a: Atom,
+  cursor?: CursorMode,
+  emitter?: MettaAnswerEmitter,
+  preEvaluatedApplication?: PreEvaluatedApplication,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
-  env = refreshEvaluationEnvironment(env, st.world);
-  if (fuel <= 0)
-    return [[[makeExpr(env, [sym("Error"), inst(env, bnd, a), sym("StackOverflow")]), bnd]], st];
-  const w = inst(env, bnd, a);
-  if (w.kind === "expr" && w.ground && env.evaluatedAtoms.has(w)) return [[[w, bnd]], st];
+  const selected = refreshEvaluationEnvironment(env, st.world);
+  const input = inst(selected, bnd, a);
+  if (input.kind === "expr" && input.ground) {
+    const cachedDelta = selected.evaluatedAtoms.get(input);
+    if (cachedDelta !== undefined) {
+      return [
+        [[input, bnd]],
+        { counter: checkedCounterAdvance(st.counter, cachedDelta), world: st.world },
+      ];
+    }
+    if (
+      selected.varRulesVar.length === 0 &&
+      st.world.selfVarRules.length === 0 &&
+      isNormalForm(selected, st.world, input)
+    ) {
+      selected.evaluatedAtoms.set(input, 0);
+      return [[[input, bnd]], st];
+    }
+  }
+  const [pairs, endState] = yield* mettaEvalUncachedG(
+    selected,
+    fuel,
+    st,
+    bnd,
+    a,
+    input,
+    cursor,
+    emitter,
+    preEvaluatedApplication,
+  );
+  rememberGroundEvaluation(selected, input, bnd, st, pairs, endState);
+  return [pairs, endState];
+}
+
+function* mettaEvalUncachedG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  bnd: Bindings,
+  a: Atom,
+  w: Atom,
+  cursor?: CursorMode,
+  emitter?: MettaAnswerEmitter,
+  preEvaluatedApplication?: PreEvaluatedApplication,
+): Gen<[Array<[Atom, Bindings]>, St]> {
+  const cooperativeSearch = cursor?.kind === "cooperative";
+  if (fuel <= 0) return [[[makeExpr(env, [sym("Error"), w, sym("StackOverflow")]), bnd]], st];
   // Constructor / normal-form short-circuit (Curry's constructor/defined partition; Hanus' incremental
   // normalization). A non-ground operator-headed term whose head is a constructor and whose arguments are all
   // already in normal form cannot reduce, so it is its own value: skip the re-instantiation, argument
@@ -6814,12 +8266,6 @@ function* mettaEvalG(
     isNormalForm(env, st.world, w)
   )
     return [[[w, bnd]], st];
-  const isErr = (x: Atom): boolean =>
-    x.kind === "expr" &&
-    x.items.length >= 1 &&
-    x.items[0]!.kind === "sym" &&
-    (x.items[0] as { name: string }).name === "Error";
-
   if (w.kind === "expr" && w.items.length > 0 && w.items[0]!.kind === "sym") {
     // Tail-call trampoline. A ground operator-headed call usually reduces in a linear chain (every
     // tail-recursive MeTTa function: count, iterate, a Peano walk). Reducing each step by recursing into
@@ -6831,7 +8277,11 @@ function* mettaEvalG(
     let lbnd = bnd;
     let lst = st;
     let lw = w;
-    const pendingKeys: CompletedTableKey[] = [];
+    let preparedApplication = preEvaluatedApplication;
+    const pendingKeys: Array<{
+      readonly key: CompletedTableKey;
+      readonly startCounter: number;
+    }> = [];
     const flushReturn = (res: Array<[Atom, Bindings]>, stR: St): [Array<[Atom, Bindings]>, St] => {
       const finalRes =
         distinctGroundEnabled(env) && res.every((pair) => pair[0].ground)
@@ -6843,18 +8293,38 @@ function* mettaEvalG(
         finalRes.every((p) => p[0].ground)
       ) {
         const prod = finalRes.map((p) => p[0]);
-        for (const k of pendingKeys) rememberGroundTable(env, k, prod);
+        for (const pending of pendingKeys)
+          rememberGroundTable(env, pending.key, prod, stR.counter - pending.startCounter);
       }
       return [finalRes, stR];
     };
     reduceTrampoline: for (;;) {
       const op = (lw.items[0] as { name: string }).name;
       const args = lw.items.slice(1);
-      if (isDiscardedFiniteMatch(env, lst.world, lw)) return flushReturn([], lst);
-      const directUniqueChoice = tryFastUniqueChoiceFunction(env, lst.world, op, args);
+      const prepared = preparedApplication;
+      if (prepared === undefined && isDiscardedFiniteMatch(env, lst.world, lw))
+        return flushReturn([], lst);
+      if (prepared === undefined && (op === "superpose" || op === "hyperpose") && args.length === 1)
+        return yield* evaluateChoiceBranchesG(
+          op,
+          env,
+          fuel,
+          lst,
+          lbnd,
+          lw,
+          args[0]!,
+          cursor,
+          emitter,
+        );
+      const directUniqueChoice =
+        cooperativeSearch || prepared !== undefined
+          ? undefined
+          : tryFastUniqueChoiceFunction(env, lst.world, op, args);
       if (directUniqueChoice !== undefined)
         return flushReturn([[makeExpr(env, directUniqueChoice), lbnd]], lst);
       if (
+        prepared === undefined &&
+        !cooperativeSearch &&
         op === "unique-atom" &&
         args.length === 1 &&
         args[0]!.kind === "expr" &&
@@ -6913,6 +8383,7 @@ function* mettaEvalG(
               lst,
               lbnd,
               collapsedCall,
+              cursor,
             );
             enforceDistinctLimit(env, answers.length);
             const unique = dedupAlphaStable([sym(","), ...answers.map((answer) => answer[0])]);
@@ -6928,7 +8399,7 @@ function* mettaEvalG(
           }
         }
       }
-      if (op === "collapse" && args.length === 1) {
+      if (prepared === undefined && !cooperativeSearch && op === "collapse" && args.length === 1) {
         if (canRunChoicePlan(env, lst.world)) {
           const planned = runChoicePlan(
             args[0]!,
@@ -6948,12 +8419,12 @@ function* mettaEvalG(
           }
         }
       }
-      if (op === "if" && args.length === 3) {
+      if (prepared === undefined && op === "if" && args.length === 3) {
         const added = tryFastNamedAddIfAbsent(env, lst, lw, lbnd);
         if (added !== undefined)
           return flushReturn(added.added ? [[emptyExpr, lbnd]] : [], added.state);
       }
-      if (op === "add-unique-or-fail" && args.length === 2) {
+      if (prepared === undefined && op === "add-unique-or-fail" && args.length === 2) {
         const added = tryFastAddUniqueOrFailCall(env, lst, lw, lbnd);
         if (added !== undefined)
           return flushReturn(added.added ? [[emptyExpr, lbnd]] : [], added.state);
@@ -6966,6 +8437,8 @@ function* mettaEvalG(
       // equals that interpretation's result count. Gated to the grounded op (a user `length`/`size-atom` rule
       // disables it).
       if (
+        prepared === undefined &&
+        !cooperativeSearch &&
         (op === "length" || op === "size-atom") &&
         args.length === 1 &&
         args[0]!.kind === "expr" &&
@@ -6981,10 +8454,10 @@ function* mettaEvalG(
         // bare `match` (e.g. peano's `(demo-peano ...)`).
         const z = args[0]!.items[1]!;
         if (z.kind === "expr" && opOf(z) === "match" && z.items.length === 4) {
-          const counted = yield* countTailMatchG(env, fuel, lst, lbnd, z);
+          const counted = yield* countTailMatchG(env, fuel, lst, lbnd, z, cursor);
           return flushReturn([[gint(BigInt(counted.count)), lbnd]], counted.state);
         }
-        const routed = yield* tryCollapseRouteG(env, fuel, lst, lbnd, z);
+        const routed = yield* tryCollapseRouteG(env, fuel, lst, lbnd, z, cursor);
         if (routed !== undefined)
           return flushReturn([[gint(BigInt(routed.count)), lbnd]], routed.state);
         let count = 0;
@@ -7004,13 +8477,17 @@ function* mettaEvalG(
           () => {
             count++;
           },
+          nestedCursorMode(cursor),
         );
         return flushReturn([[gint(BigInt(count)), lbnd]], stC);
       }
-      const opSig = typeViewFor(env, lst.world).sigs.get(op);
-      const appErr = checkApplication(env, lst.world, op, args, opSig);
+      const opSig = prepared?.signature ?? typeViewFor(env, lst.world).sigs.get(op);
+      const appErr =
+        prepared === undefined ? checkApplication(env, lst.world, op, args, opSig) : null;
       if (appErr !== null) return flushReturn([[appErr, lbnd]], lst);
       if (
+        prepared === undefined &&
+        !cooperativeSearch &&
         op === "case" &&
         args.length === 2 &&
         args[0]!.kind === "expr" &&
@@ -7021,18 +8498,28 @@ function* mettaEvalG(
       ) {
         const source = streamCaseSource(env, lst, lbnd, args[0]! as ExprAtom, args[1]!);
         if (source !== undefined) {
-          const [selected, stCase] = yield* interpretLoopG(env, fuel, lst, source);
+          const [selected, stCase] = yield* interpretLoopG(
+            env,
+            fuel,
+            lst,
+            source,
+            undefined,
+            nestedCursorMode(cursor),
+          );
           const [pairs, stReduced] = yield* reduceChildrenG(
             env,
             fuel,
             stCase,
             selected,
             () => undefined,
+            cursor,
+            emitter,
           );
           return flushReturn(pairs, stReduced);
         }
       }
-      const queryVars = queryVarsOf(args);
+      const originalArgs = prepared?.originalArgs ?? args;
+      const queryVars = prepared?.queryVars ?? queryVarsOf(args);
       // Reuse the one signature lookup (opSig, from the applicability check above) across argMask and the
       // per-result returnsAtom check in the reduce loop below.
       const sig = opSig;
@@ -7045,36 +8532,142 @@ function* mettaEvalG(
         : LEATTA_EVAL_ARGS_OPS.has(op)
           ? args.map(() => true)
           : argMask(sig, args.length);
+      if (
+        prepared === undefined &&
+        env.agt.has(op) &&
+        !(pettaOpNames.has(op) && hasRuleFor(env, lst.world, lst.counter, lw)) &&
+        args.every(
+          (argument, index) =>
+            mask[index] !== true || (argument.ground && isNormalForm(env, lst.world, argument)),
+        )
+      )
+        return yield* reduceDirectAsyncGroundedApplicationG(
+          env,
+          fuel,
+          lst,
+          lbnd,
+          lw,
+          op,
+          args,
+          queryVars,
+          opReturnsAtom,
+          cursor,
+          emitter,
+        );
       // (1) type-directed argument evaluation, binding-threaded
       let partials: Array<[Atom[], Bindings]> = [[[], []]];
       let cur = lst;
-      for (let i = 0; i < args.length; i++) {
-        const ae = args[i]!;
-        const evalThis = mask[i]!;
-        const nextParts: Array<[Atom[], Bindings]> = [];
-        for (const [accAtoms, accB] of partials) {
-          if (evalThis) {
-            const [ps, st2] = yield* mettaEvalG(env, fuel - 1, cur, accB, ae);
-            cur = st2;
-            for (const p of ps) {
-              nextParts.push([[...accAtoms, p[0]], mergeRestrict(env, queryVars, accB, p[1])]);
-            }
-          } else {
-            nextParts.push([[...accAtoms, inst(env, accB, ae)], accB]);
+      if (prepared !== undefined) {
+        partials = [[args, lbnd]];
+      } else if (
+        cooperativeSearch &&
+        args.some(
+          (argument, index) =>
+            mask[index] === true && argumentMayProduceAlternatives(env, lst.world, argument),
+        )
+      ) {
+        const streamedOut: Array<[Atom, Bindings]> = [];
+        const partialCounts = args.map(() => 0);
+        const recordPartial = (depth: number): void => {
+          const count = (partialCounts[depth - 1] ?? 0) + 1;
+          partialCounts[depth - 1] = count;
+          enforceDistinctLimit(env, count);
+        };
+        const evaluateArguments = function* (
+          index: number,
+          state: St,
+          accAtoms: readonly Atom[],
+          accB: Bindings,
+        ): Gen<St> {
+          if (index === args.length) {
+            const application = accAtoms.every((atom, atomIndex) => atom === args[atomIndex])
+              ? lw
+              : makeExpr(env, [sym(op), ...accAtoms]);
+            const emittedAtStart = emitter?.emittedCount ?? 0;
+            const [answers, reducedState] = yield* mettaEvalG(
+              env,
+              fuel,
+              state,
+              accB,
+              application,
+              cursor,
+              emitter,
+              { originalArgs: args, queryVars, signature: sig },
+            );
+            streamedOut.push(...answers);
+            enforceDistinctLimit(env, streamedOut.length);
+            return emitter === undefined
+              ? reducedState
+              : yield* emitReturnedMettaAnswersG(emitter, answers, reducedState, emittedAtStart);
           }
+
+          const argument = args[index]!;
+          if (!mask[index]!) {
+            recordPartial(index + 1);
+            return yield* evaluateArguments(
+              index + 1,
+              state,
+              [...accAtoms, inst(env, accB, argument)],
+              accB,
+            );
+          }
+
+          const argumentEmitter: MettaAnswerEmitter = {
+            emitted: new WeakSet(),
+            emittedCount: 0,
+            lifecycle: emitter?.lifecycle ?? { unwinding: false },
+            accept: function* (pair, answerState): Gen<St> {
+              recordPartial(index + 1);
+              return yield* evaluateArguments(
+                index + 1,
+                answerState,
+                [...accAtoms, pair[0]],
+                mergeRestrict(env, queryVars, accB, pair[1]),
+              );
+            },
+          };
+          const [answers, argumentState] = yield* mettaEvalG(
+            env,
+            fuel - 1,
+            state,
+            accB,
+            argument,
+            cursor,
+            argumentEmitter,
+          );
+          return yield* emitReturnedMettaAnswersG(argumentEmitter, answers, argumentState);
+        };
+        cur = yield* evaluateArguments(0, cur, [], []);
+        return flushReturn(streamedOut, cur);
+      } else {
+        for (let i = 0; i < args.length; i++) {
+          const ae = args[i]!;
+          const evalThis = mask[i]!;
+          const nextParts: Array<[Atom[], Bindings]> = [];
+          for (const [accAtoms, accB] of partials) {
+            if (evalThis) {
+              const [ps, st2] = yield* mettaEvalG(env, fuel - 1, cur, accB, ae, cursor);
+              cur = st2;
+              for (const p of ps) {
+                nextParts.push([[...accAtoms, p[0]], mergeRestrict(env, queryVars, accB, p[1])]);
+              }
+            } else {
+              nextParts.push([[...accAtoms, inst(env, accB, ae)], accB]);
+            }
+          }
+          enforceDistinctLimit(env, nextParts.length);
+          partials = nextParts;
         }
-        enforceDistinctLimit(env, nextParts.length);
-        partials = nextParts;
       }
       // (2) reduce each combination
       const out: Array<[Atom, Bindings]> = [];
       let cur2 = cur;
-      const tabling = env.tableSpace !== undefined && queryVars.length === 0;
+      const tabling = !cooperativeSearch && env.tableSpace !== undefined && queryVars.length === 0;
       for (const [partAtoms, partB] of partials) {
         // error propagation: a type-directed-evaluated arg reduced to an error and changed
         let errFound: Atom | undefined;
         for (let i = 0; i < partAtoms.length; i++) {
-          if (isErr(partAtoms[i]!) && !atomEq(partAtoms[i]!, args[i]!)) {
+          if (isErrorAtom(partAtoms[i]!) && !atomEq(partAtoms[i]!, originalArgs[i]!)) {
             errFound = partAtoms[i]!;
             break;
           }
@@ -7092,6 +8685,7 @@ function* mettaEvalG(
         const wApp = partAtoms.every((p, i) => p === args[i])
           ? lw
           : makeExpr(env, [sym(op), ...partAtoms]);
+        let interpretedApplication = wApp;
         // PeTTa-style partial application: grounded ops and untyped lowercase user functions applied to
         // fewer arguments than their arity become `(partial fn (args))` closures. Requires at least one
         // argument, so a nullary thunk is still evaluated rather than curried.
@@ -7102,7 +8696,9 @@ function* mettaEvalG(
             continue;
           }
         }
-        const fastTilePuzzle = tryFastTilePuzzleBfsAll(env, cur2, wApp);
+        const fastTilePuzzle = cooperativeSearch
+          ? undefined
+          : tryFastTilePuzzleBfsAll(env, cur2, wApp);
         if (fastTilePuzzle !== undefined) {
           cur2 = fastTilePuzzle.state;
           for (const [value, rb] of fastTilePuzzle.results)
@@ -7111,6 +8707,7 @@ function* mettaEvalG(
         }
         const fastQueue = tryFastQueueCall(env, cur2, wApp);
         if (fastQueue !== undefined) {
+          if (cooperativeSearch) yield* chargeSchedulerStepsG(cursor, cur2, 1);
           cur2 = fastQueue.state;
           for (const [value, rb] of fastQueue.results)
             out.push([value, mergeRestrict(env, queryVars, partB, rb)]);
@@ -7118,7 +8715,12 @@ function* mettaEvalG(
         }
         let modedTableAdmissible = false;
         let modedRuntimeVersion = 0;
-        if (env.tableSpace !== undefined && !wApp.ground && keyWellFormed(wApp)) {
+        if (
+          !cooperativeSearch &&
+          env.tableSpace !== undefined &&
+          !wApp.ground &&
+          keyWellFormed(wApp)
+        ) {
           const runtimeRulesVisible =
             cur2.world.selfRules.size > 0 || cur2.world.selfVarRules.length > 0;
           modedRuntimeVersion = runtimeRulesVisible ? cur2.world.selfRuleVersion : 0;
@@ -7126,13 +8728,13 @@ function* mettaEvalG(
             modedTableAdmissible =
               runtimeFunctorPureModed(env, cur2.world, op) &&
               runtimeFunctorTableWorth(env, cur2.world, op, true) &&
-              !containsImpureHead(env, wApp, MODED_IMPURE_OPS);
+              !containsImpureHead(env, cur2.world, wApp, MODED_IMPURE_OPS, true);
           } else {
             modedTableAdmissible =
               !staticRuleSetChanged(cur2.world) &&
               (env.modedPureFunctors?.has(op) ?? false) &&
               (env.modedTableWorth?.has(op) ?? false) &&
-              !containsImpureHead(env, wApp, MODED_IMPURE_OPS);
+              !containsImpureHead(env, cur2.world, wApp, MODED_IMPURE_OPS, true);
           }
         }
         // Compiled fast path. A nondeterministic group runs before a profitable moded table only when a
@@ -7148,7 +8750,15 @@ function* mettaEvalG(
           !staticRulesChangedFor(cur2.world, op) &&
           cur2.world.selfVarRules.length === 0
         ) {
-          const cr = runCompiled(env, op, partAtoms, cur2, COMPILED_IMPURE_OPS, undefined, fuel);
+          let cr: CompiledRunResult | undefined;
+          if (cooperativeSearch) {
+            const cooperative = yield* runCompiledCooperativelyG(env, op, partAtoms, cur2, cursor!);
+            if (cooperative?.kind === "done") cr = cooperative.result;
+            else if (cooperative?.kind === "bail")
+              interpretedApplication = makeExpr(env, [sym(op), ...cooperative.residualArgs]);
+          } else {
+            cr = runCompiled(env, op, partAtoms, cur2, COMPILED_IMPURE_OPS, undefined, fuel);
+          }
           if (cr !== undefined) {
             // A compiled holder returns the one-step rule-application results (the instantiated RHSs) plus
             // the counter advance the candidate scan would have cost. Reduce each result to normal form
@@ -7173,12 +8783,11 @@ function* mettaEvalG(
             for (const r of cr.results) {
               const pb = mergeRestrict(env, queryVars, partB, r.bnd);
               if (atomEq(r.atom, notReducibleA) || atomEq(r.atom, wApp)) {
-                if (wApp.ground) env.evaluatedAtoms.add(wApp);
                 out.push([wApp, partB]);
               } else if ((opReturnsAtom || impResult) && !isEmbeddedOp(r.atom)) {
                 out.push([r.atom, pb]);
               } else {
-                const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur2, pb, r.atom);
+                const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur2, pb, r.atom, cursor);
                 cur2 = st4;
                 for (const m of more) out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
               }
@@ -7190,6 +8799,7 @@ function* mettaEvalG(
         // by unique(collapse ...). Runtime rules are version-keyed; purely static calls use version 0.
         let eligible = false;
         let key: CompletedTableKey | undefined;
+        const groundCallStartCounter = cur2.counter;
         if (tabling && wApp.ground) {
           const runtimeVersion = groundTableVersionIfAdmissible(env, cur2.world, op, wApp);
           if (runtimeVersion !== undefined) {
@@ -7201,9 +8811,13 @@ function* mettaEvalG(
             );
           }
           if (eligible) {
-            const hit = key === undefined ? undefined : env.tableSpace!.getCompleted(key)?.results;
+            const hit = key === undefined ? undefined : env.tableSpace!.getCompleted(key);
             if (hit !== undefined) {
-              for (const r of hit) out.push([r, partB]);
+              cur2 = {
+                counter: checkedCounterAdvance(cur2.counter, hit.counterDelta),
+                world: cur2.world,
+              };
+              for (const r of hit.results) out.push([r, partB]);
               continue;
             }
           }
@@ -7227,7 +8841,12 @@ function* mettaEvalG(
           const tableSpace = env.tableSpace!;
           const encoded = tableSpace.key("moded", wApp, modedRuntimeVersion);
           const modedHit = tableSpace.getCompleted(encoded);
-          if (modedHit !== undefined) {
+          if (
+            modedHit !== undefined &&
+            modedHit.counterDelta >=
+              modedReplayFreshVariableCount(modedHit.results, modedHit.numCallVars)
+          ) {
+            const replayStart = cur2.counter;
             for (const cachedResult of modedHit.results) {
               const [freshened, stF] = freshenModedResult(
                 cur2,
@@ -7238,6 +8857,10 @@ function* mettaEvalG(
               cur2 = stF;
               out.push([freshened, partB]);
             }
+            cur2 = {
+              counter: checkedCounterAdvance(replayStart, modedHit.counterDelta),
+              world: cur2.world,
+            };
             continue;
           }
           const active = tableSpace.getActive(encoded);
@@ -7275,21 +8898,30 @@ function* mettaEvalG(
         const before = out.length;
         try {
           const runProducerPass = function* (start: St): Gen<[Array<[Atom, Bindings]>, St]> {
-            const [pairs, st3] = yield* interpretLoopG(env, fuel, start, [
-              {
-                stack: admitAtom(makeExpr(env, [sym("eval"), wApp]), null),
-                bnd: lbnd,
-              },
-            ]);
+            const [pairs, st3] = yield* interpretLoopG(
+              env,
+              fuel,
+              start,
+              [
+                {
+                  stack: admitAtom(makeExpr(env, [sym("eval"), interpretedApplication]), null),
+                  bnd: lbnd,
+                },
+              ],
+              undefined,
+              nestedCursorMode(cursor),
+            );
             return yield* reduceRulePairsG(
               env,
               fuel,
               st3,
               queryVars,
               partB,
-              wApp,
+              interpretedApplication,
               pairs,
               opReturnsAtom,
+              cursor,
+              emitter,
             );
           };
           if (modedEligible) {
@@ -7301,7 +8933,13 @@ function* mettaEvalG(
             const firstCanonical = firstPass.map((p) => canonicalize(p[0], map));
             if (!active.cyclic) {
               for (const p of firstPass) out.push(p);
-              rememberModedTable(env, modedKey!, modedNumCallVars, firstCanonical);
+              rememberModedTable(
+                env,
+                modedKey!,
+                modedNumCallVars,
+                firstCanonical,
+                firstState.counter - start.counter,
+              );
             } else {
               let added = env.tableSpace!.addActiveAnswers(active, firstCanonical);
               let maxCounter = Math.max(start.counter, firstState.counter);
@@ -7324,7 +8962,6 @@ function* mettaEvalG(
               if (active.overBudget) {
                 out.push([makeExpr(env, [sym("Error"), wApp, sym("TableResourceLimit")]), partB]);
               } else if (out.length === before) {
-                rememberModedTable(env, modedKey!, modedNumCallVars, active.results);
                 for (const cachedResult of active.results) {
                   const [freshened, stF] = freshenModedResult(
                     cur2,
@@ -7335,15 +8972,29 @@ function* mettaEvalG(
                   cur2 = stF;
                   out.push([freshened, partB]);
                 }
+                rememberModedTable(
+                  env,
+                  modedKey!,
+                  modedNumCallVars,
+                  active.results,
+                  cur2.counter - start.counter,
+                );
               }
             }
           } else {
-            const [pairs, st3] = yield* interpretLoopG(env, fuel, cur2, [
-              {
-                stack: admitAtom(makeExpr(env, [sym("eval"), wApp]), null),
-                bnd: lbnd,
-              },
-            ]);
+            const [pairs, st3] = yield* interpretLoopG(
+              env,
+              fuel,
+              cur2,
+              [
+                {
+                  stack: admitAtom(makeExpr(env, [sym("eval"), interpretedApplication]), null),
+                  bnd: lbnd,
+                },
+              ],
+              undefined,
+              nestedCursorMode(cursor),
+            );
             cur2 = st3;
             // Tail call: one ground call reducing to a single operator-headed continuation, with no branching
             // (one partial, one pair) and no bindings to thread (queryVars empty). Loop on the continuation
@@ -7357,21 +9008,22 @@ function* mettaEvalG(
               pairs[0]![2] === undefined
             ) {
               const p = pairs[0]!;
-              // A StackOverflow cut is terminal, never a tail-call continuation. Re-feeding it into the
-              // trampoline re-cuts at depth 1 and grows an (Error (eval …) StackOverflow) each iteration,
-              // looping forever (the trampoline does not decrement fuel).
-              if (isStackOverflowAtom(p[0]))
+              // Every Error atom is terminal data. Re-feeding one into the trampoline can reproduce the
+              // same failure forever because the trampoline does not decrement fuel.
+              if (isErrorAtom(p[0]))
                 return flushReturn([[p[0], mergeRestrict(env, queryVars, partB, p[1])]], cur2);
-              const isData = atomEq(p[0], notReducibleA) || atomEq(p[0], wApp);
+              const isData = atomEq(p[0], notReducibleA) || atomEq(p[0], interpretedApplication);
               if (!isData && !(opReturnsAtom && !isEmbeddedOp(p[0])) && opOf(p[0]) !== undefined) {
                 const pb = mergeRestrict(env, queryVars, partB, p[1]);
-                if (eligible && key !== undefined) pendingKeys.push(key);
+                if (eligible && key !== undefined)
+                  pendingKeys.push({ key, startCounter: groundCallStartCounter });
                 la = p[0];
                 lbnd = pb;
                 lst = cur2;
                 // p[0] is operator-headed (opOf check) and instantiate preserves the head, so this stays an
                 // expression headed by a symbol, exactly what the loop top reads as `lw.items[0]`.
                 lw = inst(env, lbnd, la) as ExprAtom;
+                preparedApplication = undefined;
                 continue reduceTrampoline;
               }
             }
@@ -7381,9 +9033,11 @@ function* mettaEvalG(
               cur2,
               queryVars,
               partB,
-              wApp,
+              interpretedApplication,
               pairs,
               opReturnsAtom,
+              cursor,
+              emitter,
             );
             cur2 = st4;
             const producedPairs =
@@ -7395,7 +9049,7 @@ function* mettaEvalG(
             if (eligible) {
               const produced = producedPairs.map((p) => p[0]);
               if (key !== undefined && produced.every((a) => a.ground))
-                rememberGroundTable(env, key, produced);
+                rememberGroundTable(env, key, produced, cur2.counter - groundCallStartCounter);
             }
           }
         } finally {
@@ -7411,40 +9065,73 @@ function* mettaEvalG(
 
   if (w.kind === "expr" && w.items.length > 0) {
     // expression-headed application
-    const [ruleRes, st1] = yield* interpretLoopG(env, fuel, st, [
-      { stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd },
-    ]);
+    const [ruleRes, st1] = yield* interpretLoopG(
+      env,
+      fuel,
+      st,
+      [{ stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd }],
+      undefined,
+      nestedCursorMode(cursor),
+    );
     const reduced = ruleRes.filter((p) => !atomEq(p[0], w) && !atomEq(p[0], notReducibleA));
     if (reduced.length === 0) {
-      const [tupleRes, st2] = yield* interpretLoopG(env, fuel, st1, [
-        {
-          stack: admitAtom(
-            makeExpr(env, [sym("eval"), makeExpr(env, [sym("interpret-tuple"), w, sym("&self")])]),
-            null,
-          ),
-          bnd,
-        },
-      ]);
+      const [tupleRes, st2] = yield* interpretLoopG(
+        env,
+        fuel,
+        st1,
+        [
+          {
+            stack: admitAtom(
+              makeExpr(env, [
+                sym("eval"),
+                makeExpr(env, [sym("interpret-tuple"), w, sym("&self")]),
+              ]),
+              null,
+            ),
+            bnd,
+          },
+        ],
+        undefined,
+        nestedCursorMode(cursor),
+      );
       // the interpret-tuple fallback: a tuple element equal to the whole term is already final.
-      return yield* reduceChildrenG(env, fuel, st2, tupleRes, (p) =>
-        atomEq(p[0], w) ? [[p[0], p[1]]] : undefined,
+      return yield* reduceChildrenG(
+        env,
+        fuel,
+        st2,
+        tupleRes,
+        (p) => (atomEq(p[0], w) ? [[p[0], p[1]]] : undefined),
+        cursor,
+        emitter,
       );
     }
     // a rule fired: every reduced result still needs evaluating to normal form.
-    return yield* reduceChildrenG(env, fuel, st1, reduced, () => undefined);
+    return yield* reduceChildrenG(env, fuel, st1, reduced, () => undefined, cursor, emitter);
   }
 
   // bare symbol / variable / grounded
-  const [pairs, st1] = yield* interpretLoopG(env, fuel, st, [
-    { stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd },
-  ]);
+  const [pairs, st1] = yield* interpretLoopG(
+    env,
+    fuel,
+    st,
+    [{ stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd }],
+    undefined,
+    nestedCursorMode(cursor),
+  );
   // an irreducible symbol stays itself; an Atom-typed result is inert; anything else evaluates on.
-  return yield* reduceChildrenG(env, fuel, st1, pairs, (p) =>
-    atomEq(p[0], notReducibleA) || atomEq(p[0], w)
-      ? [[w, bnd]]
-      : returnsAtom(env, st1.world, w) && !isEmbeddedOp(p[0])
-        ? [[p[0], p[1]]]
-        : undefined,
+  return yield* reduceChildrenG(
+    env,
+    fuel,
+    st1,
+    pairs,
+    (p) =>
+      atomEq(p[0], notReducibleA) || atomEq(p[0], w)
+        ? [[w, bnd]]
+        : returnsAtom(env, st1.world, w) && !isEmbeddedOp(p[0])
+          ? [[p[0], p[1]]]
+          : undefined,
+    cursor,
+    emitter,
   );
 }
 
@@ -7466,10 +9153,11 @@ function* mettaEvalExpectedG(
   bnd: Bindings,
   atom: Atom,
   expectedType: Atom,
+  cursor?: CursorMode,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
   const input = inst(env, bnd, atom);
   if (mettaReturnsInputForExpectedType(input, expectedType)) return [[[input, bnd]], st];
-  const [pairs, st2] = yield* mettaEvalG(env, fuel, st, bnd, atom);
+  const [pairs, st2] = yield* mettaEvalG(env, fuel, st, bnd, atom, cursor);
   if (atomEq(expectedType, UNDEF)) return [pairs, st2];
 
   const out: Array<[Atom, Bindings]> = [];
@@ -7508,19 +9196,2679 @@ export interface MinimalInterpretOptions {
   readonly fuel?: number;
   readonly state?: St;
   readonly bindings?: Bindings;
+  /** Disable compiled whole-call paths so every long reduction remains quota-preemptible. */
+  readonly cooperative?: boolean;
 }
 
-function* interpretMinimalG(
+export interface MinimalSearchAnswer {
+  readonly atom: Atom;
+  readonly bindings: Bindings;
+  /** State at the answer boundary. Later alternatives have not run yet. */
+  readonly state: St;
+}
+
+const MINIMAL_CURSOR_CLOSED: CancellationReason = Object.freeze({ code: "closed" });
+const MINIMAL_DRAIN_QUANTUM = 16_384;
+interface CursorDeliveryControl {
+  streaming: boolean;
+  readonly lifecycle: AnswerEmissionLifecycle;
+  readonly budget: CursorBudget;
+  /** Select legacy applicative ordering when an untouched public cursor is bulk-drained. */
+  eagerDrain?: boolean;
+  /** An untouched drain may drive the generator in one eager-compatible pass. */
+  readonly directDrain?: boolean;
+  /** An untouched bounded batch read reports progress, then materializes pairs at its terminal. */
+  batchDrain?: boolean;
+}
+
+const newCursorBudget = (): CursorBudget => ({
+  active: false,
+  remaining: 0,
+  pendingSteps: 0,
+});
+
+function* minimalCursorGenerator(
   env: MinEnv,
   fuel: number,
   state: St,
   bindings: Bindings,
   atom: Atom,
-): Gen<EvalRes> {
-  const [contextual, next] = yield* interpretLoopG(env, fuel, state, [
-    { stack: admitAtom(atom, null), bnd: bindings },
+  cooperative: boolean,
+  delivery: CursorDeliveryControl,
+): Gen<[ContextualPair[], St]> {
+  const cursorKind: CursorModeKind | undefined =
+    delivery.directDrain === true && !delivery.streaming
+      ? delivery.batchDrain === true
+        ? "progress"
+        : undefined
+      : delivery.eagerDrain === true
+        ? "answers"
+        : delivery.streaming
+          ? "answers"
+          : cooperative
+            ? "progress"
+            : undefined;
+  const cursorMode =
+    cursorKind === undefined ? undefined : makeCursorMode(cursorKind, delivery.budget);
+  return yield* interpretLoopG(
+    env,
+    fuel,
+    state,
+    [{ stack: admitAtom(atom, null), bnd: bindings }],
+    undefined,
+    cursorMode,
+  );
+}
+
+function* mettaCursorGenerator(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  atom: Atom,
+  cooperative: boolean,
+  delivery: CursorDeliveryControl,
+): Gen<CursorEvalRes> {
+  ensureCompiled(env, atom);
+  const cursorMode = mettaCursorMode(cooperative, delivery);
+  const emitter = mettaCursorEmitter(delivery, cursorMode);
+  const selected = refreshEvaluationEnvironment(env, state.world);
+  const input = inst(selected, bindings, atom);
+  const cachedDelta =
+    input.kind === "expr" && input.ground ? selected.evaluatedAtoms.get(input) : undefined;
+  const direct =
+    cachedDelta === undefined && fuel > 0
+      ? directAsyncGroundedApplication(selected, state, input)
+      : undefined;
+  let result: [Array<[Atom, Bindings]>, St];
+  if (direct === undefined) {
+    result = yield* mettaEvalG(env, fuel, state, bindings, atom, cursorMode, emitter);
+  } else {
+    result = yield* reduceDirectAsyncGroundedApplicationG(
+      selected,
+      fuel,
+      state,
+      bindings,
+      direct.application,
+      direct.op,
+      direct.args,
+      direct.queryVars,
+      direct.opReturnsAtom,
+      cursorMode,
+      emitter,
+    );
+    rememberGroundEvaluation(selected, input, bindings, state, result[0], result[1]);
+  }
+  const finalState =
+    emitter === undefined
+      ? result[1]
+      : yield* emitReturnedMettaAnswersG(emitter, result[0], result[1]);
+  return [result[0], finalState];
+}
+
+function mettaCursorMode(
+  cooperative: boolean,
+  delivery: CursorDeliveryControl,
+): CursorMode | undefined {
+  const cursorKind: CursorModeKind | undefined =
+    delivery.directDrain === true && !delivery.streaming
+      ? delivery.batchDrain === true
+        ? "cooperative"
+        : undefined
+      : delivery.eagerDrain === true
+        ? "answers"
+        : cooperative
+          ? "cooperative"
+          : undefined;
+  return cursorKind === undefined ? undefined : makeCursorMode(cursorKind, delivery.budget);
+}
+
+function mettaCursorEmitter(
+  delivery: CursorDeliveryControl,
+  cursorMode: CursorMode | undefined,
+): MettaAnswerEmitter | undefined {
+  return delivery.streaming
+    ? {
+        emitted: new WeakSet(),
+        emittedCount: 0,
+        lifecycle: delivery.lifecycle,
+        ...(cursorMode === undefined ? {} : { cursor: cursorMode }),
+      }
+    : undefined;
+}
+
+function minimalCursorLimit(options: SearchNextOptions): number {
+  const value = options.maxSteps ?? MINIMAL_DRAIN_QUANTUM;
+  if (!Number.isSafeInteger(value) || value <= 0)
+    throw new RangeError("maxSteps must be a positive safe integer");
+  return value;
+}
+
+function prepareCursorRead(delivery: CursorDeliveryControl, maxSteps: number): void {
+  if (delivery.budget.pendingSteps !== 0)
+    throw new Error("cursor resumed with unreported interpreter steps");
+  delivery.budget.remaining = maxSteps;
+}
+
+function takeDeliveryCursorSteps(delivery: CursorDeliveryControl): number {
+  return delivery.budget.active ? takeCursorSteps(delivery.budget) : 0;
+}
+
+function cursorEffectAllowance(delivery: CursorDeliveryControl, fallback: number): number {
+  return delivery.budget.active ? delivery.budget.remaining : fallback;
+}
+
+function minimalCancellation(options: SearchNextOptions): CancellationReason | undefined {
+  return options.signal?.aborted === true
+    ? stableEvalCancellationReason(options.signal.reason)
+    : undefined;
+}
+
+const stableEvalCancellationReason = (reason: unknown): CancellationReason =>
+  Object.freeze(normalizeCancellationReason(reason));
+
+function cancellationReasonsEqual(left: CancellationReason, right: CancellationReason): boolean {
+  return left.code === right.code && left.message === right.message;
+}
+
+function isCancellationFailure(error: unknown, reason: CancellationReason): boolean {
+  if (error === reason) return true;
+  if (error instanceof SchedulerCancellationError)
+    return cancellationReasonsEqual(error.reason, reason);
+  if (typeof error !== "object" || error === null) return false;
+  try {
+    const candidate = error as { readonly name?: unknown; readonly cause?: unknown };
+    return candidate.name === "AbortError" && candidate.cause === reason;
+  } catch {
+    return false;
+  }
+}
+
+const emptySnapshotBindings: Bindings = Object.freeze([]);
+
+function snapshotBindings(bindings: Bindings): Bindings {
+  if (bindings.length === 0) return emptySnapshotBindings;
+  return Object.freeze(
+    bindings.map(
+      (binding): BindingRel =>
+        Object.freeze(
+          binding.tag === "val"
+            ? { tag: "val", x: binding.x, a: binding.a, y: undefined }
+            : { tag: "eq", x: binding.x, a: undefined, y: binding.y },
+        ),
+    ),
+  );
+}
+
+function snapshotCursorState(state: St): St {
+  return { counter: state.counter, world: cloneWorld(state.world) };
+}
+
+function contextualCursorAnswer(pair: ContextualPair, state: St): MinimalSearchAnswer {
+  return {
+    atom: pair[0],
+    bindings: snapshotBindings(pair[1]),
+    state: snapshotCursorState(state),
+  };
+}
+
+interface InternalSearchAnswer {
+  readonly atom: Atom;
+  readonly bindings: Bindings;
+}
+
+type CursorAnswerMaterializer<T extends InternalSearchAnswer> = (
+  pair: ContextualPair,
+  state: St,
+) => T;
+
+/** Project an answer for an internal collector whose result comes from the terminal state. */
+function terminalCursorAnswer(pair: ContextualPair): InternalSearchAnswer {
+  return {
+    atom: pair[0],
+    bindings: snapshotBindings(pair[1]),
+  };
+}
+
+function cursorAnswer<T extends InternalSearchAnswer>(
+  signal: MinimalCursorAnswerSignal,
+  materialize: CursorAnswerMaterializer<T>,
+): T {
+  return materialize(signal.pair, signal.state);
+}
+
+function minimalDrainEvent<T, R>(
+  values: T[],
+  event: SearchEvent<T, R>,
+): SearchDrainResult<T, R> | undefined {
+  switch (event.kind) {
+    case "answer":
+    case "pending":
+      return undefined;
+    case "exhausted":
+      return { kind: "exhausted", values, terminal: event.terminal };
+    case "cancelled":
+      return { kind: "cancelled", values, reason: event.reason };
+    case "fault":
+      return { kind: "fault", values, error: event.error };
+  }
+}
+
+interface PreparedMinimalDrain<T> {
+  readonly values: T[];
+  readonly stopped: SearchDrainResult<T, St> | undefined;
+  readonly terminalPairs: boolean;
+}
+
+interface MinimalCursorStatus {
+  started: boolean;
+  terminal: St | undefined;
+  fault: unknown;
+  hasFault: boolean;
+  closedReason: CancellationReason | undefined;
+}
+
+function newMinimalCursorStatus(): MinimalCursorStatus {
+  return {
+    started: false,
+    terminal: undefined,
+    fault: undefined,
+    hasFault: false,
+    closedReason: undefined,
+  };
+}
+
+function prepareMinimalCursorDrain<T>(
+  options: SearchNextOptions,
+  delivery: CursorDeliveryControl,
+  status: MinimalCursorStatus,
+): PreparedMinimalDrain<T> {
+  minimalCursorLimit(options);
+  const values: T[] = [];
+  const stopped = stoppedMinimalCursorEvent<T>(
+    status.closedReason,
+    status.terminal,
+    status.hasFault,
+    status.fault,
+  );
+  const terminalPairs = !status.started;
+  if (stopped === undefined && terminalPairs) {
+    if (delivery.directDrain === true) delivery.streaming = false;
+    else delivery.eagerDrain = true;
+  }
+  if (stopped === undefined) status.started = true;
+  return {
+    values,
+    stopped: stopped === undefined ? undefined : minimalDrainEvent(values, stopped)!,
+    terminalPairs,
+  };
+}
+
+function completeMinimalCursorGenerator<T extends InternalSearchAnswer>(
+  result: CursorEvalRes,
+  delivery: CursorDeliveryControl,
+  unwindFailures: GeneratorUnwindFailures,
+  unwindMessage: string,
+  terminalPairs: boolean,
+  values: T[] | undefined,
+  materialize: CursorAnswerMaterializer<T>,
+  steps: number,
+): { readonly terminal: St; readonly steps: number } {
+  const completedSteps = steps + takeDeliveryCursorSteps(delivery);
+  if (unwindFailures.active) throw unwindFailures.failure(unwindMessage);
+  const terminal = result[1];
+  if (terminalPairs && !delivery.streaming)
+    for (const pair of result[0]) values!.push(materialize(pair, terminal));
+  return { terminal, steps: completedSteps };
+}
+
+function terminalDrainWithoutValues<T, R>(
+  terminal: Extract<SearchEvent<T, R>, { kind: "exhausted" | "cancelled" | "fault" }>,
+): SearchDrainResult<T, R> {
+  return minimalDrainEvent([], terminal)!;
+}
+
+function consumeMinimalCursorSignal<T extends InternalSearchAnswer>(
+  signal: MinimalCursorSignal,
+  values: T[] | undefined,
+  materialize: CursorAnswerMaterializer<T>,
+): T | undefined {
+  if (signal.kind === "progress") return undefined;
+  const answer = cursorAnswer(signal, materialize);
+  if (values === undefined) return answer;
+  values.push(answer);
+  return undefined;
+}
+
+function stoppedMinimalCursorEvent<T>(
+  closedReason: CancellationReason | undefined,
+  terminal: St | undefined,
+  hasFault: boolean,
+  fault: unknown,
+): SearchEvent<T, St> | undefined {
+  if (hasFault && isWorkerQuiescenceError(fault)) return { kind: "fault", error: fault, steps: 0 };
+  if (closedReason !== undefined) return { kind: "cancelled", reason: closedReason, steps: 0 };
+  if (terminal !== undefined) return { kind: "exhausted", terminal, steps: 0 };
+  return hasFault ? { kind: "fault", error: fault, steps: 0 } : undefined;
+}
+
+function closeGeneratorSync(generator: Gen<CursorEvalRes>, state: St): void {
+  closeDrivenGeneratorSync(generator, [[], state], (value) => {
+    if (isDriverEffect(value)) return value.runSync();
+    if (isMinimalCursorSignal(value)) return undefined;
+    throw new AsyncInSyncError(pendingAsyncOp);
+  });
+}
+
+async function closeGeneratorAsync(
+  generator: Gen<CursorEvalRes>,
+  state: St,
+  signal: AbortSignal,
+): Promise<void> {
+  await closeDrivenGeneratorAsync(generator, [[], state], signal, async (value, activeSignal) => {
+    if (isMinimalCursorSignal(value)) return undefined;
+    return isDriverEffect(value) ? value.runAsync(activeSignal) : await value;
+  });
+}
+
+class GeneratorSyncSearchCursor<T extends InternalSearchAnswer> implements SyncSearchCursor<T, St> {
+  readonly #generator: Gen<[ContextualPair[], St]>;
+  readonly #delivery: CursorDeliveryControl;
+  readonly #releaseSnapshot: () => void;
+  readonly #materializeAnswer: CursorAnswerMaterializer<T>;
+  readonly #unwindFailures = new GeneratorUnwindFailures();
+  readonly #status = newMinimalCursorStatus();
+  #state: St;
+  #released = false;
+
+  constructor(
+    generator: Gen<CursorEvalRes>,
+    state: St,
+    delivery: CursorDeliveryControl,
+    releaseSnapshot: () => void = () => undefined,
+    materializeAnswer: CursorAnswerMaterializer<T>,
+  ) {
+    this.#state = state;
+    this.#generator = generator;
+    this.#delivery = delivery;
+    this.#releaseSnapshot = releaseSnapshot;
+    this.#materializeAnswer = materializeAnswer;
+  }
+
+  get closed(): boolean {
+    return (
+      this.#status.closedReason !== undefined ||
+      this.#status.terminal !== undefined ||
+      this.#status.hasFault
+    );
+  }
+
+  next(options: SearchNextOptions = {}): SearchEvent<T, St> {
+    minimalCursorLimit(options);
+    this.#status.started = true;
+    return this.#drive(options);
+  }
+
+  drain(options: SearchNextOptions = {}): SearchDrainResult<T, St> {
+    const prepared = prepareMinimalCursorDrain<T>(options, this.#delivery, this.#status);
+    if (prepared.stopped !== undefined) return prepared.stopped;
+    if (prepared.terminalPairs && this.#delivery.directDrain === true)
+      return this.#drainDirect(options, prepared.values);
+    for (;;) {
+      const event = this.#drive(options, prepared.values, prepared.terminalPairs);
+      const terminal = minimalDrainEvent(prepared.values, event);
+      if (terminal !== undefined) return terminal;
+    }
+  }
+
+  #drainDirect(options: SearchNextOptions, values: T[]): SearchDrainResult<T, St> {
+    const cancellation = minimalCancellation(options);
+    if (cancellation !== undefined) {
+      try {
+        this.close(cancellation);
+      } catch (error) {
+        return { kind: "fault", values, error };
+      }
+      return { kind: "cancelled", values, reason: cancellation };
+    }
+    try {
+      const [pairs, terminal] = runGenSync(this.#generator);
+      this.#status.terminal = terminal;
+      this.#state = terminal;
+      for (const pair of pairs) values.push(this.#materializeAnswer(pair, terminal));
+      this.#release();
+      return { kind: "exhausted", values, terminal };
+    } catch (error) {
+      this.#stopWithFault(error);
+      return { kind: "fault", values, error: this.#status.fault };
+    }
+  }
+
+  #drive(options: SearchNextOptions, values?: T[], terminalPairs = false): SearchEvent<T, St> {
+    const maxSteps = minimalCursorLimit(options);
+    const stopped = stoppedMinimalCursorEvent<T>(
+      this.#status.closedReason,
+      this.#status.terminal,
+      this.#status.hasFault,
+      this.#status.fault,
+    );
+    if (stopped !== undefined) return stopped;
+    const cancellation = minimalCancellation(options);
+    if (cancellation !== undefined) {
+      this.close(cancellation);
+      return { kind: "cancelled", reason: cancellation, steps: 0 };
+    }
+
+    prepareCursorRead(this.#delivery, maxSteps);
+    let steps = 0;
+    try {
+      let result = this.#generator.next();
+      for (;;) {
+        if (result.done) {
+          const completed = completeMinimalCursorGenerator(
+            result.value,
+            this.#delivery,
+            this.#unwindFailures,
+            "synchronous effect and generator unwind both failed",
+            terminalPairs,
+            values,
+            this.#materializeAnswer,
+            steps,
+          );
+          this.#status.terminal = completed.terminal;
+          this.#state = this.#status.terminal;
+          this.#release();
+          return {
+            kind: "exhausted",
+            terminal: this.#status.terminal,
+            steps: completed.steps,
+          };
+        }
+        if (isDriverEffect(result.value)) {
+          steps += takeDeliveryCursorSteps(this.#delivery);
+          try {
+            result = this.#generator.next(
+              result.value.runSync(cursorEffectAllowance(this.#delivery, maxSteps - steps)),
+            );
+          } catch (error) {
+            this.#unwindFailures.record(error);
+            try {
+              result = this.#generator.throw(error);
+            } catch (unwindError) {
+              this.#unwindFailures.record(unwindError);
+              throw this.#unwindFailures.failure(
+                "synchronous effect and generator unwind both failed",
+              );
+            }
+          }
+          continue;
+        }
+        if (!isMinimalCursorSignal(result.value)) {
+          steps += takeDeliveryCursorSteps(this.#delivery);
+          const error = new AsyncInSyncError(pendingAsyncOp);
+          this.#stopWithFault(error);
+          return { kind: "fault", error: this.#status.fault, steps };
+        }
+        this.#state = result.value.state;
+        steps += result.value.steps;
+        const answer = consumeMinimalCursorSignal(result.value, values, this.#materializeAnswer);
+        if (answer !== undefined) return { kind: "answer", value: answer, steps };
+        if (steps >= maxSteps) return { kind: "pending", steps };
+        result = this.#generator.next();
+      }
+    } catch (error) {
+      steps += takeDeliveryCursorSteps(this.#delivery);
+      this.#stopWithFault(error);
+      return { kind: "fault", error: this.#status.fault, steps };
+    }
+  }
+
+  close(reason: CancellationReason = MINIMAL_CURSOR_CLOSED): void {
+    if (this.closed) return;
+    this.#status.closedReason = stableEvalCancellationReason(reason);
+    this.#delivery.lifecycle.unwinding = true;
+    try {
+      closeGeneratorSync(this.#generator, this.#state);
+    } catch (cleanupError) {
+      if (isWorkerQuiescenceError(cleanupError)) {
+        this.#status.fault = combineInitiatingAndCleanupFailure(
+          this.#status.closedReason,
+          cleanupError,
+          "evaluation cancellation and worker cleanup both failed",
+        );
+        this.#status.hasFault = true;
+        throw this.#status.fault;
+      }
+      throw cleanupError;
+    } finally {
+      this.#release();
+    }
+  }
+
+  #stopWithFault(error: unknown): void {
+    this.#status.fault = error;
+    this.#status.hasFault = true;
+    this.#delivery.lifecycle.unwinding = true;
+    try {
+      closeGeneratorSync(this.#generator, this.#state);
+    } catch (cleanupError) {
+      this.#status.fault = combineInitiatingAndCleanupFailure(
+        error,
+        cleanupError,
+        "evaluation and synchronous generator cleanup both failed",
+      );
+    } finally {
+      this.#release();
+    }
+  }
+
+  #release(): void {
+    if (this.#released) return;
+    this.#released = true;
+    this.#releaseSnapshot();
+  }
+}
+
+interface PinnedCursorSource {
+  readonly generator: Gen<CursorEvalRes>;
+  readonly state: St;
+  readonly delivery: CursorDeliveryControl;
+  readonly release: () => void;
+}
+
+function pinnedCursorSource(
+  kind: "minimal" | "metta",
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions,
+): PinnedCursorSource {
+  const pinned = pinAsyncEvaluation(env, options.state ?? initSt());
+  const bindings = snapshotBindings(options.bindings ?? emptyBindings);
+  const delivery: CursorDeliveryControl = {
+    streaming: true,
+    lifecycle: { unwinding: false },
+    budget: newCursorBudget(),
+  };
+  const generator =
+    kind === "minimal"
+      ? minimalCursorGenerator(
+          pinned.env,
+          options.fuel ?? DEFAULT_FUEL,
+          pinned.state,
+          bindings,
+          atom,
+          options.cooperative ?? true,
+          delivery,
+        )
+      : mettaCursorGenerator(
+          pinned.env,
+          options.fuel ?? DEFAULT_FUEL,
+          pinned.state,
+          bindings,
+          atom,
+          options.cooperative ?? true,
+          delivery,
+        );
+  return { generator, state: pinned.state, delivery, release: pinned.release };
+}
+
+/** Pull-based synchronous execution of one Minimal MeTTa interpretation plan. */
+export class MinimalSyncSearchCursor extends GeneratorSyncSearchCursor<MinimalSearchAnswer> {
+  constructor(env: MinEnv, atom: Atom, options: MinimalInterpretOptions = {}) {
+    const source = pinnedCursorSource("minimal", env, atom, options);
+    super(source.generator, source.state, source.delivery, source.release, contextualCursorAnswer);
+  }
+}
+
+/** Pull-based synchronous normal-form evaluation with answer-boundary suspension. */
+export class MettaSyncSearchCursor extends GeneratorSyncSearchCursor<MinimalSearchAnswer> {
+  constructor(env: MinEnv, atom: Atom, options: MinimalInterpretOptions = {}) {
+    const source = pinnedCursorSource("metta", env, atom, options);
+    super(source.generator, source.state, source.delivery, source.release, contextualCursorAnswer);
+  }
+}
+
+class GeneratorAsyncSearchCursor<T extends InternalSearchAnswer> implements AsyncSearchCursor<
+  T,
+  St
+> {
+  readonly #generator: Gen<[ContextualPair[], St]>;
+  readonly #controller = new AbortController();
+  readonly #driverSignal: AbortSignal | undefined;
+  readonly #scope = new ExclusiveAsyncScope();
+  readonly #releaseSnapshot: () => void;
+  readonly #delivery: CursorDeliveryControl;
+  readonly #materializeAnswer: CursorAnswerMaterializer<T>;
+  readonly #unwindFailures = new GeneratorUnwindFailures();
+  readonly #status = newMinimalCursorStatus();
+  #state: St;
+  readonly #cleanupFaults: unknown[] = [];
+  #cleanupFailure: unknown;
+  #hasCleanupFailure = false;
+  #closing: Promise<void> | undefined;
+  #generatorFinished = false;
+  #released = false;
+
+  constructor(
+    generator: Gen<CursorEvalRes>,
+    state: St,
+    releaseSnapshot: () => void,
+    delivery: CursorDeliveryControl,
+    materializeAnswer: CursorAnswerMaterializer<T>,
+    driverSignal?: AbortSignal,
+  ) {
+    this.#state = state;
+    this.#driverSignal = driverSignal;
+    this.#releaseSnapshot = releaseSnapshot;
+    this.#generator = generator;
+    this.#delivery = delivery;
+    this.#materializeAnswer = materializeAnswer;
+  }
+
+  get closed(): boolean {
+    return (
+      this.#status.closedReason !== undefined ||
+      this.#status.terminal !== undefined ||
+      this.#status.hasFault
+    );
+  }
+
+  next(options: SearchNextOptions = {}): Promise<SearchEvent<T, St>> {
+    return this.#scope.run(async () => {
+      minimalCursorLimit(options);
+      this.#status.started = true;
+      return await this.#drive(options);
+    });
+  }
+
+  nextBatch(options: SearchNextOptions = {}): Promise<SearchBatchEvent<T, St>> {
+    return this.#scope.run(async () => {
+      minimalCursorLimit(options);
+      if (!this.#status.started && this.#delivery.directDrain === true) {
+        this.#delivery.batchDrain = true;
+        this.#delivery.streaming = false;
+      }
+      this.#status.started = true;
+      const values: T[] = [];
+      const event = await this.#drive(options, values, this.#delivery.batchDrain === true);
+      switch (event.kind) {
+        case "answer":
+          values.push(event.value);
+          return { kind: "pending", values, steps: event.steps };
+        case "pending":
+          return { ...event, values };
+        case "exhausted":
+          return { ...event, values };
+        case "cancelled":
+          return { ...event, values };
+        case "fault":
+          return { ...event, values };
+      }
+    });
+  }
+
+  drain(options: SearchNextOptions = {}): Promise<SearchDrainResult<T, St>> {
+    return this.#scope.run(() => this.#drain(options));
+  }
+
+  close(reason: CancellationReason = MINIMAL_CURSOR_CLOSED): Promise<void> {
+    // Publish the public close promise before cleanup can re-enter this cursor. Active code may already have
+    // started owned cleanup without joining itself, so this boundary joins both cleanup and the active read.
+    return this.#scope.close(() => {
+      this.#beginClose(reason);
+      return this.#closing!;
+    });
+  }
+
+  async #drain(options: SearchNextOptions): Promise<SearchDrainResult<T, St>> {
+    const prepared = prepareMinimalCursorDrain<T>(options, this.#delivery, this.#status);
+    if (prepared.stopped !== undefined) return prepared.stopped;
+    if (prepared.terminalPairs && this.#delivery.directDrain === true)
+      return this.#drainDirect(options, prepared.values);
+    for (;;) {
+      const event = await this.#drive(options, prepared.values, prepared.terminalPairs);
+      const terminal = minimalDrainEvent(prepared.values, event);
+      if (terminal !== undefined) return terminal;
+    }
+  }
+
+  async #drainDirect(options: SearchNextOptions, values: T[]): Promise<SearchDrainResult<T, St>> {
+    const cancellation = minimalCancellation(options);
+    if (cancellation !== undefined) {
+      this.#beginClose(cancellation, false);
+      try {
+        await this.#closing;
+      } catch (error) {
+        this.#recordCleanupFault(error);
+        this.#status.fault = isWorkerQuiescenceError(this.#status.fault)
+          ? this.#status.fault
+          : combineInitiatingAndCleanupFailure(
+              cancellation,
+              this.#cleanupFailure,
+              "evaluation cancellation and cleanup both failed",
+            );
+        this.#status.hasFault = true;
+        return { kind: "fault", values, error: this.#status.fault };
+      }
+      return { kind: "cancelled", values, reason: cancellation };
+    }
+    // An owned scheduler child already receives this exact signal as its driver signal. The parent aborts
+    // the group and calls child.close in one close operation, so a second per-read listener only duplicates
+    // propagation and doubles EventTarget churn across every answer boundary.
+    const readSignal = options.signal === this.#driverSignal ? undefined : options.signal;
+    const onAbort = (): void => {
+      this.#beginClose(readSignal?.reason);
+    };
+    readSignal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      const [pairs, terminal] = await runGenAsync(this.#generator, this.#controller.signal);
+      this.#status.terminal = terminal;
+      this.#state = terminal;
+      for (const pair of pairs) values.push(this.#materializeAnswer(pair, terminal));
+      this.#release();
+      return { kind: "exhausted", values, terminal };
+    } catch (error) {
+      const cancelled = this.#status.closedReason ?? minimalCancellation(options);
+      if (cancelled !== undefined) {
+        if (!isCancellationFailure(error, cancelled)) {
+          this.#recordCleanupFault(error);
+          this.#status.fault = isWorkerQuiescenceError(this.#status.fault)
+            ? this.#status.fault
+            : combineInitiatingAndCleanupFailure(
+                cancelled,
+                this.#cleanupFailure,
+                "evaluation cancellation and cleanup both failed",
+              );
+          this.#status.hasFault = true;
+        }
+        this.#status.closedReason = cancelled;
+        if (this.#status.hasFault) return { kind: "fault", values, error: this.#status.fault };
+        return { kind: "cancelled", values, reason: cancelled };
+      }
+      this.#status.fault = error;
+      this.#status.hasFault = true;
+      this.#release();
+      return { kind: "fault", values, error };
+    } finally {
+      this.#generatorFinished = true;
+      readSignal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  async #drive(
+    options: SearchNextOptions,
+    values?: T[],
+    terminalPairs = false,
+  ): Promise<SearchEvent<T, St>> {
+    const maxSteps = minimalCursorLimit(options);
+    const stopped = stoppedMinimalCursorEvent<T>(
+      this.#status.closedReason,
+      this.#status.terminal,
+      this.#status.hasFault,
+      this.#status.fault,
+    );
+    if (stopped !== undefined) return stopped;
+    const cancellation = minimalCancellation(options);
+    if (cancellation !== undefined) {
+      this.#beginClose(cancellation, false);
+      try {
+        await this.#closing;
+      } catch (error) {
+        this.#recordCleanupFault(error);
+        if (isWorkerQuiescenceError(this.#status.fault))
+          return { kind: "fault", error: this.#status.fault, steps: 0 };
+        // `close()` exposes ordinary cleanup failure. Cancellation remains the first visible terminal.
+      }
+      return { kind: "cancelled", reason: cancellation, steps: 0 };
+    }
+
+    // The owning scheduler propagates its driver signal through child.close. Keep a per-read listener only
+    // for a distinct caller signal, such as a public cursor read made outside that scheduler.
+    const readSignal = options.signal === this.#driverSignal ? undefined : options.signal;
+    const onAbort = (): void => {
+      this.#beginClose(readSignal?.reason);
+    };
+    readSignal?.addEventListener("abort", onAbort, { once: true });
+    prepareCursorRead(this.#delivery, maxSteps);
+    let steps = 0;
+    const driverSignal = this.#driverSignal ?? this.#controller.signal;
+    try {
+      let result = this.#generator.next();
+      for (;;) {
+        if (this.#status.closedReason !== undefined) {
+          steps += takeDeliveryCursorSteps(this.#delivery);
+          return this.#finishCancelledRead(steps);
+        }
+        if (result.done) {
+          const completed = completeMinimalCursorGenerator(
+            result.value,
+            this.#delivery,
+            this.#unwindFailures,
+            "asynchronous effect and generator unwind both failed",
+            terminalPairs,
+            values,
+            this.#materializeAnswer,
+            steps,
+          );
+          this.#generatorFinished = true;
+          this.#status.terminal = completed.terminal;
+          this.#state = this.#status.terminal;
+          this.#release();
+          return {
+            kind: "exhausted",
+            terminal: this.#status.terminal,
+            steps: completed.steps,
+          };
+        }
+        if (isMinimalCursorSignal(result.value)) {
+          this.#state = result.value.state;
+          steps += result.value.steps;
+          const answer = this.#unwindFailures.active
+            ? undefined
+            : consumeMinimalCursorSignal(result.value, values, this.#materializeAnswer);
+          if (answer !== undefined) return { kind: "answer", value: answer, steps };
+          if (steps >= maxSteps) return { kind: "pending", steps };
+          result = this.#generator.next();
+          continue;
+        }
+        steps += takeDeliveryCursorSteps(this.#delivery);
+        try {
+          driverSignal.throwIfAborted();
+          const value = isDriverEffect(result.value)
+            ? await result.value.runAsync(
+                driverSignal,
+                cursorEffectAllowance(this.#delivery, maxSteps - steps),
+              )
+            : await result.value;
+          driverSignal.throwIfAborted();
+          result = this.#generator.next(value);
+        } catch (error) {
+          if (
+            this.#status.closedReason === undefined ||
+            !isCancellationFailure(error, this.#status.closedReason)
+          )
+            this.#unwindFailures.record(error);
+          try {
+            result = this.#generator.throw(error);
+          } catch (unwindError) {
+            this.#generatorFinished = true;
+            if (
+              this.#status.closedReason === undefined ||
+              !isCancellationFailure(unwindError, this.#status.closedReason)
+            )
+              this.#unwindFailures.record(unwindError);
+            if (this.#status.closedReason === undefined)
+              throw this.#unwindFailures.active
+                ? this.#unwindFailures.failure(
+                    "asynchronous effect and generator unwind both failed",
+                  )
+                : unwindError;
+            if (this.#unwindFailures.active)
+              this.#recordCleanupFault(
+                this.#unwindFailures.failure(
+                  "asynchronous effect and generator unwind both failed",
+                ),
+              );
+            steps += takeDeliveryCursorSteps(this.#delivery);
+            return this.#finishCancelledRead(steps);
+          }
+          if (this.#status.closedReason !== undefined) {
+            try {
+              await finishGeneratorAsync(this.#generator, result, this.#controller.signal);
+            } catch (cleanupError) {
+              if (!isCancellationFailure(cleanupError, this.#status.closedReason))
+                this.#unwindFailures.record(cleanupError);
+            } finally {
+              this.#generatorFinished = true;
+            }
+            if (this.#unwindFailures.active)
+              this.#recordCleanupFault(
+                this.#unwindFailures.failure(
+                  "asynchronous effect and generator unwind both failed",
+                ),
+              );
+            steps += takeDeliveryCursorSteps(this.#delivery);
+            return this.#finishCancelledRead(steps);
+          }
+        }
+      }
+    } catch (error) {
+      steps += takeDeliveryCursorSteps(this.#delivery);
+      if (this.#status.closedReason !== undefined) {
+        if (!isCancellationFailure(error, this.#status.closedReason))
+          this.#recordCleanupFault(error);
+        if (this.#status.hasFault && isWorkerQuiescenceError(this.#status.fault))
+          return { kind: "fault", error: this.#status.fault, steps };
+        return { kind: "cancelled", reason: this.#status.closedReason, steps };
+      }
+      this.#status.fault = error;
+      this.#status.hasFault = true;
+      try {
+        await this.#finishGenerator();
+      } catch (cleanupError) {
+        this.#status.fault = combineInitiatingAndCleanupFailure(
+          error,
+          cleanupError,
+          "evaluation and asynchronous generator cleanup both failed",
+        );
+      }
+      this.#release();
+      return { kind: "fault", error: this.#status.fault, steps };
+    } finally {
+      readSignal?.removeEventListener("abort", onAbort);
+    }
+  }
+
+  #beginClose(reason: unknown, joinActive = true): void {
+    if (
+      this.#closing !== undefined ||
+      this.#status.terminal !== undefined ||
+      this.#status.hasFault
+    ) {
+      this.#closing ??= Promise.resolve();
+      return;
+    }
+    this.#status.closedReason = this.#stableCancellationReason(reason);
+    this.#delivery.lifecycle.unwinding = true;
+    this.#controller.abort(this.#status.closedReason);
+    const active = joinActive ? this.#scope.active : undefined;
+    if (active === undefined) {
+      // Defer generator cleanup by one microtask so #closing is assigned before a finalizer can re-enter.
+      this.#closing = Promise.resolve()
+        .then(() => this.#finishGenerator())
+        .finally(() => this.#release());
+      void this.#closing.catch(() => undefined);
+      return;
+    }
+    this.#closing = active
+      .then(
+        () => this.#finishGenerator(),
+        async (error: unknown) => {
+          await this.#finishGenerator();
+          if (!isCancellationFailure(error, this.#status.closedReason!)) throw error;
+        },
+      )
+      .finally(() => this.#release());
+    void this.#closing.catch(() => undefined);
+  }
+
+  async #finishCancelledRead(steps: number): Promise<SearchEvent<T, St>> {
+    try {
+      await this.#finishGenerator();
+    } catch {
+      // #finishGenerator records cleanup failures. Ordinary failures remain on close's second channel.
+    }
+    if (this.#unwindFailures.active) {
+      const failure = this.#unwindFailures.failure(
+        "asynchronous effect and generator unwind both failed",
+      );
+      if (!isCancellationFailure(failure, this.#status.closedReason!))
+        this.#recordCleanupFault(failure);
+    }
+    this.#release();
+    if (this.#status.hasFault && isWorkerQuiescenceError(this.#status.fault))
+      return { kind: "fault", error: this.#status.fault, steps };
+    return { kind: "cancelled", reason: this.#status.closedReason!, steps };
+  }
+
+  async #finishGenerator(): Promise<void> {
+    if (!this.#generatorFinished) {
+      this.#delivery.lifecycle.unwinding = true;
+      try {
+        await closeGeneratorAsync(this.#generator, this.#state, this.#controller.signal);
+      } catch (error) {
+        if (
+          this.#status.closedReason === undefined ||
+          !isCancellationFailure(error, this.#status.closedReason)
+        )
+          this.#recordCleanupFault(error);
+      } finally {
+        this.#generatorFinished = true;
+      }
+    }
+    if (this.#hasCleanupFailure)
+      throw this.#status.hasFault && isWorkerQuiescenceError(this.#status.fault)
+        ? this.#status.fault
+        : this.#cleanupFailure;
+  }
+
+  #recordCleanupFault(error: unknown): void {
+    for (const failure of cleanupFailureLeaves(error)) {
+      if (
+        this.#status.closedReason !== undefined &&
+        isCancellationFailure(failure, this.#status.closedReason)
+      )
+        continue;
+      this.#recordCleanupFailureLeaf(failure);
+    }
+  }
+
+  #recordCleanupFailureLeaf(error: unknown): void {
+    if (
+      this.#status.hasFault &&
+      isWorkerQuiescenceError(this.#status.fault) &&
+      Object.is(error, this.#status.fault)
+    )
+      return;
+    if (this.#hasCleanupFailure && Object.is(error, this.#cleanupFailure)) return;
+    this.#cleanupFaults.push(error);
+    this.#cleanupFailure = aggregateCleanupFailures(
+      this.#cleanupFaults,
+      "multiple asynchronous evaluation cleanups failed",
+    );
+    this.#hasCleanupFailure = true;
+    if (isWorkerQuiescenceError(this.#cleanupFailure)) {
+      this.#status.fault =
+        this.#status.closedReason === undefined
+          ? this.#cleanupFailure
+          : combineInitiatingAndCleanupFailure(
+              this.#status.closedReason,
+              this.#cleanupFailure,
+              "evaluation cancellation and worker cleanup both failed",
+            );
+      this.#status.hasFault = true;
+    }
+  }
+
+  #release(): void {
+    if (this.#released) return;
+    this.#released = true;
+    this.#releaseSnapshot();
+  }
+
+  #stableCancellationReason(reason: unknown): CancellationReason {
+    if (
+      this.#driverSignal?.aborted === true &&
+      Object.is(reason, this.#driverSignal.reason) &&
+      typeof reason === "object" &&
+      reason !== null &&
+      Object.isFrozen(reason)
+    )
+      return reason as CancellationReason;
+    return stableEvalCancellationReason(reason);
+  }
+}
+
+/** Pull-based asynchronous execution over a pinned Minimal control plan. */
+export class MinimalAsyncSearchCursor extends GeneratorAsyncSearchCursor<MinimalSearchAnswer> {
+  constructor(env: MinEnv, atom: Atom, options: MinimalInterpretOptions = {}) {
+    const source = pinnedCursorSource("minimal", env, atom, options);
+    super(source.generator, source.state, source.release, source.delivery, contextualCursorAnswer);
+  }
+}
+
+/** Pull-based asynchronous normal-form evaluation over a pinned snapshot. */
+export class MettaAsyncSearchCursor extends GeneratorAsyncSearchCursor<MinimalSearchAnswer> {
+  constructor(env: MinEnv, atom: Atom, options: MinimalInterpretOptions = {}) {
+    const source = pinnedCursorSource("metta", env, atom, options);
+    super(source.generator, source.state, source.release, source.delivery, contextualCursorAnswer);
+  }
+}
+
+function ownedAsyncSearchCursor<T extends InternalSearchAnswer>(
+  kind: "minimal" | "metta",
+  env: MinEnv,
+  atom: Atom,
+  options: Required<Pick<MinimalInterpretOptions, "fuel" | "state" | "bindings">>,
+  materializeAnswer: CursorAnswerMaterializer<T>,
+  driverSignal?: AbortSignal,
+): GeneratorAsyncSearchCursor<T> {
+  const delivery: CursorDeliveryControl = {
+    streaming: true,
+    lifecycle: { unwinding: false },
+    budget: newCursorBudget(),
+    directDrain: true,
+  };
+  const bindings = snapshotBindings(options.bindings);
+  return new GeneratorAsyncSearchCursor(
+    kind === "minimal"
+      ? minimalCursorGenerator(env, options.fuel, options.state, bindings, atom, true, delivery)
+      : mettaCursorGenerator(env, options.fuel, options.state, bindings, atom, true, delivery),
+    options.state,
+    () => undefined,
+    delivery,
+    materializeAnswer,
+    driverSignal,
+  );
+}
+
+function* settledDirectGroundedCursorGenerator(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  direct: DirectAsyncGroundedApplication,
+  settled: ReduceResult,
+  remember: boolean,
+  delivery: CursorDeliveryControl,
+): Gen<CursorEvalRes> {
+  const cursorMode = mettaCursorMode(true, delivery);
+  const emitter = mettaCursorEmitter(delivery, cursorMode);
+  const result = yield* finishDirectGroundedApplicationG(
+    env,
+    fuel,
+    state,
+    bindings,
+    direct.application,
+    direct.queryVars,
+    direct.opReturnsAtom,
+    settled,
+    cursorMode,
+    emitter,
+  );
+  if (remember)
+    rememberGroundEvaluation(env, direct.application, bindings, state, result[0], result[1]);
+  const finalState =
+    emitter === undefined
+      ? result[1]
+      : yield* emitReturnedMettaAnswersG(emitter, result[0], result[1]);
+  return [result[0], finalState];
+}
+
+/** Resume a grounded branch whose host operation has already run. */
+function ownedSettledDirectGroundedCursor(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  direct: DirectAsyncGroundedApplication,
+  settled: ReduceResult,
+  driverSignal: AbortSignal,
+  remember = true,
+): GeneratorAsyncSearchCursor<InternalSearchAnswer> {
+  const delivery: CursorDeliveryControl = {
+    streaming: true,
+    lifecycle: { unwinding: false },
+    budget: newCursorBudget(),
+    directDrain: true,
+  };
+  return new GeneratorAsyncSearchCursor(
+    settledDirectGroundedCursorGenerator(
+      env,
+      fuel,
+      state,
+      snapshotBindings(bindings),
+      direct,
+      settled,
+      remember,
+      delivery,
+    ),
+    state,
+    () => undefined,
+    delivery,
+    terminalCursorAnswer,
+    driverSignal,
+  );
+}
+
+function eagerMinimalSyncCursor(
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions,
+): GeneratorSyncSearchCursor<InternalSearchAnswer> {
+  const pinned = pinAsyncEvaluation(env, options.state ?? initSt());
+  const bindings = snapshotBindings(options.bindings ?? emptyBindings);
+  const cooperative = options.cooperative ?? false;
+  const delivery: CursorDeliveryControl = {
+    streaming: true,
+    lifecycle: { unwinding: false },
+    budget: newCursorBudget(),
+    directDrain: !cooperative,
+  };
+  return new GeneratorSyncSearchCursor(
+    minimalCursorGenerator(
+      pinned.env,
+      options.fuel ?? DEFAULT_FUEL,
+      pinned.state,
+      bindings,
+      atom,
+      cooperative,
+      delivery,
+    ),
+    pinned.state,
+    delivery,
+    pinned.release,
+    terminalCursorAnswer,
+  );
+}
+
+function eagerMinimalAsyncCursor(
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions,
+): GeneratorAsyncSearchCursor<InternalSearchAnswer> {
+  const pinned = pinAsyncEvaluation(env, options.state ?? initSt());
+  const bindings = snapshotBindings(options.bindings ?? emptyBindings);
+  const cooperative = options.cooperative ?? false;
+  const delivery: CursorDeliveryControl = {
+    streaming: true,
+    lifecycle: { unwinding: false },
+    budget: newCursorBudget(),
+    directDrain: !cooperative,
+  };
+  return new GeneratorAsyncSearchCursor(
+    minimalCursorGenerator(
+      pinned.env,
+      options.fuel ?? DEFAULT_FUEL,
+      pinned.state,
+      bindings,
+      atom,
+      cooperative,
+      delivery,
+    ),
+    pinned.state,
+    pinned.release,
+    delivery,
+    terminalCursorAnswer,
+  );
+}
+
+export const createMinimalSearchCursor = (
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions = {},
+): MinimalSyncSearchCursor => new MinimalSyncSearchCursor(env, atom, options);
+
+export const createMinimalAsyncSearchCursor = (
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions = {},
+): MinimalAsyncSearchCursor => new MinimalAsyncSearchCursor(env, atom, options);
+
+export const createMettaSearchCursor = (
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions = {},
+): MettaSyncSearchCursor => new MettaSyncSearchCursor(env, atom, options);
+
+export const createMettaAsyncSearchCursor = (
+  env: MinEnv,
+  atom: Atom,
+  options: MinimalInterpretOptions = {},
+): MettaAsyncSearchCursor => new MettaAsyncSearchCursor(env, atom, options);
+
+function combineCancellationAndActiveFault(
+  reason: CancellationReason,
+  activeFault: unknown,
+  cleanupFailed: boolean,
+  cleanupFault: unknown,
+  operation: string,
+): unknown {
+  let failure = combineInitiatingAndCleanupFailure(
+    reason,
+    activeFault,
+    `${operation} cancellation and active work both failed`,
+  );
+  if (cleanupFailed)
+    failure = combineInitiatingAndCleanupFailure(
+      failure,
+      cleanupFault,
+      `${operation} active work and cleanup both failed`,
+    );
+  return failure;
+}
+
+function mapCursorTerminal<T, A, B>(
+  event: SearchEvent<T, A>,
+  mapTerminal: (terminal: A) => B,
+): SearchEvent<T, B> {
+  switch (event.kind) {
+    case "exhausted":
+      return {
+        kind: "exhausted",
+        terminal: mapTerminal(event.terminal),
+        steps: event.steps,
+      };
+    case "cancelled":
+      return {
+        kind: "cancelled",
+        reason: stableEvalCancellationReason(event.reason),
+        steps: event.steps,
+      };
+    case "fault":
+    case "answer":
+    case "pending":
+      return event;
+  }
+}
+
+function mapAndRecordCursorTerminal<T, A, B>(
+  event: SearchEvent<T, A>,
+  mapTerminal: (terminal: A) => B,
+  recordTerminal: (
+    terminal: Extract<SearchEvent<T, B>, { kind: "exhausted" | "cancelled" | "fault" }>,
+  ) => void,
+  recordCancellation: (reason: CancellationReason) => void,
+): SearchEvent<T, B> {
+  const mapped = mapCursorTerminal(event, mapTerminal);
+  if (mapped.kind === "cancelled") recordCancellation(mapped.reason);
+  if (mapped.kind === "exhausted" || mapped.kind === "cancelled" || mapped.kind === "fault")
+    recordTerminal(mapped);
+  return mapped;
+}
+
+function finishMappedCursorRead<T, A, B>(
+  event: SearchEvent<T, A>,
+  stopped: Extract<SearchEvent<T, B>, { kind: "exhausted" | "cancelled" | "fault" }> | undefined,
+  mapTerminal: (terminal: A) => B,
+  recordTerminal: (
+    terminal: Extract<SearchEvent<T, B>, { kind: "exhausted" | "cancelled" | "fault" }>,
+  ) => void,
+  recordCancellation: (reason: CancellationReason) => void,
+): SearchEvent<T, B> {
+  if (stopped !== undefined) return { ...stopped, steps: event.steps };
+  return mapAndRecordCursorTerminal(event, mapTerminal, recordTerminal, recordCancellation);
+}
+
+class MapTerminalSyncCursor<T, A, B> implements SyncSearchCursor<T, B> {
+  #closedReason: CancellationReason | undefined;
+  #terminal: Extract<SearchEvent<T, B>, { kind: "exhausted" | "cancelled" | "fault" }> | undefined;
+
+  constructor(
+    readonly source: SyncSearchCursor<T, A>,
+    readonly mapTerminal: (terminal: A) => B,
+  ) {}
+
+  get closed(): boolean {
+    return this.#terminal !== undefined || this.source.closed;
+  }
+
+  next(options: SearchNextOptions = {}): SearchEvent<T, B> {
+    minimalCursorLimit(options);
+    if (this.#terminal !== undefined) return { ...this.#terminal, steps: 0 };
+    const cancellation = minimalCancellation(options) ?? this.#closedReason;
+    if (cancellation !== undefined) {
+      try {
+        this.close(cancellation);
+      } catch (cleanupError) {
+        const terminal = {
+          kind: "fault" as const,
+          error: combineInitiatingAndCleanupFailure(
+            cancellation,
+            cleanupError,
+            "terminal mapping cancellation and cleanup both failed",
+          ),
+          steps: 0,
+        };
+        this.#terminal = terminal;
+        return terminal;
+      }
+      return this.#terminal!;
+    }
+    let event: SearchEvent<T, A>;
+    let steps = 0;
+    try {
+      event = this.source.next(options);
+      steps = event.steps;
+      return finishMappedCursorRead(
+        event,
+        this.#terminal,
+        this.mapTerminal,
+        (terminal) => (this.#terminal = terminal),
+        (reason) => (this.#closedReason = reason),
+      );
+    } catch (error) {
+      try {
+        this.source.close({ code: "fault" });
+      } catch (cleanupError) {
+        const terminal = {
+          kind: "fault" as const,
+          error: combineInitiatingAndCleanupFailure(
+            error,
+            cleanupError,
+            "terminal mapping and cleanup both failed",
+          ),
+          steps,
+        };
+        this.#terminal = terminal;
+        return terminal;
+      }
+      const terminal = { kind: "fault" as const, error, steps };
+      this.#terminal = terminal;
+      return terminal;
+    }
+  }
+
+  close(reason: CancellationReason = { code: "closed" }): void {
+    if (this.#terminal !== undefined && this.#closedReason === undefined) return;
+    this.#closedReason ??= stableEvalCancellationReason(reason);
+    this.#terminal ??= { kind: "cancelled", reason: this.#closedReason, steps: 0 };
+    try {
+      this.source.close(this.#closedReason);
+    } catch (cleanupError) {
+      if (isWorkerQuiescenceError(cleanupError))
+        throw combineInitiatingAndCleanupFailure(
+          this.#closedReason,
+          cleanupError,
+          "terminal mapping cancellation and worker cleanup both failed",
+        );
+      throw cleanupError;
+    }
+  }
+}
+
+class MapTerminalAsyncCursor<T, A, B> implements AsyncSearchCursor<T, B> {
+  readonly #scope = new ExclusiveAsyncScope();
+  #closedReason: CancellationReason | undefined;
+  #closeWork: Promise<void> | undefined;
+  #terminal: Extract<SearchEvent<T, B>, { kind: "exhausted" | "cancelled" | "fault" }> | undefined;
+
+  constructor(
+    readonly source: AsyncSearchCursor<T, A>,
+    readonly mapTerminal: (terminal: A) => B,
+  ) {}
+
+  get closed(): boolean {
+    return this.#terminal !== undefined || this.source.closed;
+  }
+
+  next(options: SearchNextOptions = {}): Promise<SearchEvent<T, B>> {
+    return this.#scope.run(() => this.#next(options));
+  }
+
+  drain(options: SearchNextOptions = {}): Promise<SearchDrainResult<T, B>> {
+    return this.#scope.run(() => this.#drain(options));
+  }
+
+  async #next(options: SearchNextOptions): Promise<SearchEvent<T, B>> {
+    minimalCursorLimit(options);
+    if (this.#terminal !== undefined) return { ...this.#terminal, steps: 0 };
+    const cancellation = minimalCancellation(options) ?? this.#closedReason;
+    if (cancellation !== undefined) {
+      try {
+        await this.#beginClose(cancellation);
+      } catch (cleanupError) {
+        if (isWorkerQuiescenceError(cleanupError)) {
+          const error = combineInitiatingAndCleanupFailure(
+            cancellation,
+            cleanupError,
+            "terminal mapping cancellation and cleanup both failed",
+          );
+          return (this.#terminal = { kind: "fault", error, steps: 0 });
+        }
+        // `close()` exposes cleanup failure. Cancellation remains the first visible terminal.
+      }
+      return this.#terminal!;
+    }
+    let event: SearchEvent<T, A>;
+    let steps = 0;
+    try {
+      event = await this.source.next(options);
+      steps = event.steps;
+      if (
+        this.#closedReason !== undefined &&
+        event.kind === "fault" &&
+        isWorkerQuiescenceError(event.error)
+      ) {
+        const terminal = {
+          kind: "fault" as const,
+          error: combineCancellationAndActiveFault(
+            this.#closedReason,
+            event.error,
+            false,
+            undefined,
+            "terminal mapping",
+          ),
+          steps,
+        };
+        this.#terminal = terminal;
+        return terminal;
+      }
+      return finishMappedCursorRead(
+        event,
+        this.#terminal,
+        this.mapTerminal,
+        (terminal) => (this.#terminal = terminal),
+        (reason) => (this.#closedReason = reason),
+      );
+    } catch (error) {
+      if (this.#closedReason !== undefined) {
+        if (isWorkerQuiescenceError(error)) {
+          const terminal = {
+            kind: "fault" as const,
+            error: combineCancellationAndActiveFault(
+              this.#closedReason,
+              error,
+              false,
+              undefined,
+              "terminal mapping",
+            ),
+            steps,
+          };
+          this.#terminal = terminal;
+          return terminal;
+        }
+        return { kind: "cancelled", reason: this.#closedReason, steps };
+      }
+      let cleanupError: unknown;
+      let cleanupFailed = false;
+      try {
+        await this.#closeSource({ code: "fault" });
+      } catch (caught) {
+        cleanupError = caught;
+        cleanupFailed = true;
+      }
+      if (this.#closedReason !== undefined) {
+        if (
+          isWorkerQuiescenceError(error) ||
+          (cleanupFailed && isWorkerQuiescenceError(cleanupError))
+        ) {
+          const terminal = {
+            kind: "fault" as const,
+            error: combineCancellationAndActiveFault(
+              this.#closedReason,
+              error,
+              cleanupFailed,
+              cleanupError,
+              "terminal mapping",
+            ),
+            steps,
+          };
+          this.#terminal = terminal;
+          return terminal;
+        }
+        return { kind: "cancelled", reason: this.#closedReason, steps };
+      }
+      const terminal = {
+        kind: "fault" as const,
+        error: cleanupFailed
+          ? combineInitiatingAndCleanupFailure(
+              error,
+              cleanupError,
+              "terminal mapping and cleanup both failed",
+            )
+          : error,
+        steps,
+      };
+      this.#terminal = terminal;
+      return terminal;
+    }
+  }
+
+  async #drain(options: SearchNextOptions): Promise<SearchDrainResult<T, B>> {
+    minimalCursorLimit(options);
+    if (this.#terminal !== undefined) return this.#terminalDrain();
+    const cancellation = minimalCancellation(options) ?? this.#closedReason;
+    if (cancellation !== undefined) {
+      try {
+        await this.#beginClose(cancellation);
+      } catch (cleanupError) {
+        const error = combineInitiatingAndCleanupFailure(
+          cancellation,
+          cleanupError,
+          "terminal mapping cancellation and cleanup both failed",
+        );
+        this.#terminal = { kind: "fault", error, steps: 0 };
+        return { kind: "fault", values: [], error };
+      }
+      return this.#terminalDrain();
+    }
+
+    let result: SearchDrainResult<T, A>;
+    try {
+      result = await drainAsyncCursor(this.source, options);
+    } catch (error) {
+      if (this.#closedReason !== undefined) {
+        if (isWorkerQuiescenceError(error)) {
+          const fault = combineCancellationAndActiveFault(
+            this.#closedReason,
+            error,
+            false,
+            undefined,
+            "terminal mapping drain",
+          );
+          this.#terminal = { kind: "fault", error: fault, steps: 0 };
+          return { kind: "fault", values: [], error: fault };
+        }
+        return this.#terminalDrain();
+      }
+      let fault = error;
+      try {
+        await this.#closeSource({ code: "fault" });
+      } catch (cleanupError) {
+        fault = combineInitiatingAndCleanupFailure(
+          error,
+          cleanupError,
+          "terminal mapping drain and cleanup both failed",
+        );
+      }
+      if (this.#closedReason !== undefined) {
+        if (fault !== error) {
+          fault = combineInitiatingAndCleanupFailure(
+            this.#closedReason,
+            fault,
+            "terminal mapping cancellation and cleanup both failed",
+          );
+          this.#terminal = { kind: "fault", error: fault, steps: 0 };
+          return { kind: "fault", values: [], error: fault };
+        }
+        return this.#terminalDrain();
+      }
+      this.#terminal = { kind: "fault", error: fault, steps: 0 };
+      return { kind: "fault", values: [], error: fault };
+    }
+    if (this.#terminal !== undefined) {
+      if (
+        this.#closedReason !== undefined &&
+        result.kind === "fault" &&
+        isWorkerQuiescenceError(result.error)
+      ) {
+        const error = combineCancellationAndActiveFault(
+          this.#closedReason,
+          result.error,
+          false,
+          undefined,
+          "terminal mapping drain",
+        );
+        this.#terminal = { kind: "fault", error, steps: 0 };
+        return { kind: "fault", values: result.values, error };
+      }
+      return this.#terminalDrain();
+    }
+
+    switch (result.kind) {
+      case "exhausted":
+        try {
+          const terminal = this.mapTerminal(result.terminal);
+          this.#terminal = { kind: "exhausted", terminal, steps: 0 };
+          return { kind: "exhausted", values: result.values, terminal };
+        } catch (error) {
+          this.#terminal = { kind: "fault", error, steps: 0 };
+          return { kind: "fault", values: result.values, error };
+        }
+      case "cancelled": {
+        const reason = stableEvalCancellationReason(result.reason);
+        this.#closedReason = reason;
+        this.#terminal = { kind: "cancelled", reason, steps: 0 };
+        return { kind: "cancelled", values: result.values, reason };
+      }
+      case "fault":
+        this.#terminal = { kind: "fault", error: result.error, steps: 0 };
+        return result;
+    }
+  }
+
+  #terminalDrain(): SearchDrainResult<T, B> {
+    return terminalDrainWithoutValues(this.#terminal!);
+  }
+
+  close(reason: CancellationReason = { code: "closed" }): Promise<void> {
+    return this.#scope.close(
+      () => this.#beginClose(reason),
+      this.#terminal !== undefined && this.#closedReason === undefined,
+    );
+  }
+
+  #beginClose(reason: CancellationReason): Promise<void> {
+    this.#closedReason ??= stableEvalCancellationReason(reason);
+    this.#terminal ??= { kind: "cancelled", reason: this.#closedReason, steps: 0 };
+    return this.#closeSource(this.#closedReason);
+  }
+
+  #closeSource(reason: CancellationReason): Promise<void> {
+    if (this.#closeWork !== undefined) return this.#closeWork;
+    try {
+      this.#closeWork = Promise.resolve(this.source.close(reason)).catch(
+        (cleanupError: unknown) => {
+          if (isWorkerQuiescenceError(cleanupError))
+            throw combineInitiatingAndCleanupFailure(
+              reason,
+              cleanupError,
+              "terminal mapping cancellation and worker cleanup both failed",
+            );
+          throw cleanupError;
+        },
+      );
+    } catch (error) {
+      this.#closeWork = Promise.reject(error);
+    }
+    return this.#closeWork;
+  }
+}
+
+/** A stream whose values and terminal state have already been computed. The microtask boundary keeps an
+ *  immediate external abort observable before the completed bag is published. */
+class CompletedAsyncSearchCursor<T, R> implements AsyncSearchCursor<T, R> {
+  readonly #scope = new ExclusiveAsyncScope();
+  readonly #values: readonly T[];
+  readonly #terminalFactory: () => R;
+  #index = 0;
+  #resultTerminal: R | undefined;
+  #hasResultTerminal = false;
+  #closedReason: CancellationReason | undefined;
+  #terminal: Extract<SearchEvent<T, R>, { kind: "exhausted" | "cancelled" | "fault" }> | undefined;
+
+  constructor(values: readonly T[], terminalFactory: () => R) {
+    this.#values = values.slice();
+    this.#terminalFactory = terminalFactory;
+  }
+
+  get closed(): boolean {
+    return this.#terminal !== undefined;
+  }
+
+  next(options: SearchNextOptions = {}): Promise<SearchEvent<T, R>> {
+    return this.#scope.run(() => this.#next(options));
+  }
+
+  drain(options: SearchNextOptions = {}): Promise<SearchDrainResult<T, R>> {
+    return this.#scope.run(() => this.#drain(options));
+  }
+
+  async #next(options: SearchNextOptions): Promise<SearchEvent<T, R>> {
+    minimalCursorLimit(options);
+    const stopped = this.#repeatTerminal();
+    if (stopped !== undefined) return stopped;
+    const initialCancellation = minimalCancellation(options) ?? this.#closedReason;
+    if (initialCancellation !== undefined) return this.#cancel(initialCancellation);
+
+    await Promise.resolve();
+    const stoppedAfterYield = this.#repeatTerminal();
+    if (stoppedAfterYield !== undefined) return stoppedAfterYield;
+    const cancellation = minimalCancellation(options) ?? this.#closedReason;
+    if (cancellation !== undefined) return this.#cancel(cancellation);
+    const fault = this.#settle();
+    if (fault !== undefined) return fault;
+    if (this.#index < this.#values.length)
+      return { kind: "answer", value: this.#values[this.#index++]!, steps: 0 };
+    return this.#exhausted();
+  }
+
+  async #drain(options: SearchNextOptions): Promise<SearchDrainResult<T, R>> {
+    minimalCursorLimit(options);
+    if (this.#terminal !== undefined) return this.#terminalDrain();
+    const initialCancellation = minimalCancellation(options) ?? this.#closedReason;
+    if (initialCancellation !== undefined) {
+      const terminal = this.#cancel(initialCancellation);
+      return { kind: "cancelled", values: [], reason: terminal.reason };
+    }
+
+    await Promise.resolve();
+    if (this.#terminal !== undefined) return this.#terminalDrain();
+    const cancellation = minimalCancellation(options) ?? this.#closedReason;
+    if (cancellation !== undefined) {
+      const terminal = this.#cancel(cancellation);
+      return { kind: "cancelled", values: [], reason: terminal.reason };
+    }
+    const fault = this.#settle();
+    if (fault !== undefined) return { kind: "fault", values: [], error: fault.error };
+    const values = this.#values.slice(this.#index);
+    this.#index = this.#values.length;
+    const terminal = this.#exhausted();
+    return { kind: "exhausted", values, terminal: terminal.terminal };
+  }
+
+  close(reason: CancellationReason = { code: "closed" }): Promise<void> {
+    return this.#scope.close(
+      () => {
+        if (this.#terminal === undefined) this.#cancel(reason);
+        return Promise.resolve();
+      },
+      this.#terminal !== undefined && this.#closedReason === undefined,
+    );
+  }
+
+  #settle(): Extract<SearchEvent<T, R>, { kind: "fault" }> | undefined {
+    if (this.#hasResultTerminal) return undefined;
+    try {
+      this.#resultTerminal = this.#terminalFactory();
+      this.#hasResultTerminal = true;
+      return undefined;
+    } catch (error) {
+      const terminal = { kind: "fault" as const, error, steps: 0 };
+      this.#terminal = terminal;
+      return terminal;
+    }
+  }
+
+  #cancel(reason: CancellationReason): Extract<SearchEvent<T, R>, { kind: "cancelled" }> {
+    this.#closedReason ??= stableEvalCancellationReason(reason);
+    const terminal = { kind: "cancelled" as const, reason: this.#closedReason, steps: 0 };
+    this.#terminal = terminal;
+    return terminal;
+  }
+
+  #exhausted(): Extract<SearchEvent<T, R>, { kind: "exhausted" }> {
+    const terminal = {
+      kind: "exhausted" as const,
+      terminal: this.#resultTerminal as R,
+      steps: 0,
+    };
+    this.#terminal = terminal;
+    return terminal;
+  }
+
+  #terminalDrain(): SearchDrainResult<T, R> {
+    return terminalDrainWithoutValues(this.#terminal!);
+  }
+
+  #repeatTerminal(): SearchEvent<T, R> | undefined {
+    const terminal = this.#terminal;
+    return terminal === undefined ? undefined : { ...terminal, steps: 0 };
+  }
+}
+
+class DualModeSearchCursor<T, R> {
+  readonly #operation: string;
+  readonly #syncFactory: (() => SyncSearchCursor<T, R>) | undefined;
+  readonly #asyncFactory: () => AsyncSearchCursor<T, R>;
+  #mode: "sync" | "async" | undefined;
+  #sync: SyncSearchCursor<T, R> | undefined;
+  #async: AsyncSearchCursor<T, R> | undefined;
+
+  constructor(
+    operation: string,
+    syncFactory: (() => SyncSearchCursor<T, R>) | undefined,
+    asyncFactory: () => AsyncSearchCursor<T, R>,
+  ) {
+    this.#operation = operation;
+    this.#syncFactory = syncFactory;
+    this.#asyncFactory = asyncFactory;
+  }
+
+  nextEffect(): DriverEffect<SearchEvent<T, R>> {
+    return driverEffect(
+      this.#operation,
+      (maxSteps) => this.#syncCursor().next({ maxSteps: maxSteps ?? DEFAULT_SEARCH_QUANTUM }),
+      async (signal, maxSteps) => {
+        const event = await this.#asyncCursor().next({
+          maxSteps: maxSteps ?? DEFAULT_SEARCH_QUANTUM,
+          signal,
+        });
+        if (event.kind === "fault" && isWorkerQuiescenceError(event.error)) throw event.error;
+        return event;
+      },
+    );
+  }
+
+  drainEffect(): DriverEffect<SearchDrainResult<T, R>> {
+    return driverEffect(
+      this.#operation,
+      () => drainSyncCursor(this.#syncCursor()),
+      async (signal) => {
+        const result = await drainAsyncCursor(this.#asyncCursor(), { signal });
+        if (result.kind === "fault" && isWorkerQuiescenceError(result.error)) throw result.error;
+        return result;
+      },
+    );
+  }
+
+  closeEffect(reason: CancellationReason): DriverEffect<void> {
+    return driverEffect(
+      this.#operation,
+      () => this.#syncCursor().close(reason),
+      () => this.#asyncCursor().close(reason),
+    );
+  }
+
+  #syncCursor(): SyncSearchCursor<T, R> {
+    if (this.#mode === "async") throw new Error(`${this.#operation} changed driver mode`);
+    if (this.#syncFactory === undefined) throw new AsyncInSyncError(this.#operation);
+    this.#mode = "sync";
+    return (this.#sync ??= this.#syncFactory());
+  }
+
+  #asyncCursor(): AsyncSearchCursor<T, R> {
+    if (this.#mode === "sync") throw new Error(`${this.#operation} changed driver mode`);
+    this.#mode = "async";
+    return (this.#async ??= this.#asyncFactory());
+  }
+}
+
+interface IsolatedBranchSet {
+  /** Parent state after reserving every child lane. */
+  readonly parent: St;
+  readonly branches: readonly St[];
+}
+
+interface ReservedBranchGroup {
+  readonly parent: St;
+  readonly contextIdentity: GroundedContextIdentity | undefined;
+  readonly sequence: number | undefined;
+}
+
+function isolateAnswerContinuation(state: St, index: number, counter: number): St {
+  const world = forkWorldView(
+    state.world,
+    {
+      ids: state.world.allocation.ids.fork(`continuation-${index}`),
+      branchScoped: true,
+    },
+    groundedContextIdentity(state.world),
+  );
+  return { counter, world };
+}
+
+function reserveBranchGroup(state: St, count: number): ReservedBranchGroup {
+  if (count === 0) return { parent: state, contextIdentity: undefined, sequence: undefined };
+  const contextIdentity = groundedContextIdentity(state.world);
+  const parentWorld = forkWorldView(
+    state.world,
+    {
+      ids: state.world.allocation.ids.clone(),
+      branchScoped: state.world.allocation.branchScoped,
+    },
+    contextIdentity,
+  );
+  const authority = parentWorld.allocation.ids;
+  const sequence = authority.reserveSequence("branch");
+  return {
+    parent: { counter: state.counter, world: parentWorld },
+    contextIdentity,
+    sequence,
+  };
+}
+
+function isolatedBranchStates(state: St, count: number): IsolatedBranchSet {
+  const reserved = reserveBranchGroup(state, count);
+  if (count === 0) return { parent: reserved.parent, branches: [] };
+  const contextIdentity = reserved.contextIdentity!;
+  const parentWorld = reserved.parent.world;
+  const authority = parentWorld.allocation.ids;
+  const groupSequence = reserved.sequence!;
+  const branches = Array.from({ length: count }, (_, index) => {
+    const world = forkWorldView(
+      parentWorld,
+      {
+        ids: authority.fork(`fanout-${groupSequence}-${index}`),
+        branchScoped: true,
+      },
+      contextIdentity,
+    );
+    return { counter: state.counter, world };
+  });
+  return {
+    parent: reserved.parent,
+    branches,
+  };
+}
+
+function restoreAllocationAuthority(base: St, branch: St): St {
+  const targetNamespace = base.world.allocation.ids.namespace;
+  let ids = branch.world.allocation.ids.clone();
+  while (ids.namespace !== targetNamespace) {
+    const parent = ids.parentAuthority();
+    if (parent === undefined)
+      throw new Error(
+        `branch allocation authority '${ids.namespace}' is not descended from '${targetNamespace}'`,
+      );
+    ids = parent;
+  }
+  const world = forkWorldView(branch.world, {
+    ids,
+    branchScoped: base.world.allocation.branchScoped,
+  });
+  return { counter: branch.counter, world };
+}
+
+function mergeScheduledStates(env: MinEnv, base: St, states: readonly St[]): St {
+  if (states.length === 0) return base;
+  return {
+    counter: Math.max(base.counter, ...states.map((state) => state.counter)),
+    world: mergeWorlds(
+      env,
+      base.world,
+      states.map((state) => state.world),
+    ),
+  };
+}
+
+function minimalControlSchedule(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  atom: Atom,
+): DualModeSearchCursor<InternalSearchAnswer, St> {
+  return new DualModeSearchCursor(
+    "collapse-bind",
+    () => createMinimalSearchCursor(env, atom, { fuel, state, bindings, cooperative: true }),
+    () =>
+      ownedAsyncSearchCursor("minimal", env, atom, { fuel, state, bindings }, terminalCursorAnswer),
+  );
+}
+
+function* drainMinimalScheduleG(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  atom: Atom,
+  cursor: CursorMode,
+): Gen<[InternalSearchAnswer[], St]> {
+  const schedule = minimalControlSchedule(env, fuel, state, bindings, atom);
+  const answers: InternalSearchAnswer[] = [];
+  let exhausted = false;
+  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
+  try {
+    for (;;) {
+      const event = (yield schedule.nextEffect()) as SearchEvent<InternalSearchAnswer, St>;
+      yield* chargeSchedulerStepsG(cursor, state, event.steps);
+      switch (event.kind) {
+        case "answer":
+          answers.push(event.value);
+          break;
+        case "pending":
+          break;
+        case "exhausted":
+          exhausted = true;
+          return [answers, event.terminal];
+        case "cancelled":
+          throw schedulerCancellationError("collapse-bind", event.reason);
+        case "fault":
+          throw event.error;
+      }
+    }
+  } catch (error) {
+    unwind.active = true;
+    unwind.error = error;
+    throw error;
+  } finally {
+    if (!exhausted)
+      yield* closeScheduleG(
+        schedule,
+        {
+          code: "parent-closed",
+          message: "collapse-bind source closed",
+        },
+        unwind,
+      );
+  }
+}
+
+function fairSchedule(
+  operation: string,
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  branches: readonly Atom[],
+): DualModeSearchCursor<MinimalSearchAnswer, St> {
+  const isolated = isolatedBranchStates(state, branches.length);
+  const parentState = isolated.parent;
+  const branchStates = isolated.branches;
+  const syncFactory = (): SyncSearchCursor<MinimalSearchAnswer, St> => {
+    const source = new FairSyncCursor(
+      branches.map((branch, index) =>
+        createMettaSearchCursor(env, branch, {
+          fuel,
+          state: branchStates[index]!,
+          bindings,
+        }),
+      ),
+    );
+    return new MapTerminalSyncCursor(source, (terminals) =>
+      mergeScheduledStates(
+        env,
+        parentState,
+        terminals.filter((terminal): terminal is St => terminal !== undefined),
+      ),
+    );
+  };
+  const asyncFactory = (): AsyncSearchCursor<MinimalSearchAnswer, St> => {
+    const controller = new AbortController();
+    const source = fairAsyncMettaBranches(env, fuel, bindings, branches, branchStates, controller);
+    return new MapTerminalAsyncCursor(source, (terminals) =>
+      mergeScheduledStates(
+        env,
+        parentState,
+        terminals.filter((terminal): terminal is St => terminal !== undefined),
+      ),
+    );
+  };
+  return new DualModeSearchCursor(operation, syncFactory, asyncFactory);
+}
+
+function fairAsyncMettaBranches(
+  env: MinEnv,
+  fuel: number,
+  bindings: Bindings,
+  branches: readonly Atom[],
+  branchStates: readonly St[],
+  controller: AbortController,
+): FairAsyncCursor<MinimalSearchAnswer, St> {
+  return new FairAsyncCursor(
+    branches.map((branch, index) =>
+      ownedAsyncSearchCursor(
+        "metta",
+        env,
+        branch,
+        {
+          fuel,
+          state: branchStates[index]!,
+          bindings,
+        },
+        contextualCursorAnswer,
+        controller.signal,
+      ),
+    ),
+    DEFAULT_SEARCH_QUANTUM,
+    controller,
+  );
+}
+
+function onceSchedule(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  branch: Atom,
+): DualModeSearchCursor<MinimalSearchAnswer, St> {
+  const syncFactory = (): SyncSearchCursor<MinimalSearchAnswer, St> =>
+    new MapTerminalSyncCursor(
+      new OnceSyncCursor(createMettaSearchCursor(env, branch, { fuel, state, bindings })),
+      (terminal) => terminal ?? state,
+    );
+  const asyncFactory = (): AsyncSearchCursor<MinimalSearchAnswer, St> =>
+    new MapTerminalAsyncCursor(
+      new OnceAsyncCursor(
+        ownedAsyncSearchCursor(
+          "metta",
+          env,
+          branch,
+          { fuel, state, bindings },
+          contextualCursorAnswer,
+        ),
+      ),
+      (terminal) => terminal ?? state,
+    );
+  return new DualModeSearchCursor("once", syncFactory, asyncFactory);
+}
+
+function raceSchedule(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  branches: readonly Atom[],
+): DualModeSearchCursor<MinimalSearchAnswer, St> {
+  const isolated = isolatedBranchStates(state, branches.length);
+  const parentState = isolated.parent;
+  const branchStates = isolated.branches;
+  const asyncFactory = (): AsyncSearchCursor<MinimalSearchAnswer, St> => {
+    const controller = new AbortController();
+    const source = fairAsyncMettaBranches(env, fuel, bindings, branches, branchStates, controller);
+    return new MapTerminalAsyncCursor(new OnceAsyncCursor(source), () => parentState);
+  };
+  return new DualModeSearchCursor("race", undefined, asyncFactory);
+}
+
+interface DirectParBranch {
+  readonly env: MinEnv;
+  readonly state: St;
+  readonly direct: DirectAsyncGroundedApplication;
+}
+
+interface SettledDirectParBranch extends DirectParBranch {
+  readonly result: ReduceResult;
+  readonly effectsApplied?: boolean;
+}
+
+interface PrefetchedDirectParBranch {
+  readonly branch: SettledDirectParBranch;
+  readonly event: Extract<
+    SearchBatchEvent<InternalSearchAnswer, St>,
+    { readonly kind: "pending" | "exhausted" }
+  >;
+  readonly cursor?: AsyncSearchCursor<InternalSearchAnswer, St>;
+  /** True when the settled host result required an interpreter continuation. */
+  readonly evaluated: boolean;
+}
+
+type DirectParEvaluation =
+  | {
+      readonly kind: "complete";
+      readonly answers: readonly InternalSearchAnswer[];
+      readonly state: St;
+    }
+  | {
+      readonly kind: "resume";
+      readonly schedule: DualModeSearchCursor<InternalSearchAnswer, St>;
+    };
+
+function directParApplications(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  branches: readonly Atom[],
+):
+  | readonly { readonly env: MinEnv; readonly direct: DirectAsyncGroundedApplication }[]
+  | undefined {
+  if (fuel <= 0 || branches.length === 0) return undefined;
+  const applications: Array<{
+    readonly env: MinEnv;
+    readonly direct: DirectAsyncGroundedApplication;
+  }> = [];
+  for (const branch of branches) {
+    const selected = refreshEvaluationEnvironment(env, state.world);
+    const input = inst(selected, bindings, branch);
+    if (!input.ground || (input.kind === "expr" && selected.evaluatedAtoms.has(input)))
+      return undefined;
+    const direct = directAsyncGroundedApplication(selected, state, input);
+    if (direct === undefined) return undefined;
+    applications.push({ env: selected, direct });
+  }
+  return applications;
+}
+
+async function invokeDirectParBranch(
+  branch: DirectParBranch,
+  signal: AbortSignal,
+  context = groundedCallContextWithSignal(branch.env, branch.state.world, signal),
+): Promise<ReduceResult> {
+  const grounded = branch.env.agt.get(branch.direct.op);
+  if (grounded === undefined)
+    throw new Error(`async grounded operation '${branch.direct.op}' disappeared during par`);
+  const args = branch.direct.args.map((argument) =>
+    resolveStates(branch.state.world, subTokens(branch.state.world, argument, branch.env.intern)),
+  );
+  const result = await grounded(args, context);
+  signal.throwIfAborted();
+  return result;
+}
+
+function directParAllowances(count: number, maxSteps: number): readonly number[] {
+  if (!Number.isSafeInteger(maxSteps) || maxSteps <= 0)
+    throw new RangeError("direct par maxSteps must be a positive safe integer");
+  if (count <= 0) return [];
+  const selected = Math.min(count, maxSteps);
+  const base = Math.floor(maxSteps / selected);
+  let remainder = maxSteps % selected;
+  return Array.from({ length: count }, (_value, index) => {
+    if (index >= selected) return 0;
+    const allowance = base + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) remainder -= 1;
+    return allowance;
+  });
+}
+
+function completedDirectParBranch(
+  branch: SettledDirectParBranch,
+): readonly InternalSearchAnswer[] | undefined {
+  let atoms: readonly Atom[];
+  switch (branch.result.tag) {
+    case "ok":
+      if (branch.result.effects !== undefined && branch.result.effects.length > 0) return undefined;
+      atoms = branch.result.results;
+      break;
+    case "runtimeError":
+      atoms = [errAtom(branch.direct.application, branch.result.msg)];
+      break;
+    case "incorrectArgument":
+      atoms = [errTextAtom(branch.direct.application, branch.result.msg)];
+      break;
+    case "noReduce":
+      return undefined;
+  }
+
+  const answers: InternalSearchAnswer[] = [];
+  for (const atom of atoms) {
+    let value: Atom;
+    if (atomEq(atom, notReducibleA) || atomEq(atom, branch.direct.application)) {
+      value = branch.direct.application;
+    } else if (branch.direct.opReturnsAtom && !isEmbeddedOp(atom)) {
+      value = atom;
+    } else if (isErrorAtom(atom) || isNormalForm(branch.env, branch.state.world, atom)) {
+      value = atom;
+    } else {
+      return undefined;
+    }
+    answers.push(terminalCursorAnswer([value, emptyBindings]));
+    enforceDistinctLimit(branch.env, answers.length);
+  }
+  return answers;
+}
+
+function applySettledDirectParEffects(
+  branch: SettledDirectParBranch,
+  bindings: Bindings,
+): SettledDirectParBranch {
+  if (
+    branch.result.tag !== "ok" ||
+    branch.result.effects === undefined ||
+    branch.result.effects.length === 0
+  )
+    return branch;
+  const applied = applyReduceEffects(branch.env, branch.state, bindings, branch.result.effects);
+  return applied.tag === "error"
+    ? {
+        ...branch,
+        result: { tag: "runtimeError", msg: applied.msg },
+        effectsApplied: true,
+      }
+    : {
+        ...branch,
+        state: applied.state,
+        result: { tag: "ok", results: branch.result.results },
+        effectsApplied: true,
+      };
+}
+
+function prefetchedDirectParCursor(
+  branch: PrefetchedDirectParBranch,
+): AsyncSearchCursor<InternalSearchAnswer, St> {
+  if (branch.event.kind === "exhausted") {
+    const terminal = branch.event.terminal;
+    return new CompletedAsyncSearchCursor(branch.event.values, () => terminal);
+  }
+  if (branch.cursor === undefined)
+    throw new Error("pending direct par branch lost its continuation cursor");
+  const prefix = new CompletedAsyncSearchCursor<InternalSearchAnswer, St | undefined>(
+    branch.event.values,
+    () => undefined,
+  );
+  const source = new SourceOrderedAsyncCursor<InternalSearchAnswer, St | undefined>([
+    prefix,
+    branch.cursor,
   ]);
-  return [contextual.map(([result, resultBindings]) => [result, resultBindings]), next];
+  return new MapTerminalAsyncCursor(source, (terminals) => {
+    const terminal = terminals[1];
+    if (terminal === undefined)
+      throw new Error("direct par continuation exhausted without a terminal state");
+    return terminal;
+  });
+}
+
+async function closeDirectParCursors(
+  cursors: readonly (AsyncSearchCursor<InternalSearchAnswer, St> | undefined)[],
+  reason: CancellationReason,
+): Promise<unknown | undefined> {
+  const settled = await Promise.allSettled(
+    cursors.map((cursor) =>
+      cursor === undefined ? Promise.resolve() : Promise.resolve().then(() => cursor.close(reason)),
+    ),
+  );
+  const failures = settled.flatMap((result) =>
+    result.status === "rejected" ? cleanupFailureLeaves(result.reason) : [],
+  );
+  return failures.length === 0
+    ? undefined
+    : aggregateCleanupFailures(failures, "multiple direct par continuations failed to close");
+}
+
+function prefetchedDirectParSchedule(
+  env: MinEnv,
+  parentState: St,
+  branches: readonly PrefetchedDirectParBranch[],
+  controller: AbortController,
+): DualModeSearchCursor<InternalSearchAnswer, St> {
+  const asyncFactory = (): AsyncSearchCursor<InternalSearchAnswer, St> => {
+    const source = new ParallelSourceOrderedAsyncCursor(
+      branches.map(prefetchedDirectParCursor),
+      controller,
+    );
+    return new MapTerminalAsyncCursor(source, (terminals) =>
+      mergeScheduledStates(env, parentState, terminals),
+    );
+  };
+  return new DualModeSearchCursor("par", undefined, asyncFactory);
+}
+
+function* tryDirectParG(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  branches: readonly Atom[],
+): Gen<DirectParEvaluation | undefined> {
+  const applications = directParApplications(env, fuel, state, bindings, branches);
+  if (applications === undefined) return undefined;
+  const isolated = isolatedBranchStates(state, applications.length);
+  const directBranches: DirectParBranch[] = applications.map((application, index) => ({
+    env: application.env,
+    state: isolated.branches[index]!,
+    direct: application.direct,
+  }));
+  const continuationController = new AbortController();
+  const continuationCursors: Array<AsyncSearchCursor<InternalSearchAnswer, St> | undefined> =
+    directBranches.map(() => undefined);
+  pendingAsyncOp = "par";
+  const result = (yield driverEffect(
+    "par",
+    () => {
+      throw new AsyncInSyncError("par");
+    },
+    async (signal, maxSteps = DEFAULT_SEARCH_QUANTUM) => {
+      const allowances = directParAllowances(directBranches.length, maxSteps);
+      const contexts = new Map<MinEnv, SignalledGroundedCallContext>();
+      const group = await runStructuredTaskGroup(
+        directBranches,
+        async (branch, index, branchSignal): Promise<PrefetchedDirectParBranch> => {
+          try {
+            let context = contexts.get(branch.env);
+            if (context === undefined) {
+              context = groundedCallContextWithSignal(branch.env, branch.state.world, branchSignal);
+              contexts.set(branch.env, context);
+            }
+            const settled = applySettledDirectParEffects(
+              {
+                ...branch,
+                result: await invokeDirectParBranch(branch, branchSignal, context),
+              },
+              bindings,
+            );
+            const completed = completedDirectParBranch(settled);
+            if (completed !== undefined)
+              return {
+                branch: settled,
+                event: {
+                  kind: "exhausted",
+                  values: completed,
+                  terminal: settled.state,
+                  steps: 0,
+                },
+                evaluated: false,
+              };
+
+            const cursor = ownedSettledDirectGroundedCursor(
+              settled.env,
+              fuel,
+              settled.state,
+              bindings,
+              settled.direct,
+              settled.result,
+              continuationController.signal,
+              settled.effectsApplied !== true,
+            );
+            continuationCursors[index] = cursor;
+            if (allowances[index] === 0)
+              return {
+                branch: settled,
+                event: { kind: "pending", values: [], steps: 0 },
+                cursor,
+                evaluated: true,
+              };
+            const event = await cursor.nextBatch({
+              maxSteps: allowances[index]!,
+              signal: branchSignal,
+            });
+            branchSignal.throwIfAborted();
+            if (event.kind === "fault") throw event.error;
+            if (event.kind === "cancelled") throw schedulerCancellationError("par", event.reason);
+            return { branch: settled, event, cursor, evaluated: true };
+          } catch (error) {
+            if (!continuationController.signal.aborted)
+              continuationController.abort(
+                branchSignal.aborted ? branchSignal.reason : { code: "fault" },
+              );
+            throw error;
+          }
+        },
+        {
+          signal,
+          selectCriticalFault: (faults, cancellation) =>
+            selectWorkerQuiescenceFailure(faults, cancellation),
+        },
+      );
+      if (group.kind === "exhausted") return group;
+
+      const reason: CancellationReason =
+        group.kind === "cancelled"
+          ? group.reason
+          : { code: "fault", message: "direct par branch failed" };
+      if (!continuationController.signal.aborted) continuationController.abort(reason);
+      const cleanupFailure = await closeDirectParCursors(continuationCursors, reason);
+      if (cleanupFailure === undefined) return group;
+      const initiating = group.kind === "fault" ? group.error : group.reason;
+      return {
+        kind: "fault" as const,
+        error: combineInitiatingAndCleanupFailure(
+          initiating,
+          cleanupFailure,
+          "direct par and continuation cleanup both failed",
+        ),
+      };
+    },
+  )) as
+    | { readonly kind: "exhausted"; readonly results: readonly PrefetchedDirectParBranch[] }
+    | { readonly kind: "cancelled"; readonly reason: CancellationReason }
+    | { readonly kind: "fault"; readonly error: unknown };
+  switch (result.kind) {
+    case "cancelled":
+      throw schedulerCancellationError("par", result.reason);
+    case "fault":
+      throw result.error;
+    case "exhausted": {
+      for (const prefetched of result.results) {
+        if (!prefetched.evaluated) {
+          const branch = prefetched.branch;
+          const answers = prefetched.event.values;
+          rememberGroundEvaluation(
+            branch.env,
+            branch.direct.application,
+            bindings,
+            branch.state,
+            answers.map((answer) => [answer.atom, answer.bindings]),
+            prefetched.event.kind === "exhausted" ? prefetched.event.terminal : branch.state,
+          );
+        }
+      }
+      if (result.results.every((branch) => branch.event.kind === "exhausted")) {
+        const evaluated = result.results.some((branch) => branch.evaluated);
+        const mutated = result.results.some((branch) => branch.branch.effectsApplied === true);
+        return {
+          kind: "complete",
+          answers: result.results.flatMap((branch) => branch.event.values),
+          state:
+            evaluated || mutated
+              ? mergeScheduledStates(
+                  env,
+                  isolated.parent,
+                  result.results.map((branch) =>
+                    branch.event.kind === "exhausted" ? branch.event.terminal : branch.branch.state,
+                  ),
+                )
+              : isolated.parent,
+        };
+      }
+      return {
+        kind: "resume",
+        schedule: prefetchedDirectParSchedule(
+          env,
+          isolated.parent,
+          result.results,
+          continuationController,
+        ),
+      };
+    }
+  }
+}
+
+function parSchedule(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  branches: readonly Atom[],
+  admitCompleted: boolean,
+): DualModeSearchCursor<InternalSearchAnswer, St> {
+  const isolated = isolatedBranchStates(state, branches.length);
+  const parentState = isolated.parent;
+  const branchStates = isolated.branches;
+  const completed = admitCompleted
+    ? completedParCandidate(env, fuel, bindings, branches, branchStates)
+    : undefined;
+  const asyncFactory = (): AsyncSearchCursor<InternalSearchAnswer, St> => {
+    if (completed !== undefined)
+      return new CompletedAsyncSearchCursor(completed.answers, () => {
+        completed.commitCaches();
+        return mergeScheduledStates(env, parentState, branchStates);
+      });
+    const controller = new AbortController();
+    const source = ParallelSourceOrderedAsyncCursor.fromFactories(
+      branches.map(
+        (branch, index) => () =>
+          ownedAsyncSearchCursor(
+            "metta",
+            env,
+            branch,
+            {
+              fuel,
+              state: branchStates[index]!,
+              bindings,
+            },
+            terminalCursorAnswer,
+            controller.signal,
+          ),
+      ),
+      controller,
+    );
+    return new MapTerminalAsyncCursor(source, (terminals) =>
+      mergeScheduledStates(env, parentState, terminals),
+    );
+  };
+  return new DualModeSearchCursor("par", undefined, asyncFactory);
+}
+
+interface CompletedParCandidate {
+  readonly answers: readonly InternalSearchAnswer[];
+  readonly commitCaches: () => void;
+}
+
+/** Recognize branches for which evaluation is already a completed exit. Catch-all equations are excluded
+ *  because they can reduce an otherwise constructor-shaped atom. */
+function completedParCandidate(
+  env: MinEnv,
+  fuel: number,
+  bindings: Bindings,
+  branches: readonly Atom[],
+  branchStates: readonly St[],
+): CompletedParCandidate | undefined {
+  if (fuel <= 0) return undefined;
+  const completed: Array<{ readonly env: MinEnv; readonly atom: Atom }> = [];
+  for (let index = 0; index < branches.length; index++) {
+    const state = branchStates[index]!;
+    const selected = refreshEvaluationEnvironment(env, state.world);
+    if (selected.varRulesVar.length !== 0 || state.world.selfVarRules.length !== 0)
+      return undefined;
+    const atom = inst(selected, bindings, branches[index]!);
+    if (!isNormalForm(selected, state.world, atom)) return undefined;
+    completed.push({ env: selected, atom });
+  }
+  return {
+    answers: completed.map(({ atom }) => terminalCursorAnswer([atom, bindings])),
+    commitCaches: () => {
+      for (const item of completed)
+        if (item.atom.kind === "expr" && item.atom.ground)
+          item.env.evaluatedAtoms.set(item.atom, 0);
+    },
+  };
+}
+
+function minimalDrainResult(
+  result: SearchDrainResult<InternalSearchAnswer, St>,
+  cancellationCause?: unknown,
+): EvalRes {
+  switch (result.kind) {
+    case "exhausted":
+      return [result.values.map((answer) => [answer.atom, answer.bindings]), result.terminal];
+    case "fault":
+      throw result.error;
+    case "cancelled":
+      if (cancellationCause !== undefined) throw cancellationCause;
+      throw new Error(result.reason.message ?? result.reason.code);
+  }
 }
 
 /** Type-directed evaluation of `a` (the sync driver: throws `AsyncInSyncError` if it reaches an async
@@ -7550,9 +11898,9 @@ export function interpretMinimal(
 ): EvalRes {
   const state = options.state ?? initSt();
   const bindings = options.bindings ?? emptyBindings;
-  const fuel = options.fuel ?? DEFAULT_FUEL;
   try {
-    return runGenSync(interpretMinimalG(env, fuel, state, bindings, atom));
+    const cursor = eagerMinimalSyncCursor(env, atom, options);
+    return minimalDrainResult(drainSyncCursor(cursor, { maxSteps: MINIMAL_DRAIN_QUANTUM }));
   } catch (error) {
     if (isNativeStackOverflow(error)) return stackOverflowResult(env, state, bindings, atom);
     throw error;
@@ -7567,18 +11915,16 @@ export function interpretMinimalAsync(
 ): Promise<EvalRes> {
   const state = options.state ?? initSt();
   const bindings = options.bindings ?? emptyBindings;
-  const fuel = options.fuel ?? DEFAULT_FUEL;
-  const pinned = pinAsyncEvaluation(env, state);
-  return runGenAsync(
-    interpretMinimalG(pinned.env, fuel, pinned.state, bindings, atom),
-    options.signal,
-  )
+  const cursor = eagerMinimalAsyncCursor(env, atom, options);
+  return drainAsyncCursor(cursor, {
+    maxSteps: MINIMAL_DRAIN_QUANTUM,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  })
+    .then((result) => minimalDrainResult(result, options.signal?.reason))
     .catch((error: unknown) => {
-      if (isNativeStackOverflow(error))
-        return stackOverflowResult(pinned.env, pinned.state, bindings, atom);
+      if (isNativeStackOverflow(error)) return stackOverflowResult(env, state, bindings, atom);
       throw error;
-    })
-    .finally(pinned.release);
+    });
 }
 
 function mettaEval(

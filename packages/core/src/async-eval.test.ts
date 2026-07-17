@@ -15,11 +15,13 @@ import {
   initSt,
   mettaEval,
   mettaEvalAsync,
+  mettaEvalAsyncOwned,
   registerAsyncGroundedOperation,
   registerGroundedOperation,
 } from "./eval";
 import { stdlibAtoms } from "./stdlib";
 import { type GroundedCallContext, stdTable } from "./builtins";
+import { makeValRel } from "./bindings";
 
 // An async grounded op that doubles its argument after an actual await (simulated I/O).
 const fetchDouble: AsyncGroundFn = async (args) => {
@@ -51,6 +53,43 @@ const deferred = (): { readonly promise: Promise<void>; readonly resolve: () => 
 describe("async evaluation (generator dual-driver)", () => {
   it("awaits a top-level async grounded op", async () => {
     expect(await r1("!(fetch-double 21)")).toEqual(["42"]);
+  });
+
+  it("calls a direct async grounding once before falling back to matching rules", async () => {
+    const fallback = vi.fn(async () => ({ tag: "noReduce" }) as const);
+    const results = await runProgramAsync(
+      "(= (async-fallback-u6 value) from-rule)\n!(async-fallback-u6 value)",
+      new Map([["async-fallback-u6", fallback]]),
+    );
+
+    expect(fallback).toHaveBeenCalledOnce();
+    expect(results[0]!.results.map(format)).toEqual(["from-rule"]);
+  });
+
+  it("normalizes atoms returned by a direct async grounding", async () => {
+    const wrapper = vi.fn(
+      async () => ({ tag: "ok", results: [expr([sym("async-inner-u6")])] }) as const,
+    );
+    const results = await runProgramAsync(
+      "(= (async-inner-u6) normalized)\n!(async-wrapper-u6)",
+      new Map([["async-wrapper-u6", wrapper]]),
+    );
+
+    expect(wrapper).toHaveBeenCalledOnce();
+    expect(results[0]!.results.map(format)).toEqual(["normalized"]);
+  });
+
+  it.each([
+    ["runtimeError", "host-failed", "(Error (async-error-u6) host-failed)"],
+    ["incorrectArgument", "wrong input", '(Error (async-error-u6) "wrong input")'],
+  ] as const)("preserves direct async %s results", async (tag, msg, expected) => {
+    const failure: AsyncGroundFn = async () => ({ tag, msg });
+    const results = await runProgramAsync(
+      "!(async-error-u6)",
+      new Map([["async-error-u6", failure]]),
+    );
+
+    expect(results[0]!.results.map(format)).toEqual([expected]);
   });
 
   it("suspends through sync evaluation: async op nested inside arithmetic", async () => {
@@ -101,6 +140,112 @@ describe("async evaluation (generator dual-driver)", () => {
     );
 
     expect(rs[1]!.results.map(format)).toEqual(["&space-0"]);
+  });
+
+  it("passes the active signal and waits for grounded cancellation", async () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    const entered = deferred();
+    let cancelled = false;
+    registerAsyncGroundedOperation(env, "wait-for-cancel", async (_args, context) => {
+      const signal = context?.signal;
+      if (signal === undefined) throw new Error("missing grounded cancellation signal");
+      entered.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        const stop = (): void => {
+          cancelled = true;
+          reject(signal.reason);
+        };
+        signal.addEventListener("abort", stop, { once: true });
+      });
+      return { tag: "ok", results: [sym("late")] };
+    });
+    const controller = new AbortController();
+    const pending = mettaEvalAsync(
+      env,
+      100_000,
+      initSt(),
+      [],
+      parsedAtom("(wait-for-cancel)"),
+      controller.signal,
+    );
+    await entered.promise;
+    const reason = new Error("test cancellation");
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(cancelled).toBe(true);
+  });
+
+  it("keeps the initiating abort visible when scheduled cleanup rejects", async () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    const entered = deferred();
+    const cleanupGate = deferred();
+    const cleanupError = new Error("cleanup failure");
+    registerAsyncGroundedOperation(env, "hold", async (_args, context) => {
+      const signal = context?.signal;
+      if (signal === undefined) throw new Error("missing grounded cancellation signal");
+      entered.resolve();
+      if (!signal.aborted)
+        await new Promise<void>((resolve) =>
+          signal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      await cleanupGate.promise;
+      throw cleanupError;
+    });
+    const controller = new AbortController();
+    const reason = new Error("initiating abort");
+    const pending = mettaEvalAsync(
+      env,
+      100_000,
+      initSt(),
+      [],
+      parsedAtom("(hyperpose (ready (hold)))"),
+      controller.signal,
+    );
+    await entered.promise;
+    controller.abort(reason);
+    cleanupGate.resolve();
+
+    const failure = await pending.then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors).toEqual([reason, cleanupError]);
+  });
+
+  it("cancels an async runner with the exact external reason after joined cleanup", async () => {
+    const entered = deferred();
+    const cleanupFinished = deferred();
+    let sawSignal: AbortSignal | undefined;
+    const wait: AsyncGroundFn = async (_args, context) => {
+      sawSignal = context?.signal;
+      if (sawSignal === undefined) throw new Error("missing grounded cancellation signal");
+      entered.resolve();
+      try {
+        await new Promise<void>((_resolve, reject) => {
+          if (sawSignal!.aborted) reject(sawSignal!.reason);
+          else
+            sawSignal!.addEventListener("abort", () => reject(sawSignal!.reason), { once: true });
+        });
+      } finally {
+        await Promise.resolve();
+        cleanupFinished.resolve();
+      }
+      return { tag: "ok", results: [sym("late")] };
+    };
+    const controller = new AbortController();
+    const reason = Object.freeze({ code: "runner-abort" });
+    const pending = runProgramAsync("!(wait)", new Map([["wait", wait]]), undefined, new Map(), {
+      signal: controller.signal,
+    });
+
+    await entered.promise;
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    await expect(cleanupFinished.promise).resolves.toBeUndefined();
+    expect(sawSignal).toBe(controller.signal);
   });
 
   it("keeps evalc context through a named rule and async grounding", async () => {
@@ -305,6 +450,80 @@ describe("async evaluation (generator dual-driver)", () => {
     );
 
     expect(generations).toEqual([0, 0]);
+  });
+
+  it("instantiates bound normal-form par branches without changing their state", async () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    const bindings = [makeValRel("x", sym("bound"))];
+    const [pairs, state] = await mettaEvalAsync(
+      env,
+      10_000,
+      initSt(),
+      bindings,
+      parsedAtom("(par $x (Pair $x))"),
+    );
+
+    expect(pairs.map(([atom]) => format(atom))).toEqual(["bound", "(Pair bound)"]);
+    expect(pairs.map(([, answerBindings]) => answerBindings)).toEqual([[], []]);
+    expect(state.counter).toBe(0);
+    expect(state.world.generation).toBe(0);
+  });
+
+  it("keeps an immediate abort visible for completed par branches", async () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    const controller = new AbortController();
+    const reason = new Error("cancel completed par");
+    const pending = mettaEvalAsync(
+      env,
+      10_000,
+      initSt(),
+      [],
+      parsedAtom("(par 1 2 3 4)"),
+      controller.signal,
+    );
+
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+  });
+
+  it("does not treat constructor data as completed when a catch-all rule can reduce it", async () => {
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...stdlibAtoms(),
+        ...parseAll("(= ($f $x) caught)", standardTokenizer()).map((item) => item.atom),
+      ],
+      stdTable(),
+    );
+    const [pairs] = await mettaEvalAsync(
+      env,
+      10_000,
+      initSt(),
+      [],
+      parsedAtom("(par (Ctor 1) plain)"),
+    );
+
+    expect(pairs.map(([atom]) => format(atom))).toEqual(["caught", "plain"]);
+  });
+
+  it("shares grounded context lineage across pure par branches and splits it after mutation", async () => {
+    const contexts: GroundedCallContext[] = [];
+    const capture: AsyncGroundFn = async (_args, context) => {
+      if (context === undefined) throw new Error("missing grounded call context");
+      contexts.push(context);
+      return { tag: "ok", results: [emptyExpr] };
+    };
+
+    await runProgramAsync(
+      "!(par (capture-context) (capture-context))\n!(add-atom &self marker)\n!(capture-context)",
+      new Map([["capture-context", capture]]),
+    );
+
+    expect(contexts).toHaveLength(3);
+    expect(contexts[0]).toBe(contexts[1]);
+    expect(contexts[2]).not.toBe(contexts[0]);
+    expect(contexts.map((context) => context.generation)).toEqual([0, 0, 1]);
   });
 
   it("uses catalog imports before host resolution in and outside transactions", async () => {
@@ -516,6 +735,25 @@ describe("async evaluation (generator dual-driver)", () => {
     await pending;
 
     expect(observed).toEqual(["old", true, false]);
+  });
+
+  it("refreshes a reused signal's grounded context after an environment revision", async () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    env.imports.set("module", [sym("old")]);
+    const observed: string[] = [];
+    registerAsyncGroundedOperation(env, "inspect-import-u6", async (_args, context) => {
+      observed.push(format(context!.imports!.get("module")![0]!));
+      return { tag: "ok", results: [emptyExpr] };
+    });
+    const state = initSt();
+    const signal = new AbortController().signal;
+    const query = parsedAtom("(inspect-import-u6)");
+
+    await mettaEvalAsyncOwned(env, 100_000, state, [], query, signal);
+    env.imports.set("module", [sym("new")]);
+    await mettaEvalAsyncOwned(env, 100_000, state, [], query, signal);
+
+    expect(observed).toEqual(["old", "new"]);
   });
 
   it("turns host import runtime errors into Error atoms", async () => {

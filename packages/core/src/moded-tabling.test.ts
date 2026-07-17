@@ -7,7 +7,7 @@
 // These tests pin both routes and compare their answers with the untabled interpreter.
 import { describe, it, expect, vi } from "vitest";
 import { type Atom } from "./atom";
-import { runProgram } from "./runner";
+import { runProgram, runProgramWithState } from "./runner";
 import { format } from "./parser";
 import { canonicalize } from "./alpha";
 import { OBC } from "./obc-fixture";
@@ -41,6 +41,58 @@ describe("moded tabling path", () => {
       expect(on).toEqual(["610"]);
       expect(on).toEqual(off);
       expect(keySpy.mock.calls.some(([kind]) => kind === "moded")).toBe(true);
+    } finally {
+      keySpy.mockRestore();
+    }
+  });
+
+  it("replays the producer counter delta for a completed moded table", () => {
+    const query = "!(moded-fib 10 $result)";
+    const once = runProgramWithState(`${MODED_FIB}\n${query}`, 1_000_000, new Map(), {
+      tabling: true,
+    });
+    const twice = runProgramWithState(`${MODED_FIB}\n${query}\n${query}`, 1_000_000, new Map(), {
+      tabling: true,
+    });
+
+    expect(once.state.counter).toBeGreaterThan(0);
+    expect(twice.state.counter).toBe(once.state.counter * 2);
+    expect(fmtCanon(twice.results[1]!.results)).toEqual(fmtCanon(twice.results[0]!.results));
+  });
+
+  it("does not reuse variable-spelling observations across alpha-renamed calls", () => {
+    const source = `
+      (= (format-variable-u6 Z $value) (format-args "{}" ($value)))
+      (= (format-variable-u6 (S $n) $value)
+         (let $first (format-variable-u6 $n $value)
+           (let $second (format-variable-u6 $n $value) $first)))
+      !(format-variable-u6 (S Z) $alpha)
+      !(format-variable-u6 (S Z) $beta)
+    `;
+    const tabled = runProgram(source, 1_000_000, new Map(), { tabling: true });
+    const untabled = runProgram(source, 1_000_000, new Map(), { tabling: false });
+
+    expect(tabled.map((result) => fmt(result.results))).toEqual(
+      untabled.map((result) => fmt(result.results)),
+    );
+    expect(tabled.map((result) => fmt(result.results))).toEqual([['"$alpha"'], ['"$beta"']]);
+  });
+
+  it("keeps variable-spelling operations tabled for ground calls", () => {
+    const keySpy = vi.spyOn(TableSpace.prototype, "key");
+    try {
+      const source = `
+        !(add-atom &self (= (format-ground-u6 Z $value) (format-args "{}" ($value))))
+        !(add-atom &self (= (format-ground-u6 (S $n) $value)
+           (let $first (format-ground-u6 $n $value)
+             (let $second (format-ground-u6 $n $value) $first))))
+        !(format-ground-u6 (S Z) alpha)
+      `;
+
+      expect(
+        fmt(runProgram(source, 1_000_000, new Map(), { tabling: true }).at(-1)!.results),
+      ).toEqual(['"alpha"']);
+      expect(keySpy.mock.calls.some(([kind]) => kind === "ground")).toBe(true);
     } finally {
       keySpy.mockRestore();
     }

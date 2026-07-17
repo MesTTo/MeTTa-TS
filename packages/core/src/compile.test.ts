@@ -10,7 +10,12 @@ import { stdTable } from "./builtins";
 import { parseAll, format } from "./parser";
 import { standardTokenizer, preludeAtoms, runProgram } from "./runner";
 import { analyzePurity } from "./tabling";
-import { compileDependentNondetGroup, compileEnv } from "./compile";
+import {
+  compileDependentNondetGroup,
+  compileEnv,
+  runCompiled,
+  startCooperativeCompiledRun,
+} from "./compile";
 import { TableSpace } from "./table-space";
 
 const atoms = (src: string) =>
@@ -453,5 +458,138 @@ describe("deterministic-core compiler", () => {
         expect(evalQuery(compiledEnv, ground)).toEqual(evalQuery(interpretedEnv, ground));
       }
     }
+  });
+});
+
+describe("cooperative compiled continuations", () => {
+  const drain = (
+    run: NonNullable<ReturnType<typeof startCooperativeCompiledRun>>,
+    quantum: number,
+  ) => {
+    let steps = 0;
+    for (;;) {
+      const event = run.next(quantum);
+      steps += event.steps;
+      if (event.kind === "pending") continue;
+      return { event, steps };
+    }
+  };
+
+  it("slices a direct self tail loop at the exact requested quota", () => {
+    const env = envWith("(= (count-down $n) (if (== $n 0) 0 (count-down (- $n 1))))");
+    env.compiled = compileEnv(env);
+    const run = startCooperativeCompiledRun(env, "count-down", [gint(10_000)]);
+    expect(run).toBeDefined();
+    if (run === undefined) return;
+
+    let totalSteps = 0;
+    for (;;) {
+      const event = run.next(7);
+      expect(event.steps).toBeGreaterThan(0);
+      expect(event.steps).toBeLessThanOrEqual(7);
+      totalSteps += event.steps;
+      if (event.kind === "pending") continue;
+      expect(event.kind).toBe("done");
+      if (event.kind === "done")
+        expect(event.result.results.map((result) => format(result.atom))).toEqual(["0"]);
+      break;
+    }
+    expect(totalSteps).toBe(10_001);
+  });
+
+  it("leaves non-tail and indirect recursion on the interpreter", () => {
+    const env = envWith(`
+      (= (fib-step $n)
+         (if (< $n 2) $n (+ (fib-step (- $n 1)) (fib-step (- $n 2)))))
+      (= (inner-step $n) (if (== $n 0) 0 (inner-step (- $n 1))))
+      (= (outer-step $n) (inner-step $n))
+    `);
+    env.compiled = compileEnv(env);
+
+    expect(startCooperativeCompiledRun(env, "fib-step", [gint(20)])).toBeUndefined();
+    expect(startCooperativeCompiledRun(env, "outer-step", [gint(20)])).toBeUndefined();
+    expect(startCooperativeCompiledRun(env, "inner-step", [gint(20)])).toBeDefined();
+  });
+
+  it("keeps a divergent compiled tail loop preemptible", () => {
+    const env = envWith("(= (spin-int $n) (if (== $n -1) 0 (spin-int (+ $n 1))))");
+    env.compiled = compileEnv(env);
+    const run = startCooperativeCompiledRun(env, "spin-int", [gint(0)]);
+    expect(run).toBeDefined();
+    if (run === undefined) return;
+
+    expect(run.next(1)).toEqual({ kind: "pending", steps: 1 });
+    expect(run.next(31)).toEqual({ kind: "pending", steps: 31 });
+    expect(() => run.next(0)).toThrow(RangeError);
+  });
+
+  it("matches the eager compiler across randomized scalar and tuple loops", () => {
+    const env = envWith(`
+      (= (sum-down $n $acc)
+         (if (== $n 0) $acc (sum-down (- $n 1) (+ $acc $n))))
+      (= (product-down $n $acc)
+         (if (== $n 0) $acc (product-down (- $n 1) (* $acc (+ $n 1)))))
+      (= (tuple-down $n ($left $right))
+         (if (== $n 0)
+             ($left $right)
+             (tuple-down (- $n 1) ((+ $left 1) (- $right 1)))))
+    `);
+    env.compiled = compileEnv(env);
+
+    fc.assert(
+      fc.property(
+        fc.record({
+          operation: fc.constantFrom("sum-down", "product-down", "tuple-down"),
+          n: fc.integer({ min: 0, max: 200 }),
+          left: fc.integer({ min: -100, max: 100 }),
+          right: fc.integer({ min: -100, max: 100 }),
+          quantum: fc.integer({ min: 1, max: 31 }),
+        }),
+        ({ operation, n, left, right, quantum }) => {
+          const args =
+            operation === "tuple-down"
+              ? [gint(n), expr([gint(left), gint(right)])]
+              : [gint(n), gint(left)];
+          const eager = runCompiled(env, operation, args, initSt());
+          const cooperative = startCooperativeCompiledRun(env, operation, args);
+          expect(eager).toBeDefined();
+          expect(cooperative).toBeDefined();
+          if (eager === undefined || cooperative === undefined) return;
+          const result = drain(cooperative, quantum);
+          expect(result.event.kind).toBe("done");
+          if (result.event.kind === "done") expect(result.event.result).toEqual(eager);
+          expect(result.steps).toBe(n + 1);
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+
+  it("bails to the interpreter without hiding division-by-zero semantics", () => {
+    const source = "(= (divide-down $n) (if (== $n 0) (/ 1 0) (divide-down (- $n 1))))";
+    const env = envWith(source);
+    env.compiled = compileEnv(env);
+    const cooperative = startCooperativeCompiledRun(env, "divide-down", [gint(20)]);
+    expect(cooperative).toBeDefined();
+    if (cooperative === undefined) return;
+    expect(drain(cooperative, 3)).toEqual({
+      event: { kind: "bail", steps: 3, residualArgs: [gint(0)] },
+      steps: 21,
+    });
+    expect(cooperative.next(5)).toEqual({
+      kind: "bail",
+      steps: 0,
+      residualArgs: [gint(0)],
+    });
+
+    const compiled = runProgram(`${source}\n!(divide-down 20)`, 100_000, new Map(), {
+      tabling: true,
+    });
+    const interpreted = runProgram(`${source}\n!(divide-down 20)`, 100_000, new Map(), {
+      tabling: false,
+    });
+    expect(compiled.map((result) => result.results.map(format))).toEqual(
+      interpreted.map((result) => result.results.map(format)),
+    );
   });
 });

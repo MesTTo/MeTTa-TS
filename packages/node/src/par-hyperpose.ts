@@ -5,130 +5,513 @@
 // Parallel branch evaluation for `hyperpose` on Node `worker_threads`. PeTTa's `hyperpose` forks OS
 // threads; cooperative concurrency (par/race) cannot, because a branch that compiles to a native loop runs
 // synchronously and never yields. Each branch is a self-contained pure computation (the program's rules plus
-// one branch expression), so it runs in its own worker. The main thread blocks on an Atomics counter, which
-// fits the CLI's synchronous driver. `firstOnly` (for `(once (hyperpose …))`) returns when one branch
-// produces a result and cancels the rest, matching `once` over forked threads. Node-only: the browser has no
-// worker_threads.
+// one branch expression), so it runs in its own worker. `firstOnly` (for `(once (hyperpose …))`) returns
+// when one branch produces a result and cancels the rest, matching `once` over forked threads. Node-only:
+// the browser has no worker_threads.
 import { Worker } from "node:worker_threads";
 import { createRequire } from "node:module";
+import { availableParallelism } from "node:os";
+import {
+  aggregateCleanupFailures,
+  checkedWorkerPositiveInteger,
+  checkedWorkerResultBytes,
+  checkedWorkerSharedBufferLayout,
+  checkedWorkerTimeout,
+  combineInitiatingAndCleanupFailure,
+  decodeWorkerBranchPayload,
+  isWorkerQuiescenceError,
+  type StatefulParallelBranchHostResult,
+  WorkerQuiescenceError,
+} from "@metta-ts/core";
 
 // The worker builds an env from the program's rule source, evaluates one branch, and writes its results
 // (each atom formatted to source) into its slice of the shared buffer as a JSON string, then signals.
 const WORKER_SRC = `
 const { workerData } = require("node:worker_threads");
-const { corePath, rulesSrc, branchSrc, sab, base, cap, fuel, hostEffects } = workerData;
-const view = new Int32Array(sab);
+const { corePath, rulesSrc, branchSrc, sab, base, cap, fuel, hostEffects, firstOnly, initialCounter } = workerData;
+const header = new Int32Array(sab, base, 2);
 (async () => {
   try {
     const m = await import(corePath);
     if (hostEffects === false && typeof m.setHostEffectsEnabled === "function") {
       m.setHostEffectsEnabled(false);
     }
-    const r = m.runProgram(rulesSrc + "\\n!" + branchSrc, fuel);
-    const last = r[r.length - 1];
-    const out = JSON.stringify((last && last.results ? last.results : []).map((a) => m.format(a)));
-    if (out.length > cap) { Atomics.store(view, base, -1); }
+    const query = firstOnly ? "!(once " + branchSrc + ")" : "!" + branchSrc;
+    const execution = m.runProgramWithState(
+      rulesSrc + "\\n" + query,
+      fuel,
+      new Map(),
+      {},
+      initialCounter,
+    );
+    const last = execution.results[execution.results.length - 1];
+    const results = [];
+    for (const atom of last && last.results ? last.results : []) {
+      const source = m.tryFormatTransportAtom(atom, "value");
+      if (source === undefined) throw new Error("worker result is not transportable");
+      results.push(source);
+    }
+    const out = m.encodeWorkerBranchPayload({
+      results,
+      counterDelta: execution.state.counter - initialCounter,
+    });
+    if (out.byteLength > cap) { Atomics.store(header, 0, -2); }
     else {
-      for (let i = 0; i < out.length; i++) view[base + 2 + i] = out.charCodeAt(i);
-      Atomics.store(view, base + 1, out.length);
-      Atomics.store(view, base, 1);
+      new Uint8Array(sab, base + 8, out.byteLength).set(out);
+      Atomics.store(header, 1, out.byteLength);
+      Atomics.store(header, 0, 1);
     }
   } catch (e) {
-    Atomics.store(view, base, -1); // import failure, fuel exhaustion, anything: this branch bailed
-  } finally {
-    // Always signal completion, even on a caught failure, so the main thread's Atomics.wait cannot block
-    // forever waiting for a branch that already errored.
-    Atomics.add(view, 0, 1);
-    Atomics.notify(view, 0);
+    Atomics.store(header, 0, -1); // import failure, fuel exhaustion, anything: this branch bailed
   }
 })();
 `;
 
-const CAP = 16384; // ints (chars) reserved per branch for its formatted-result JSON; overflow -> bail
+const MAX_DEFAULT_WORKERS = 16;
+let activeWorkers = 0;
 
 export interface ParEvalOptions {
   readonly hostEffects?: boolean;
+  readonly maxWorkers?: number;
+  readonly maxResultBytes?: number;
+  readonly timeoutMs?: number;
 }
 
-/** Evaluate each branch source (with the shared `rulesSrc` prelude) in its own worker. Returns, per branch,
- *  the list of formatted result atoms, or `null` if the branch errored, overflowed the buffer, or was not
- *  read under `firstOnly` because an earlier branch already won. */
+function workerLimit(requested: number | undefined, branchCount: number): number {
+  const defaultLimit = Math.min(availableParallelism(), MAX_DEFAULT_WORKERS);
+  return Math.min(branchCount, checkedWorkerPositiveInteger(requested, defaultLimit, "maxWorkers"));
+}
+
+function startWorker(workerData: Record<string, unknown>): Worker {
+  const worker = new Worker(WORKER_SRC, { eval: true, workerData });
+  activeWorkers += 1;
+  worker.once("exit", () => {
+    activeWorkers -= 1;
+  });
+  return worker;
+}
+
+/** Number of branch workers whose `exit` event has not fired. Used by lifecycle diagnostics. */
+export function activeHyperposeWorkerCount(): number {
+  return activeWorkers;
+}
+
+/**
+ * Legacy synchronous compatibility adapter. It starts no workers and declines every branch because Node
+ * exposes worker termination as a Promise. Use `evalBranchesParallelAsync` for joined worker execution.
+ *
+ * @deprecated Use `evalBranchesParallelAsync`.
+ */
 export function evalBranchesParallel(
+  _corePath: string,
+  _rulesSrc: string,
+  branchSrcs: readonly string[],
+  _firstOnly: boolean,
+  _fuel: number,
+  options: ParEvalOptions = {},
+): (StatefulParallelBranchHostResult | null)[] {
+  checkedWorkerResultBytes(options.maxResultBytes);
+  checkedWorkerTimeout(options.timeoutMs);
+  workerLimit(options.maxWorkers, branchSrcs.length);
+  return new Array(branchSrcs.length).fill(null);
+}
+
+interface CompletedBranch {
+  readonly index: number;
+  readonly slot: number;
+  readonly result: StatefulParallelBranchHostResult | null;
+  readonly failure?: WorkerOperationFailure;
+}
+
+interface WorkerOperationFailure {
+  readonly error: unknown;
+}
+
+interface WorkerReadResult {
+  readonly result: StatefulParallelBranchHostResult | null;
+  readonly failure?: WorkerOperationFailure;
+}
+
+function operationFailure(error: unknown): WorkerOperationFailure {
+  return { error };
+}
+
+function aggregateWorkerOperationFailures(
+  failures: readonly unknown[],
+): WorkerOperationFailure | undefined {
+  if (failures.length === 0) return undefined;
+  return operationFailure(
+    failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures.slice(), "multiple Node worker operations failed"),
+  );
+}
+
+/** Evaluate a worker race without returning until every losing worker has exited. */
+export async function evalBranchesParallelAsync(
   corePath: string,
   rulesSrc: string,
   branchSrcs: readonly string[],
   firstOnly: boolean,
   fuel: number,
   options: ParEvalOptions = {},
-): (string[] | null)[] {
+  signal?: AbortSignal,
+  initialCounter = 0,
+): Promise<(StatefulParallelBranchHostResult | null)[]> {
+  signal?.throwIfAborted();
   const n = branchSrcs.length;
-  const region = 2 + CAP; // [status, len, chars...] per branch; status 0=pending, 1=done, -1=bail
-  const sab = new SharedArrayBuffer((1 + n * region) * 4);
-  const view = new Int32Array(sab);
-  const workers = branchSrcs.map(
-    (br, i) =>
-      new Worker(WORKER_SRC, {
-        eval: true,
-        workerData: {
+  const maxResultBytes = checkedWorkerResultBytes(options.maxResultBytes);
+  const timeoutMs = checkedWorkerTimeout(options.timeoutMs);
+  const maxWorkers = workerLimit(options.maxWorkers, n);
+  if (n === 0) return [];
+  if (firstOnly && n > maxWorkers) return new Array(n).fill(null);
+  const { regionBytes: region, totalBytes } = checkedWorkerSharedBufferLayout(
+    maxWorkers,
+    maxResultBytes,
+  );
+  let sab: SharedArrayBuffer;
+  try {
+    sab = new SharedArrayBuffer(totalBytes);
+  } catch {
+    return new Array(n).fill(null);
+  }
+  const workers: Array<Worker | undefined> = new Array(n);
+  const completed = new Map<number, Promise<CompletedBranch>>();
+  const workerOperationFailures = new Map<number, unknown[]>();
+  const cleanupStarted = new Set<number>();
+  const results: (StatefulParallelBranchHostResult | null)[] = new Array(n).fill(null);
+  const freeSlots = Array.from({ length: maxWorkers }, (_, index) => index);
+  let next = 0;
+  let launchFailure: WorkerOperationFailure | undefined;
+
+  const recordWorkerOperationFailure = (index: number, error: unknown): void => {
+    const failures = workerOperationFailures.get(index);
+    if (failures === undefined) {
+      workerOperationFailures.set(index, [error]);
+      return;
+    }
+    if (!failures.some((failure) => Object.is(failure, error))) failures.push(error);
+  };
+  const combinedWorkerOperationFailure = (index: number): WorkerOperationFailure | undefined =>
+    aggregateWorkerOperationFailures(workerOperationFailures.get(index) ?? []);
+  const read = (slot: number): WorkerReadResult => {
+    try {
+      const base = slot * region;
+      const header = new Int32Array(sab, base, 2);
+      const status = Atomics.load(header, 0);
+      if (status !== 1) {
+        const message =
+          status === -1
+            ? "Node worker branch evaluation failed"
+            : status === -2
+              ? "Node worker result exceeded maxResultBytes"
+              : "Node worker exited without a result";
+        return { result: null, failure: operationFailure(new Error(message)) };
+      }
+      const length = Atomics.load(header, 1);
+      if (!Number.isSafeInteger(length) || length < 0 || length > maxResultBytes)
+        return {
+          result: null,
+          failure: operationFailure(new Error("Node worker returned an invalid result length")),
+        };
+      const result = decodeWorkerBranchPayload(new Uint8Array(sab, base + 8, length));
+      return result === undefined
+        ? {
+            result: null,
+            failure: operationFailure(new Error("Node worker returned a malformed result payload")),
+          }
+        : { result };
+    } catch (error) {
+      return { result: null, failure: operationFailure(error) };
+    }
+  };
+  const terminateAndJoin = async (indices: Iterable<number>): Promise<void> => {
+    const selected = [...new Set(indices)].filter((index) => {
+      if (cleanupStarted.has(index)) return false;
+      cleanupStarted.add(index);
+      return true;
+    });
+    if (selected.length === 0) return;
+    const termination = await Promise.allSettled(
+      selected.map((index) => Promise.resolve().then(() => workers[index]?.terminate())),
+    );
+    // Join every worker whose termination request completed even when a sibling's request failed. The failed
+    // worker still makes local replay unsafe, but it must not prevent known siblings from reaching quiescence.
+    const joinable = selected.filter((_, offset) => termination[offset]?.status === "fulfilled");
+    const exits = await Promise.allSettled(
+      joinable.flatMap((index) => {
+        const exit = completed.get(index);
+        return exit === undefined ? [] : [exit];
+      }),
+    );
+    const failures: unknown[] = termination.flatMap((result) =>
+      result.status === "rejected"
+        ? [
+            new WorkerQuiescenceError("Node worker termination failed", {
+              cause: result.reason,
+            }),
+          ]
+        : [],
+    );
+    for (const result of exits) if (result.status === "rejected") failures.push(result.reason);
+    if (failures.length > 0) {
+      const cleanupFailure = aggregateCleanupFailures(
+        failures,
+        "multiple Node worker cleanups failed",
+      );
+      const operationFailures = aggregateWorkerOperationFailures(
+        selected.flatMap((index) => workerOperationFailures.get(index) ?? []),
+      );
+      throw operationFailures === undefined
+        ? cleanupFailure
+        : combineInitiatingAndCleanupFailure(
+            operationFailures.error,
+            cleanupFailure,
+            "Node worker operation and cleanup both failed",
+          );
+    }
+  };
+  const joinForReplay = async (
+    indices: Iterable<number>,
+    failure: WorkerOperationFailure | undefined,
+  ): Promise<void> => {
+    try {
+      await terminateAndJoin(indices);
+    } catch (cleanupError) {
+      throw failure === undefined
+        ? cleanupError
+        : combineInitiatingAndCleanupFailure(
+            failure.error,
+            cleanupError,
+            "Node worker operation and cleanup both failed",
+          );
+    }
+  };
+  const launch = (): void => {
+    while (launchFailure === undefined && next < n && freeSlots.length > 0) {
+      const index = next++;
+      const slot = freeSlots.shift()!;
+      const base = slot * region;
+      const header = new Int32Array(sab, base, 2);
+      Atomics.store(header, 0, 0);
+      Atomics.store(header, 1, 0);
+      try {
+        const worker = startWorker({
           corePath,
           rulesSrc,
-          branchSrc: br,
+          branchSrc: branchSrcs[index]!,
           sab,
-          base: 1 + i * region,
-          cap: CAP,
+          base,
+          cap: maxResultBytes,
           fuel,
           hostEffects: options.hostEffects,
-        },
-      }),
-  );
-  const out: (string[] | null)[] = new Array(n).fill(null);
-  const read = (i: number): string[] | null | undefined => {
-    const base = 1 + i * region;
-    const status = Atomics.load(view, base);
-    if (status === 0) return undefined; // still pending
-    if (status === -1) return null; // errored / overflowed
-    const len = Atomics.load(view, base + 1);
-    let s = "";
-    for (let j = 0; j < len; j++) s += String.fromCharCode(view[base + 2 + j]!);
-    return JSON.parse(s) as string[];
-  };
-  // A branch that dies outside the worker's finally (e.g. the runtime is killed) would never bump the
-  // counter. Cap each wait so the main thread cannot block forever if every remaining branch hangs.
-  const WAIT_MS = 60_000;
-  let done = false;
-  while (!done) {
-    const prev = Atomics.load(view, 0);
-    for (let i = 0; i < n; i++) {
-      if (out[i] !== null) continue;
-      const r = read(i);
-      if (r === undefined) continue;
-      out[i] = r;
-      // Under `once`, the lowest-index branch with a non-empty result wins (branch order, matching
-      // sequential `once`); an errored branch (null) or an empty result does not win, so keep scanning.
-      if (firstOnly && r !== null && r.length > 0) {
-        done = true;
-        break;
+          firstOnly,
+          initialCounter,
+        });
+        workers[index] = worker;
+        completed.set(
+          index,
+          new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+              if (cleanupStarted.has(index)) return;
+              const timeoutFailure = new Error("Node worker branch timed out");
+              recordWorkerOperationFailure(index, timeoutFailure);
+              cleanupStarted.add(index);
+              void Promise.resolve()
+                .then(() => worker.terminate())
+                .catch((cause: unknown) => {
+                  const quiescence = new WorkerQuiescenceError(
+                    "timed-out Node worker did not terminate",
+                    { cause },
+                  );
+                  reject(
+                    combineInitiatingAndCleanupFailure(
+                      combinedWorkerOperationFailure(index)!.error,
+                      quiescence,
+                      "Node worker timeout and termination both failed",
+                    ),
+                  );
+                });
+            }, timeoutMs);
+            worker.once("error", (error: unknown) => {
+              recordWorkerOperationFailure(index, error);
+            });
+            worker.once("exit", (exitCode: number) => {
+              clearTimeout(timeout);
+              if (!cleanupStarted.has(index) && exitCode !== 0)
+                recordWorkerOperationFailure(
+                  index,
+                  new Error(`Node worker exited with exit code ${exitCode}`),
+                );
+              const failure = combinedWorkerOperationFailure(index);
+              if (failure !== undefined) {
+                resolve({ index, slot, result: null, failure });
+                return;
+              }
+              resolve({ index, slot, ...read(slot) });
+            });
+          }),
+        );
+      } catch (error) {
+        results[index] = null;
+        freeSlots.push(slot);
+        launchFailure = operationFailure(error);
       }
     }
-    if (Atomics.load(view, 0) >= n) done = true; // every branch finished
-    if (
-      !done &&
-      Atomics.wait(view, 0, prev, WAIT_MS) === "timed-out" &&
-      Atomics.load(view, 0) === prev
-    )
-      break; // no branch progressed in WAIT_MS: a worker is wedged, return what we have
+  };
+
+  const abortedToken = Symbol("Node worker evaluation aborted");
+  let abort!: () => void;
+  let abortedFlag = false;
+  let abortReason: unknown;
+  let abortSelected = false;
+  const aborted = new Promise<typeof abortedToken>((resolve) => {
+    abort = (): void => {
+      if (abortedFlag) return;
+      abortedFlag = true;
+      abortReason = signal?.reason;
+      resolve(abortedToken);
+    };
+  });
+  const throwIfAborted = (): void => {
+    if (!abortedFlag) return;
+    abortSelected = true;
+    throw abortReason;
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted === true) abort();
+  try {
+    launch();
+    if (launchFailure !== undefined) {
+      await joinForReplay(completed.keys(), launchFailure);
+      throwIfAborted();
+      return results;
+    }
+    while (completed.size > 0) {
+      const settled = await Promise.race([...completed.values(), aborted]);
+      if (settled === abortedToken) {
+        abortSelected = true;
+        throw abortReason;
+      }
+      const branch = settled;
+      completed.delete(branch.index);
+      freeSlots.push(branch.slot);
+      results[branch.index] = branch.result;
+      if (branch.result === null) {
+        await joinForReplay(completed.keys(), branch.failure);
+        throwIfAborted();
+        return results;
+      }
+      if (firstOnly && branch.result !== null && branch.result.results.length > 0) {
+        const losers = [...completed.keys()];
+        for (const index of losers) results[index] = { results: [], counterDelta: 0 };
+        for (let index = next; index < n; index++)
+          results[index] = { results: [], counterDelta: 0 };
+        await joinForReplay(losers, undefined);
+        throwIfAborted();
+        return results;
+      }
+      launch();
+      if (launchFailure !== undefined) {
+        await joinForReplay(completed.keys(), launchFailure);
+        throwIfAborted();
+        return results;
+      }
+    }
+    throwIfAborted();
+    return results;
+  } catch (error) {
+    let failure = error;
+    try {
+      await terminateAndJoin(completed.keys());
+    } catch (cleanupError) {
+      failure = combineInitiatingAndCleanupFailure(
+        failure,
+        cleanupError,
+        "Node worker evaluation and cleanup both failed",
+      );
+    }
+    if (abortedFlag && !abortSelected)
+      failure = combineInitiatingAndCleanupFailure(
+        abortReason,
+        failure,
+        "Node worker cancellation and evaluation both failed",
+      );
+    throw failure;
+  } finally {
+    signal?.removeEventListener("abort", abort);
   }
-  for (const w of workers) void w.terminate();
-  return out;
 }
 
-/** Build the `RunOptions.parEvalImpl` hook the core runner calls for `(once (hyperpose …))`. Resolves the
- *  built `@metta-ts/core` entry once (the worker re-imports it) and binds the step ceiling. */
+/**
+ * Build a legacy synchronous hook that explicitly declines before accepting any worker task.
+ *
+ * @deprecated Use `makeParEvalAsyncImpl` with an async runner.
+ */
 export function makeParEvalImpl(
   fuel: number,
   options: ParEvalOptions = {},
-): (rulesSrc: string, branchSrcs: string[], firstOnly: boolean) => (string[] | null)[] {
+): (
+  rulesSrc: string,
+  branchSrcs: string[],
+  firstOnly: boolean,
+  remainingFuel?: number,
+  initialCounter?: number,
+) => { readonly status: "declined" } {
   const corePath = createRequire(import.meta.url).resolve("@metta-ts/core");
-  return (rulesSrc, branchSrcs, firstOnly) =>
-    evalBranchesParallel(corePath, rulesSrc, branchSrcs, firstOnly, fuel, options);
+  return (rulesSrc, branchSrcs, firstOnly, remainingFuel) => {
+    evalBranchesParallel(
+      corePath,
+      rulesSrc,
+      branchSrcs,
+      firstOnly,
+      Math.min(fuel, remainingFuel ?? fuel),
+      options,
+    );
+    return { status: "declined" };
+  };
+}
+
+/** Build the cancellable async worker hook used by normal Node source and CLI runs. */
+export function makeParEvalAsyncImpl(
+  fuel: number,
+  options: ParEvalOptions = {},
+): (
+  rulesSrc: string,
+  branchSrcs: string[],
+  firstOnly: boolean,
+  signal?: AbortSignal,
+  remainingFuel?: number,
+  initialCounter?: number,
+) => Promise<
+  | {
+      readonly status: "completed";
+      readonly branches: readonly (StatefulParallelBranchHostResult | null)[];
+    }
+  | {
+      readonly status: "failed";
+      readonly error: unknown;
+    }
+> {
+  const corePath = createRequire(import.meta.url).resolve("@metta-ts/core");
+  return async (rulesSrc, branchSrcs, firstOnly, signal, remainingFuel, initialCounter) => {
+    try {
+      return {
+        status: "completed",
+        branches: await evalBranchesParallelAsync(
+          corePath,
+          rulesSrc,
+          branchSrcs,
+          firstOnly,
+          Math.min(fuel, remainingFuel ?? fuel),
+          options,
+          signal,
+          initialCounter,
+        ),
+      };
+    } catch (error) {
+      if (isWorkerQuiescenceError(error)) throw error;
+      return { status: "failed", error };
+    }
+  };
 }

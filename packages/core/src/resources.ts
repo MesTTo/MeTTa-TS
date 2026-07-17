@@ -223,19 +223,23 @@ export class ResourceLease {
 
 /** Convert an arbitrary abort reason into a serializable record. */
 export function normalizeCancellationReason(reason: unknown): CancellationReason {
-  if (typeof reason === "string") return { code: "aborted", message: reason };
-  if (reason instanceof Error)
-    return {
-      code: reason.name.length === 0 ? "aborted" : reason.name,
-      ...(reason.message.length === 0 ? {} : { message: reason.message }),
-    };
-  if (typeof reason === "object" && reason !== null) {
-    const candidate = reason as { readonly code?: unknown; readonly message?: unknown };
-    if (typeof candidate.code === "string" && candidate.code.length !== 0)
+  try {
+    if (typeof reason === "string") return { code: "aborted", message: reason };
+    if (reason instanceof Error)
       return {
-        code: candidate.code,
-        ...(typeof candidate.message === "string" ? { message: candidate.message } : {}),
+        code: reason.name.length === 0 ? "aborted" : reason.name,
+        ...(reason.message.length === 0 ? {} : { message: reason.message }),
       };
+    if (typeof reason === "object" && reason !== null) {
+      const candidate = reason as { readonly code?: unknown; readonly message?: unknown };
+      if (typeof candidate.code === "string" && candidate.code.length !== 0)
+        return {
+          code: candidate.code,
+          ...(typeof candidate.message === "string" ? { message: candidate.message } : {}),
+        };
+    }
+  } catch {
+    // Host objects may be proxies or expose throwing accessors. They are never retained.
   }
   return { code: "aborted" };
 }

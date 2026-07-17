@@ -10,7 +10,9 @@ import {
   buildEnv,
   initSt,
   mettaEval,
+  mettaEvalAsync,
   type MinEnv,
+  registerAsyncGroundedOperation,
   registerGroundedOperation,
   type St,
 } from "./eval";
@@ -192,6 +194,53 @@ describe("evaluation context", () => {
     expect(env.capabilities!.has("atomspace-read")).toBe(true);
   });
 
+  it("keeps every context field as an enumerable own property when adding a signal", async () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    let observedKeys: string[] | undefined;
+    let spread: GroundedCallContext | undefined;
+    const signal = new AbortController().signal;
+    registerAsyncGroundedOperation(env, "inspect-async-context", async (_args, context) => {
+      if (context === undefined) throw new Error("missing grounded call context");
+      observedKeys = Object.keys(context).sort();
+      spread = { ...context };
+      return { tag: "ok", results: [emptyExpr] };
+    });
+
+    await mettaEvalAsync(env, 100_000, initSt(), [], parsedAtom("(inspect-async-context)"), signal);
+
+    expect(observedKeys).toEqual([
+      "capabilities",
+      "currentSpace",
+      "expectedType",
+      "generation",
+      "groundingEnvironment",
+      "imports",
+      "moduleInstallations",
+      "signal",
+      "typeEnvironment",
+      "visibleSpaces",
+    ]);
+    expect(Object.hasOwn(spread!, "currentSpace")).toBe(true);
+    expect(Object.hasOwn(spread!, "signal")).toBe(true);
+    expect(spread!.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("does not mutate a frozen caller-supplied world while caching context", () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    registerGroundedOperation(env, "read-frozen-context", (_args, context) => ({
+      tag: "ok",
+      results: [context?.currentSpace ?? sym("missing-context")],
+    }));
+    const state = initSt();
+    const keys = Reflect.ownKeys(state.world);
+    Object.freeze(state.world);
+
+    const [pairs] = mettaEval(env, 100_000, state, [], parsedAtom("(read-frozen-context)"));
+
+    expect(pairs.map(([atom]) => format(atom))).toEqual(["&self"]);
+    expect(Reflect.ownKeys(state.world)).toEqual(keys);
+  });
+
   it("invalidates cached service descriptors after in-place registry changes", () => {
     const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
     env.imports.set("module", [sym("old")]);
@@ -239,6 +288,54 @@ describe("evaluation context", () => {
 
     expect(generationAfterOneMutation()).toBe(1);
     expect(generationAfterOneMutation()).toBe(1);
+  });
+
+  it("advances generations for every observable world mutation and not for reads", () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    env.imports.set("empty-module", []);
+    registerGroundedOperation(env, "apply-effects", () => ({
+      tag: "ok",
+      results: [emptyExpr],
+      effects: [
+        { kind: "addAtom", space: sym("&self"), atom: sym("effect-atom") },
+        { kind: "removeAtom", space: sym("&self"), atom: sym("effect-atom") },
+        { kind: "bindToken", name: "&effect-token", atom: sym("effect-value") },
+      ],
+    }));
+
+    let state = initSt();
+    const mutate = (atom: Atom, increments = 1): Atom | undefined => {
+      const before = state.world.generation;
+      const [pairs, next] = mettaEval(env, 100_000, state, [], atom);
+      expect(next.world.generation).toBe(before + increments);
+      state = next;
+      return pairs[0]?.[0];
+    };
+    const read = (atom: Atom): void => {
+      const before = state.world.generation;
+      const [, next] = mettaEval(env, 100_000, state, [], atom);
+      expect(next.world.generation).toBe(before);
+      state = next;
+    };
+
+    mutate(parsedAtom("(add-atom &self runtime-atom)"));
+    mutate(parsedAtom("(remove-atom &self runtime-atom)"));
+    mutate(parsedAtom("(add-atom &self (: dynamic-value DynamicType))"));
+    const stateHandle = mutate(parsedAtom("(new-state old)"))!;
+    mutate(expr([sym("change-state!"), stateHandle, sym("new")]));
+    const spaceHandle = mutate(parsedAtom("(new-space)"))!;
+    mutate(parsedAtom("(new-mork-space)"));
+    mutate(expr([sym("fork-space"), spaceHandle]));
+    mutate(parsedAtom("(bind! &bound value)"));
+    mutate(parsedAtom("(pragma! max-stack-depth 32)"));
+    mutate(parsedAtom("(import! &self empty-module)"));
+    mutate(parsedAtom("(apply-effects)"), 3);
+
+    read(expr([sym("get-atoms"), spaceHandle]));
+    read(expr([sym("get-state"), stateHandle]));
+    read(parsedAtom("(get-type dynamic-value)"));
+    read(parsedAtom("(remove-atom &self absent-atom)"));
+    read(parsedAtom("(pragma! ignored-key ignored-value)"));
   });
 
   it("invalidates a dynamic type view when the static type program grows", () => {

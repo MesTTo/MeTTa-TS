@@ -36,9 +36,28 @@ export function makeTimerAsyncOps(gint) {
   return new Map([
     [
       "aw",
-      async (args) => {
+      async (args, context) => {
         const n = intArg(args[0]);
-        if (n > 0) await new Promise((resolve) => setTimeout(resolve, n));
+        if (n > 0) {
+          const signal = context?.signal;
+          await new Promise((resolve, reject) => {
+            if (signal?.aborted === true) {
+              reject(signal.reason);
+              return;
+            }
+            const timer = setTimeout(finish, n);
+            function finish() {
+              signal?.removeEventListener("abort", cancel);
+              resolve();
+            }
+            function cancel() {
+              clearTimeout(timer);
+              signal?.removeEventListener("abort", cancel);
+              reject(signal?.reason ?? new Error("grounded operation cancelled"));
+            }
+            signal?.addEventListener("abort", cancel, { once: true });
+          });
+        }
         return { tag: "ok", results: [gint(n)] };
       },
     ],

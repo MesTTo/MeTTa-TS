@@ -71,6 +71,13 @@ describe("evaluation resource ledger", () => {
       operation: "once",
     });
     expect(normalizeCancellationReason(new Error("boom"))).toMatchObject({ message: "boom" });
+    const hostile = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(hostile, "code", {
+      get(): never {
+        throw new Error("hostile cancellation getter");
+      },
+    });
+    expect(normalizeCancellationReason(hostile)).toEqual({ code: "aborted" });
   });
 
   it("never advances past a generated limit", () => {

@@ -41,18 +41,36 @@ export interface ParsedRuntimeId<K extends RuntimeIdKind = RuntimeIdKind> {
 
 const runtimeIdPattern = /^([a-z-]+):([^:]+):(0|[1-9][0-9]*)$/;
 const namespacePattern = /^[A-Za-z0-9._-]+$/;
+const MAX_NAMESPACE_COMPONENT_LENGTH = 128;
+const ESCAPED_LANE_PREFIX = "_x_";
 
 function isRuntimeIdKind(value: string): value is RuntimeIdKind {
   return (RUNTIME_ID_KINDS as readonly string[]).includes(value);
 }
 
 function assertNamespace(namespace: string): void {
-  if (namespace.length > 128)
+  if (namespace.length > MAX_NAMESPACE_COMPONENT_LENGTH)
     throw new RangeError("runtime ID namespace must be at most 128 characters");
   if (!namespacePattern.test(namespace))
     throw new RangeError(
       "runtime ID namespace must contain only letters, digits, dot, underscore, or hyphen",
     );
+}
+
+function encodeValidatedAllocationLane(component: string): string {
+  if (!component.includes(".") && !component.startsWith(ESCAPED_LANE_PREFIX)) return component;
+  let encoded = "";
+  for (let index = 0; index < component.length; index++)
+    encoded += component.charCodeAt(index).toString(16).padStart(2, "0");
+  return `${ESCAPED_LANE_PREFIX}${encoded}`;
+}
+
+function formatRuntimeId<K extends RuntimeIdKind>(
+  kind: K,
+  namespace: string,
+  sequence: number,
+): RuntimeId<K> {
+  return `${kind}:${namespace}:${sequence}` as RuntimeId<K>;
 }
 
 export function makeRuntimeId<K extends RuntimeIdKind>(
@@ -63,7 +81,7 @@ export function makeRuntimeId<K extends RuntimeIdKind>(
   assertNamespace(namespace);
   if (!Number.isSafeInteger(sequence) || sequence < 0)
     throw new RangeError("runtime ID sequence must be a non-negative safe integer");
-  return `${kind}:${namespace}:${sequence}` as RuntimeId<K>;
+  return formatRuntimeId(kind, namespace, sequence);
 }
 
 export function parseRuntimeId(value: string): ParsedRuntimeId | undefined {
@@ -87,19 +105,36 @@ export function isRuntimeId<K extends RuntimeIdKind>(
 
 /** Allocates disjoint identifier streams inside one serializable namespace. */
 export class RuntimeIdAllocator {
-  readonly #next = new Map<RuntimeIdKind, number>();
-  readonly #forkedLanes = new Set<string>();
+  #next: Map<RuntimeIdKind, number> | undefined;
+  #forkedLanes: Set<string> | undefined;
+  #parentAuthority: RuntimeIdAllocator | undefined;
+  readonly #rootNamespace: string;
+  readonly namespace: string;
 
-  constructor(readonly namespace: string) {
-    assertNamespace(namespace);
+  constructor(rootNamespace: string) {
+    assertNamespace(rootNamespace);
+    this.#rootNamespace = rootNamespace;
+    this.namespace = rootNamespace;
+  }
+
+  get rootNamespace(): string {
+    return this.#rootNamespace;
+  }
+
+  /** Reserve the next sequence number without serializing an ID that will not be exposed. */
+  reserveSequence(kind: RuntimeIdKind): number {
+    const sequence = this.#next?.get(kind) ?? 0;
+    if (sequence === Number.MAX_SAFE_INTEGER)
+      throw new RangeError(`runtime ID stream '${kind}' is exhausted`);
+    (this.#next ??= new Map()).set(kind, sequence + 1);
+    return sequence;
   }
 
   next<K extends RuntimeIdKind>(kind: K): RuntimeId<K> {
-    const sequence = this.#next.get(kind) ?? 0;
-    if (sequence === Number.MAX_SAFE_INTEGER)
-      throw new RangeError(`runtime ID stream '${kind}' is exhausted`);
-    this.#next.set(kind, sequence + 1);
-    return makeRuntimeId(kind, this.namespace, sequence);
+    // Descendant paths may exceed the public 128-character component bound. Every component was checked
+    // by the constructor or `fork`, so generated namespaces can be formatted without weakening the public
+    // `makeRuntimeId` contract.
+    return formatRuntimeId(kind, this.namespace, this.reserveSequence(kind));
   }
 
   /**
@@ -108,10 +143,38 @@ export class RuntimeIdAllocator {
    */
   fork(lane: string): RuntimeIdAllocator {
     assertNamespace(lane);
-    if (this.#forkedLanes.has(lane))
+    const forkedLanes = (this.#forkedLanes ??= new Set());
+    if (forkedLanes.has(lane))
       throw new Error(`runtime ID lane '${lane}' has already been allocated`);
-    this.#forkedLanes.add(lane);
-    return new RuntimeIdAllocator(`${this.namespace}.${lane}`);
+    forkedLanes.add(lane);
+    const child = new RuntimeIdAllocator(this.#rootNamespace);
+    // Keep the established readonly, enumerable data property. Generated descendants are installed after
+    // validating their root and lane because the complete path may exceed the public constructor bound.
+    (child as { namespace: string }).namespace =
+      `${this.namespace}.${encodeValidatedAllocationLane(lane)}`;
+    child.#parentAuthority = this;
+    return child;
+  }
+
+  /**
+   * Snapshot the allocation authority that reserved this lane. The returned allocator replaces this child
+   * when control rejoins its parent. Using the snapshot beside the retained parent can repeat IDs.
+   */
+  parentAuthority(): RuntimeIdAllocator | undefined {
+    return this.#parentAuthority?.clone();
+  }
+
+  /**
+   * Snapshot this authority for deterministic replay. The copy owns independent counters and reservations,
+   * but starts at the same point and therefore repeats future IDs. Use `fork` for a disjoint concurrent lane.
+   */
+  clone(): RuntimeIdAllocator {
+    const copy = new RuntimeIdAllocator(this.#rootNamespace);
+    (copy as { namespace: string }).namespace = this.namespace;
+    if (this.#next !== undefined) copy.#next = new Map(this.#next);
+    if (this.#forkedLanes !== undefined) copy.#forkedLanes = new Set(this.#forkedLanes);
+    copy.#parentAuthority = this.#parentAuthority;
+    return copy;
   }
 }
 

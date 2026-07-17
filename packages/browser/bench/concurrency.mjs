@@ -98,7 +98,10 @@ const CASES = [
     runs: 13,
     run: () =>
       checkedRunSource("browser async hyperpose hook", HYPERPOSE_SOURCE, ["77"], new Map(), {
-        parEvalAsyncImpl: async () => [["77"], null],
+        parEvalAsyncImpl: async () => [
+          { results: ["77"], counterDelta: 0 },
+          { results: [], counterDelta: 0 },
+        ],
       }),
   },
 ];

@@ -257,14 +257,14 @@ function slimOfAtom(a: Atom, cells: Map<string, Slim>): Slim {
 
 /** Materialize a slim term back to an atom under the bindings (the entry's per-answer resolve). An
  *  unbound cell gets a lazy stable name, so it comes out as a plain variable atom. */
-function atomOfSlim(s0: Slim, namer: { c: number }): Atom {
+function atomOfSlim(s0: Slim, namer: { c: number; branchQualifier?: string }): Atom {
   const s = derefS(s0);
   if (s.t === 0) {
     if (s.nm === "") {
       s.nm = "_c#" + String(namer.c);
       namer.c += 1;
     }
-    return variable(s.nm);
+    return variable(s.nm + (namer.branchQualifier ?? ""));
   }
   if (s.t === 1) return sym(s.s);
   if (s.t === 2) return gint(s.n);

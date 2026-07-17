@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { format, parseAll, standardTokenizer, type Atom } from "@metta-ts/core";
 import { run, runSource, runSourceAsync, vfsImports } from "./source";
 
@@ -14,6 +14,10 @@ function inertAtoms(src: string): Atom[] {
 
 const lastResults = (rs: ReturnType<typeof runSource>): string[] =>
   rs.at(-1)?.results.map(format) ?? [];
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe("browser source runners", () => {
   it("runs a source string with in-memory imports", () => {
@@ -46,7 +50,20 @@ describe("browser source runners", () => {
   });
 
   it("passes hyperpose branches through a caller-provided async parallel evaluator", async () => {
+    class UnexpectedWorker {
+      constructor() {
+        throw new Error("the default browser worker must not replace an explicit host hook");
+      }
+    }
+    vi.stubGlobal("Worker", UnexpectedWorker as unknown as typeof Worker);
     const branchCalls: string[][] = [];
+    const captureBranches = (_rulesSrc: string, branchSrcs: string[]) => {
+      branchCalls.push(branchSrcs);
+      return Promise.resolve([
+        { results: ["77"], counterDelta: 0 },
+        { results: [], counterDelta: 0 },
+      ]);
+    };
     const rs = await runSourceAsync(
       `
         (: two (-> Number))
@@ -59,10 +76,7 @@ describe("browser source runners", () => {
       undefined,
       new Map(),
       {
-        parEvalAsyncImpl: async (_rulesSrc, branchSrcs) => {
-          branchCalls.push(branchSrcs);
-          return [["77"], null];
-        },
+        parEvalAsyncImpl: captureBranches,
       },
     );
     expect(branchCalls).toEqual([["(two)", "(four)"]]);
