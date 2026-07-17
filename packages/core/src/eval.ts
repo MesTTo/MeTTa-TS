@@ -1002,6 +1002,16 @@ export interface Item {
   readonly evaluationScope?: EvaluationScope;
   /** Owned pull continuation for a grounded V2 answer stream. */
   readonly groundedV2?: MinimalGroundedV2Continuation;
+  /** Owned pull continuation for a streamed `metta`/`metta-thread` call. */
+  readonly mettaCall?: MinimalMettaCallContinuation;
+}
+interface MinimalMettaCallContinuation {
+  readonly operation: "metta" | "metta-thread";
+  readonly bnd: Bindings;
+  readonly schedule: DualModeSearchCursor<MinimalSearchAnswer, St>;
+  /** Turn one full-evaluator answer into the minimal items the batch case would have produced. */
+  readonly project: (answer: MinimalSearchAnswer) => Item[];
+  closed: boolean;
 }
 interface MinimalGroundedV2Continuation {
   readonly operation: string;
@@ -5178,6 +5188,86 @@ function* closeMinimalGroundedV2G(
   }
 }
 
+function mettaCallSchedule(
+  env: MinEnv,
+  fuel: number,
+  state: St,
+  bindings: Bindings,
+  atom: Atom,
+): DualModeSearchCursor<MinimalSearchAnswer, St> {
+  return new DualModeSearchCursor(
+    "metta",
+    () => createMettaSearchCursor(env, atom, { fuel, state, bindings }),
+    () =>
+      ownedAsyncSearchCursor("metta", env, atom, { fuel, state, bindings }, contextualCursorAnswer),
+  );
+}
+
+function* closeMinimalMettaCallG(
+  continuation: MinimalMettaCallContinuation,
+  initiating: SchedulerUnwindFailure = { active: false, error: undefined },
+): Gen<void> {
+  if (continuation.closed) return;
+  continuation.closed = true;
+  yield* closeScheduleG(
+    continuation.schedule,
+    { code: "parent-closed", message: `${continuation.operation} consumer closed` },
+    initiating,
+  );
+}
+
+/**
+ * Pull one answer from a streamed `metta`/`metta-thread` call. Each answer's state is adopted
+ * through its journal ancestry, so the world a continuation observes is the one that produced the
+ * answer, and the exhausted terminal commits only the remaining suffix.
+ */
+function* resumeMinimalMettaCallG(
+  st: St,
+  continuation: MinimalMettaCallContinuation,
+  cursor?: CursorMode,
+): Gen<[Item[], St]> {
+  let handedOff = false;
+  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
+  try {
+    for (;;) {
+      const event = (yield continuation.schedule.nextEffect()) as SearchEvent<
+        MinimalSearchAnswer,
+        St
+      >;
+      yield* chargeSchedulerStepsG(cursor, st, event.steps);
+      switch (event.kind) {
+        case "answer": {
+          const retained: Item = {
+            stack: null,
+            bnd: continuation.bnd,
+            mettaCall: continuation,
+          };
+          handedOff = true;
+          return [
+            [...continuation.project(event.value), retained],
+            restoreAllocationAuthority(st, event.value.state),
+          ];
+        }
+        case "pending":
+          break;
+        case "exhausted":
+          continuation.closed = true;
+          return [[], restoreAllocationAuthority(st, event.terminal)];
+        case "cancelled":
+          throw schedulerCancellationError(continuation.operation, event.reason);
+        case "fault":
+          throw event.error;
+      }
+    }
+  } catch (error) {
+    unwind.active = true;
+    unwind.error = error;
+    throw error;
+  } finally {
+    if (!handedOff) yield* closeMinimalMettaCallG(continuation, unwind);
+  }
+}
+
 function* resumeMinimalGroundedV2G(
   env: MinEnv,
   st: St,
@@ -6696,6 +6786,7 @@ function* interpretStack1G(
   env = refreshEvaluationEnvironment(env, st.world);
   if (it.groundedV2 !== undefined)
     return yield* resumeMinimalGroundedV2G(env, st, it.groundedV2, cursor);
+  if (it.mettaCall !== undefined) return yield* resumeMinimalMettaCallG(st, it.mettaCall, cursor);
   if (it.stack === null) return [[], st];
   const top = it.stack.head;
   const prev = it.stack.tail;
@@ -6786,6 +6877,32 @@ function* interpretStack1G(
       const selected = selectEvaluationEnvironment(env, st.world, requested, expectedType);
       if (selected === undefined)
         return [[finItem(prev, errAtom(inst(env, it.bnd, a), `${op}: not a space`), it.bnd)], st];
+      // The `%Undefined%` form streams one answer per pull so a nested consumer such as `once`
+      // can close the unvisited tail. A typed expected result stays on the batch path because its
+      // check reads the world at completion time.
+      if (
+        cursor?.kind === "cooperative" &&
+        atomEq(expectedType, UNDEF) &&
+        !mettaReturnsInputForExpectedType(inst(selected, it.bnd, atom), expectedType)
+      ) {
+        const callerBnd = it.bnd;
+        const scoped = op === "metta-thread" ? scopeVars(env, callerBnd, prev) : undefined;
+        const project = (answer: MinimalSearchAnswer): Item[] => {
+          if (scoped === undefined) return [finItem(prev, answer.atom, callerBnd)];
+          const items: Item[] = [];
+          for (const m of merge(callerBnd, restrictBnd(env, scoped, answer.bindings)))
+            items.push(finItem(prev, answer.atom, m));
+          return items;
+        };
+        const continuation: MinimalMettaCallContinuation = {
+          operation: op,
+          bnd: callerBnd,
+          schedule: mettaCallSchedule(selected, fuel, st, callerBnd, atom),
+          project,
+          closed: false,
+        };
+        return yield* resumeMinimalMettaCallG(st, continuation, cursor);
+      }
       const [pairs, st2] = yield* mettaEvalExpectedG(
         selected,
         fuel,
@@ -8697,13 +8814,22 @@ function* interpretLoopG(
   // walk are all O(N) structures the fold avoids.
   sink?: (pair: ContextualPair) => void,
   cursor?: CursorMode,
+  // Optional generator consumer: every finished branch is handed to `accept` in production order
+  // with the loop state threaded through, so one alternative can be reduced, emitted, and dropped
+  // before the next is produced. The returned array stays empty. Mutually exclusive with `sink`
+  // and with an answer-mode cursor.
+  accept?: (pair: ContextualPair, state: St) => Gen<St>,
 ): Gen<[ContextualPair[], St]> {
   if (cursor?.kind === "answers" && sink !== undefined)
     throw new Error("a cursor cannot also use an eager result sink");
+  if (accept !== undefined && (sink !== undefined || cursor?.kind === "answers"))
+    throw new Error("a streaming accept consumer cannot combine with a sink or answer cursor");
+  const acceptQueue: ContextualPair[] | undefined = accept === undefined ? undefined : [];
   const done: ContextualPair[] = [];
   const pendingAnswers: ContextualPair[] | undefined = cursor?.kind === "answers" ? [] : undefined;
   const emit = (pair: ContextualPair): void => {
-    if (pendingAnswers !== undefined) pendingAnswers.push(pair);
+    if (acceptQueue !== undefined) acceptQueue.push(pair);
+    else if (pendingAnswers !== undefined) pendingAnswers.push(pair);
     else if (sink !== undefined) sink(pair);
     else done.push(pair);
   };
@@ -8750,7 +8876,12 @@ function* interpretLoopG(
     pendingAnswers.length = 0;
   };
   const pullSourceItem = (): boolean => {
-    while (stack.length === 0 && source !== undefined) {
+    // A queued accepted final pauses source pulling so at most one final waits for its consumer.
+    while (
+      stack.length === 0 &&
+      source !== undefined &&
+      (acceptQueue === undefined || acceptQueue.length === 0)
+    ) {
       const next = source.next();
       if (next.done === true) {
         const prev = suspended.pop();
@@ -8767,18 +8898,27 @@ function* interpretLoopG(
     }
     return stack.length > 0;
   };
+  const drainAccepted = function* (): Gen<void> {
+    while (acceptQueue !== undefined && acceptQueue.length > 0)
+      cur = yield* accept!(acceptQueue.shift()!, cur);
+  };
   let f = fuel;
   const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
   try {
     for (;;) {
       const hasWork = pullSourceItem();
       if (cursorNeedsFlush(0)) yield* flushCursor();
+      if (acceptQueue !== undefined && acceptQueue.length > 0) {
+        yield* drainAccepted();
+        continue;
+      }
       if (!hasWork) break;
       if (f <= 0) {
         for (let i = stack.length - 1; i >= 0; i--) {
           const it = stack[i]!;
           emit(isFinal(it) ? finalPair(env, it) : exhaustedPair(env, it));
         }
+        yield* drainAccepted();
         if (cursorNeedsFlush(0)) yield* flushCursor();
         return [done, cur];
       }
@@ -8859,7 +8999,8 @@ function* interpretLoopG(
             ? { ...raw, evaluationScope }
             : raw;
         if (isFinal(r)) {
-          if (pendingAnswers !== undefined) pendingAnswers.push(finalPair(activeEnv, r));
+          if (acceptQueue !== undefined) acceptQueue.push(finalPair(activeEnv, r));
+          else if (pendingAnswers !== undefined) pendingAnswers.push(finalPair(activeEnv, r));
           else if (sink !== undefined) sink(finalPair(activeEnv, r));
           else done.push(finalPair(activeEnv, r));
         } else more.push(r);
@@ -8873,14 +9014,25 @@ function* interpretLoopG(
     throw error;
   } finally {
     const continuations = new Set<MinimalGroundedV2Continuation>();
-    for (const item of stack) if (item.groundedV2 !== undefined) continuations.add(item.groundedV2);
+    const mettaCalls = new Set<MinimalMettaCallContinuation>();
+    const collectContinuations = (item: Item): void => {
+      if (item.groundedV2 !== undefined) continuations.add(item.groundedV2);
+      if (item.mettaCall !== undefined) mettaCalls.add(item.mettaCall);
+    };
+    for (const item of stack) collectContinuations(item);
     for (const suspendedWork of suspended)
-      for (const item of suspendedWork.stack)
-        if (item.groundedV2 !== undefined) continuations.add(item.groundedV2);
+      for (const item of suspendedWork.stack) collectContinuations(item);
     const cleanupFailures: unknown[] = [];
     for (const continuation of continuations) {
       try {
         yield* closeMinimalGroundedV2G(continuation);
+      } catch (error) {
+        cleanupFailures.push(error);
+      }
+    }
+    for (const mettaCall of mettaCalls) {
+      try {
+        yield* closeMinimalMettaCallG(mettaCall);
       } catch (error) {
         cleanupFailures.push(error);
       }
@@ -8930,17 +9082,21 @@ function* reduceChildrenG(
   const out: Array<[Atom, Bindings]> = [];
   let cur = st;
   for (const p of pairs) {
-    const before = out.length;
     const term = onTerminal(p);
+    let produced: Array<[Atom, Bindings]>;
     if (term !== undefined) {
-      out.push(...term);
+      produced = term;
     } else {
       const selected = refreshEvaluationEnvironment(p[2] ?? env, cur.world);
       const [more, st3] = yield* mettaEvalG(selected, fuel - 1, cur, p[1], p[0], cursor);
       cur = st3;
-      out.push(...more);
+      produced = more;
     }
-    if (emitter !== undefined) cur = yield* emitMettaAnswersG(emitter, out.slice(before), cur);
+    if (emitter?.retainReturnedAnswers !== false) out.push(...produced);
+    if (emitter !== undefined) {
+      cur = yield* emitMettaAnswersG(emitter, produced, cur);
+      if (emitter.retainReturnedAnswers === false) emitter.omittedReturnCount += produced.length;
+    }
   }
   return [out, cur];
 }
@@ -10044,6 +10200,55 @@ function streamCaseSource(
 }
 
 // ---------- mettaEval (type-directed metta-call loop) ----------
+interface RulePairPlan {
+  readonly selected: MinEnv;
+  readonly pb: Bindings;
+  /** Terminal answer pairs when the alternative needs no nested evaluation; undefined otherwise. */
+  readonly final: Array<[Atom, Bindings]> | undefined;
+}
+
+/**
+ * Classify one interpreted-rule alternative. A plain call instead of a generator so the deep
+ * recursion (the eval case delegates into mettaEvalG at each level) holds no extra native frame
+ * per level; both the batch loop and the streaming pass share it.
+ */
+function planRulePair(
+  env: MinEnv,
+  world: World,
+  queryVars: readonly string[],
+  partB: Bindings,
+  wApp: Atom,
+  p: ContextualPair,
+  opReturnsAtom: boolean,
+): RulePairPlan {
+  const selected = refreshEvaluationEnvironment(p[2] ?? env, world);
+  const pb = mergeRestrict(selected, queryVars, partB, p[1]);
+  if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
+    // wApp did not reduce (a constructor application / data term). Cache a ground one so the next visit
+    // short-circuits instead of re-walking it.
+    return { selected, pb, final: [[wApp, partB]] };
+  }
+  if (opReturnsAtom && !isEmbeddedOp(p[0])) return { selected, pb, final: [[p[0], pb]] };
+  if (isErrorAtom(p[0])) {
+    // Error atoms are terminal data in Minimal MeTTa. Re-evaluating one can repeatedly wrap or reproduce
+    // the same host failure instead of publishing it.
+    return { selected, pb, final: [[p[0], pb]] };
+  }
+  return { selected, pb, final: undefined };
+}
+
+/** Map nested evaluation results back through the rule's restricted bindings. */
+function mapReducedRulePairs(
+  plan: RulePairPlan,
+  queryVars: readonly string[],
+  more: ReadonlyArray<readonly [Atom, Bindings]>,
+): Array<[Atom, Bindings]> {
+  return more.map((m): [Atom, Bindings] => [
+    m[0],
+    mergeRestrict(plan.selected, queryVars, plan.pb, m[1]),
+  ]);
+}
+
 function* reduceRulePairsG(
   env: MinEnv,
   fuel: number,
@@ -10064,30 +10269,25 @@ function* reduceRulePairsG(
   try {
     for (let index = 0; index < pairs.length; index += 1) {
       const p = pairs[index]!;
-      const before = out.length;
       let branch = alternatives?.branches[index] ?? cur;
-      const selected = refreshEvaluationEnvironment(p[2] ?? env, branch.world);
-      const pb = mergeRestrict(selected, queryVars, partB, p[1]);
-      if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
-        // wApp did not reduce (a constructor application / data term). Cache a ground one so the next visit
-        // short-circuits instead of re-walking it.
-        out.push([wApp, partB]);
-      } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
-        out.push([p[0], pb]);
-      } else if (isErrorAtom(p[0])) {
-        // Error atoms are terminal data in Minimal MeTTa. Re-evaluating one can repeatedly wrap or reproduce
-        // the same host failure instead of publishing it.
-        out.push([p[0], pb]);
-      } else {
-        const [more, st4] = yield* mettaEvalG(selected, fuel - 1, branch, pb, p[0], cursor);
+      const plan = planRulePair(env, branch.world, queryVars, partB, wApp, p, opReturnsAtom);
+      let produced = plan.final;
+      if (produced === undefined) {
+        const [more, st4] = yield* mettaEvalG(
+          plan.selected,
+          fuel - 1,
+          branch,
+          plan.pb,
+          p[0],
+          cursor,
+        );
         branch = st4;
-        for (const m of more) {
-          out.push([m[0], mergeRestrict(selected, queryVars, pb, m[1])]);
-        }
+        produced = mapReducedRulePairs(plan, queryVars, more);
       }
+      out.push(...produced);
       enforceDistinctLimit(env, out.length);
       if (emitter !== undefined && !distinctGroundEnabled(env))
-        branch = yield* emitMettaAnswersG(emitter, out.slice(before), branch);
+        branch = yield* emitMettaAnswersG(emitter, produced, branch);
       if (isolate) terminals.push(branch);
       else cur = branch;
     }
@@ -10108,6 +10308,119 @@ function* reduceRulePairsG(
         alternatives.parent.world,
         alternatives.branches.map((branch) => branch.world),
       );
+  }
+}
+
+interface StreamedInterpretedPass {
+  /** `single` preserves the caller's one-pair tail-call trampoline; `streamed` already reduced,
+   *  emitted, and (subject to the retention flag) collected every alternative. */
+  readonly kind: "single" | "streamed";
+  readonly pair?: ContextualPair;
+  readonly out: Array<[Atom, Bindings]>;
+  readonly state: St;
+}
+
+/**
+ * Run one interpreted-rule producer pass with streaming reduction. The first finished alternative
+ * is held back so a single-answer chain returns as `single` and keeps the caller's trampoline; a
+ * second alternative starts streaming, reducing and emitting each alternative as it is produced so
+ * a nested consumer can prune the tail and no alternative bag is retained.
+ */
+function* streamedInterpretedPassG(
+  env: MinEnv,
+  fuel: number,
+  start: St,
+  work: Item[],
+  queryVars: readonly string[],
+  partB: Bindings,
+  wApp: Atom,
+  opReturnsAtom: boolean,
+  cursor: CursorMode | undefined,
+  emitter: MettaAnswerEmitter,
+): Gen<StreamedInterpretedPass> {
+  let first: ContextualPair | undefined;
+  let firstState: St | undefined;
+  let streaming = false;
+  let isolation: StreamingIsolatedBranches | undefined;
+  const out: Array<[Atom, Bindings]> = [];
+  let producedCount = 0;
+  const retain = emitter.retainReturnedAnswers;
+  const reduceOne = function* (p: ContextualPair, state: St): Gen<St> {
+    let branch = isolation !== undefined ? allocateStreamingIsolatedBranch(isolation) : state;
+    const plan = planRulePair(env, branch.world, queryVars, partB, wApp, p, opReturnsAtom);
+    let produced = plan.final;
+    if (produced === undefined) {
+      const [more, st4] = yield* mettaEvalG(plan.selected, fuel - 1, branch, plan.pb, p[0], cursor);
+      branch = st4;
+      produced = mapReducedRulePairs(plan, queryVars, more);
+    }
+    producedCount += produced.length;
+    enforceDistinctLimit(env, producedCount);
+    if (retain !== false) out.push(...produced);
+    branch = yield* emitMettaAnswersG(emitter, produced, branch);
+    if (retain === false) emitter.omittedReturnCount += produced.length;
+    if (isolation !== undefined) {
+      recordStreamingIsolatedTerminal(isolation, branch);
+      return isolation.parent;
+    }
+    return branch;
+  };
+  const acceptPair = function* (pair: ContextualPair, state: St): Gen<St> {
+    if (!streaming) {
+      if (first === undefined) {
+        first = pair;
+        firstState = state;
+        return state;
+      }
+      streaming = true;
+      isolation = beginStreamingIsolatedBranches(state, emitter.accept !== undefined);
+      const held = first;
+      first = undefined;
+      state = yield* reduceOne(held, isolation?.parent ?? state);
+    }
+    return yield* reduceOne(pair, state);
+  };
+  try {
+    const [, endState] = yield* interpretLoopG(
+      env,
+      fuel,
+      start,
+      work,
+      undefined,
+      nestedCursorMode(cursor),
+      acceptPair,
+    );
+    if (!streaming)
+      return {
+        kind: "single",
+        ...(first === undefined ? {} : { pair: first }),
+        out,
+        state: endState,
+      };
+    return {
+      kind: "streamed",
+      out,
+      state: isolation !== undefined ? finishStreamingIsolatedBranches(env, isolation) : endState,
+    };
+  } catch (error) {
+    // A producer fault after one held alternative still delivers that alternative first, exactly
+    // as the direct grounded stream does; a consumer-close unwind discards it instead.
+    if (first !== undefined && emitter.lifecycle.unwinding !== true) {
+      const held = first;
+      first = undefined;
+      try {
+        yield* reduceOne(held, firstState!);
+      } catch (flushError) {
+        throw combineInitiatingAndCleanupFailure(
+          error,
+          flushError,
+          "interpreted alternatives and their delivery both failed",
+        );
+      }
+    }
+    throw error;
+  } finally {
+    releaseStreamingIsolatedBranches(isolation);
   }
 }
 
@@ -11449,20 +11762,53 @@ function* mettaEvalUncachedG(
               }
             }
           } else {
-            const [pairs, st3] = yield* interpretLoopG(
-              env,
-              fuel,
-              cur2,
-              [
-                {
-                  stack: admitAtom(makeExpr(env, [sym("eval"), interpretedApplication]), null),
-                  bnd: lbnd,
-                },
-              ],
-              undefined,
-              nestedCursorMode(cursor),
-            );
-            cur2 = st3;
+            const producerWork: Item[] = [
+              {
+                stack: admitAtom(makeExpr(env, [sym("eval"), interpretedApplication]), null),
+                bnd: lbnd,
+              },
+            ];
+            let pairs: ContextualPair[];
+            if (
+              cooperativeSearch &&
+              emitter !== undefined &&
+              !distinctGroundEnabled(env) &&
+              !eligible
+            ) {
+              // Stream rule alternatives through their reduction as they are produced, so a
+              // nested consumer such as `once` can close the tail. A single-answer chain returns
+              // whole and keeps the trampoline below.
+              const pass = yield* streamedInterpretedPassG(
+                env,
+                fuel,
+                cur2,
+                producerWork,
+                queryVars,
+                partB,
+                interpretedApplication,
+                opReturnsAtom,
+                cursor,
+                emitter,
+              );
+              cur2 = pass.state;
+              if (pass.kind === "streamed") {
+                for (const r of pass.out) out.push(r);
+                pairs = [];
+              } else {
+                pairs = pass.pair === undefined ? [] : [pass.pair];
+              }
+            } else {
+              const [batchPairs, st3] = yield* interpretLoopG(
+                env,
+                fuel,
+                cur2,
+                producerWork,
+                undefined,
+                nestedCursorMode(cursor),
+              );
+              cur2 = st3;
+              pairs = batchPairs;
+            }
             // Tail call: one ground call reducing to a single operator-headed continuation, with no branching
             // (one partial, one pair) and no bindings to thread (queryVars empty). Loop on the continuation
             // via reduceTrampoline instead of recursing into mettaEvalG, so the native stack stays flat down a
@@ -11531,15 +11877,86 @@ function* mettaEvalUncachedG(
 
   if (w.kind === "expr" && w.items.length > 0) {
     // expression-headed application
-    const [ruleRes, st1] = yield* interpretLoopG(
-      env,
-      fuel,
-      st,
-      [{ stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd }],
-      undefined,
-      nestedCursorMode(cursor),
-    );
-    const reduced = ruleRes.filter((p) => !atomEq(p[0], w) && !atomEq(p[0], notReducibleA));
+    const ruleWork: Item[] = [{ stack: admitAtom(makeExpr(env, [sym("eval"), w]), null), bnd }];
+    const isDataFinal = (p: ContextualPair): boolean =>
+      atomEq(p[0], w) || atomEq(p[0], notReducibleA);
+    let st1: St;
+    let reduced: ContextualPair[];
+    if (cooperativeSearch && emitter !== undefined && !distinctGroundEnabled(env)) {
+      // Stream expression-headed rule alternatives through their reduction as they are produced,
+      // with the same one-alternative lookahead as the interpreted-application pass: a single
+      // alternative keeps the batch tail, data finals only feed the tuple-fallback decision.
+      let first: ContextualPair | undefined;
+      let firstState: St | undefined;
+      let streaming = false;
+      const out: Array<[Atom, Bindings]> = [];
+      const retain = emitter.retainReturnedAnswers;
+      const reduceOne = function* (p: ContextualPair, state: St): Gen<St> {
+        const selected = refreshEvaluationEnvironment(p[2] ?? env, state.world);
+        const [more, st4] = yield* mettaEvalG(selected, fuel - 1, state, p[1], p[0], cursor);
+        if (retain !== false) out.push(...more);
+        const after = yield* emitMettaAnswersG(emitter, more, st4);
+        if (retain === false) emitter.omittedReturnCount += more.length;
+        return after;
+      };
+      const acceptRule = function* (pair: ContextualPair, state: St): Gen<St> {
+        if (isDataFinal(pair)) return state;
+        if (!streaming) {
+          if (first === undefined) {
+            first = pair;
+            firstState = state;
+            return state;
+          }
+          streaming = true;
+          const held = first;
+          first = undefined;
+          state = yield* reduceOne(held, state);
+        }
+        return yield* reduceOne(pair, state);
+      };
+      try {
+        const [, endState] = yield* interpretLoopG(
+          env,
+          fuel,
+          st,
+          ruleWork,
+          undefined,
+          nestedCursorMode(cursor),
+          acceptRule,
+        );
+        if (streaming) return [out, endState];
+        st1 = endState;
+        reduced = first === undefined ? [] : [first];
+      } catch (error) {
+        // A fault after one held alternative still delivers that alternative first; a
+        // consumer-close unwind discards it instead.
+        if (first !== undefined && emitter.lifecycle.unwinding !== true) {
+          const held = first;
+          first = undefined;
+          try {
+            yield* reduceOne(held, firstState!);
+          } catch (flushError) {
+            throw combineInitiatingAndCleanupFailure(
+              error,
+              flushError,
+              "interpreted alternatives and their delivery both failed",
+            );
+          }
+        }
+        throw error;
+      }
+    } else {
+      const [ruleRes, batchState] = yield* interpretLoopG(
+        env,
+        fuel,
+        st,
+        ruleWork,
+        undefined,
+        nestedCursorMode(cursor),
+      );
+      st1 = batchState;
+      reduced = ruleRes.filter((p) => !isDataFinal(p));
+    }
     if (reduced.length === 0) {
       const tupleWork: Item[] = [
         {

@@ -664,6 +664,38 @@ describe("Grounded V2 streamed answer retention", () => {
     ).resolves.toBe(0);
   });
 
+  it("drops dispatched answers reduced from expression-headed rule alternatives", async () => {
+    const ruleCount = 48;
+    const rules = Array.from(
+      { length: ruleCount },
+      (_, index) => `(= ((mk) $n) (made${index} $n))`,
+    ).join(" ");
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...stdlibAtoms(),
+        ...parseAll(rules, standardTokenizer()).map((parsed) => parsed.atom),
+      ],
+      stdTable(),
+    );
+    const refs: WeakRef<object>[] = [];
+    const cursor = createMettaSearchCursor(env, atom("((mk) (payload seed))"));
+    let pulled = 0;
+    while (pulled < 36) {
+      const event = cursor.next({ maxSteps: 1_000_000 });
+      if (event.kind === "answer") {
+        refs.push(new WeakRef(event.value.atom));
+        pulled += 1;
+        continue;
+      }
+      if (event.kind !== "pending") throw new Error(`unexpected ${event.kind} event`);
+    }
+    await collectSettledGarbage();
+    const survivors = refs.slice(0, 24).filter((ref) => ref.deref() !== undefined).length;
+    expect(survivors).toBe(0);
+    cursor.close();
+  });
+
   it("lets once close an unvisited superpose-wrapped grounded tail", () => {
     const env = runtime();
     let produced = 0;
@@ -702,6 +734,186 @@ describe("Grounded V2 streamed answer retention", () => {
     // instead of enumerating it, and the producer must be closed exactly once.
     expect(produced).toBeLessThan(1_024);
     expect(closed).toBe(1);
+  });
+});
+
+describe("Minimal metta-call streaming", () => {
+  function streamRuntime(total: number, effects = false) {
+    const env = runtime();
+    const counters = { produced: 0, closed: 0 };
+    registerGroundedOperationV2(
+      env,
+      "metta-stream-v2",
+      () => ({
+        tag: "answers",
+        answers: groundedSyncAnswers(
+          (function* (): Generator<GroundedAnswer> {
+            try {
+              for (let index = 0; index < total; index += 1) {
+                counters.produced += 1;
+                yield {
+                  atom: expr([sym("payload"), gint(index)]),
+                  ...(effects
+                    ? {
+                        effects: [
+                          {
+                            kind: "bindToken" as const,
+                            name: `token${index}`,
+                            atom: gint(index),
+                          },
+                        ],
+                      }
+                    : {}),
+                };
+              }
+            } finally {
+              counters.closed += 1;
+            }
+          })(),
+        ),
+      }),
+      effects
+        ? { mode: "sync", effects: { classes: ["atomspace-write"], speculative: true } }
+        : pureSync,
+    );
+    return { env, counters };
+  }
+
+  it("lets once close an unvisited metta-call tail", () => {
+    const { env, counters } = streamRuntime(8_192);
+    const [pairs] = mettaEval(
+      env,
+      10_000_000,
+      initSt(),
+      [],
+      atom("(once (metta (metta-stream-v2) %Undefined% &self))"),
+    );
+    expect(pairs.map(([result]) => format(result))).toEqual(["(payload 0)"]);
+    // One cooperative pull may batch a few answers, but the tail must be pruned, not drained.
+    expect(counters.produced).toBeLessThan(64);
+    expect(counters.closed).toBe(1);
+  });
+
+  function mettaParityRuntime(total: number) {
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...stdlibAtoms(),
+        ...parseAll("(= (choice) 1) (= (choice) 2)", standardTokenizer()).map(
+          (parsed) => parsed.atom,
+        ),
+      ],
+      stdTable(),
+    );
+    registerGroundedOperationV2(
+      env,
+      "metta-stream-v2",
+      () => ({
+        tag: "answers",
+        answers: groundedSyncAnswers(
+          (function* (): Generator<GroundedAnswer> {
+            for (let index = 0; index < total; index += 1)
+              yield { atom: expr([sym("payload"), gint(index)]) };
+          })(),
+        ),
+      }),
+      pureSync,
+    );
+    return env;
+  }
+
+  it.each([
+    ["(metta (metta-stream-v2) %Undefined% &self)"],
+    ["(metta (choice) %Undefined% &self)"],
+    ["(metta-thread (metta-stream-v2) %Undefined% &self)"],
+    ["(capture (metta-stream-v2))"],
+    ["(metta (unbound-head 1) %Undefined% &self)"],
+    ["(metta $free %Undefined% &self)"],
+  ])("streams %s with the same answers as eager evaluation", (source) => {
+    const [eager] = mettaEval(mettaParityRuntime(6), 10_000_000, initSt(), [], atom(source));
+    const cursor = createMettaSearchCursor(mettaParityRuntime(6), atom(source));
+    const streamed: string[] = [];
+    for (;;) {
+      const event = cursor.next({ maxSteps: 1_000_000 });
+      if (event.kind === "answer") {
+        streamed.push(format(event.value.atom));
+        continue;
+      }
+      if (event.kind === "exhausted") break;
+      if (event.kind !== "pending") throw new Error(`unexpected ${event.kind} event`);
+    }
+    cursor.close();
+    expect(streamed).toEqual(eager.map(([result]) => format(result)));
+  });
+
+  it("commits per-answer metta-call effects to the same final world as eager evaluation", () => {
+    const { env: eagerEnv } = streamRuntime(5, true);
+    const [eagerPairs, eagerState] = mettaEval(
+      eagerEnv,
+      10_000_000,
+      initSt(),
+      [],
+      atom("(metta (metta-stream-v2) %Undefined% &self)"),
+    );
+    expect(eagerPairs).toHaveLength(5);
+
+    const { env: streamedEnv } = streamRuntime(5, true);
+    const cursor = createMettaSearchCursor(
+      streamedEnv,
+      atom("(metta (metta-stream-v2) %Undefined% &self)"),
+    );
+    let answers = 0;
+    let terminal: ReturnType<typeof initSt> | undefined;
+    for (;;) {
+      const event = cursor.next({ maxSteps: 1_000_000 });
+      if (event.kind === "answer") {
+        answers += 1;
+        continue;
+      }
+      if (event.kind === "exhausted") {
+        terminal = event.terminal;
+        break;
+      }
+      if (event.kind !== "pending") throw new Error(`unexpected ${event.kind} event`);
+    }
+    cursor.close();
+    expect(answers).toBe(5);
+    for (let index = 0; index < 5; index += 1) {
+      expect(terminal!.world.tokens.get(`token${index}`)).toEqual(
+        eagerState.world.tokens.get(`token${index}`),
+      );
+    }
+  });
+
+  it("propagates a late metta-call producer fault as a typed grounded fault", () => {
+    const env = runtime();
+    registerGroundedOperationV2(
+      env,
+      "late-metta-fault-v2",
+      () => ({
+        tag: "answers",
+        answers: groundedSyncAnswers(
+          (function* (): Generator<GroundedAnswer> {
+            yield { atom: sym("first") };
+            throw new Error("late metta failure");
+          })(),
+        ),
+      }),
+      pureSync,
+    );
+    const cursor = createMettaSearchCursor(
+      env,
+      atom("(metta (late-metta-fault-v2) %Undefined% &self)"),
+    );
+    const first = cursor.next({ maxSteps: 1_000_000 });
+    expect(first).toMatchObject({ kind: "answer" });
+    let event = cursor.next({ maxSteps: 1_000_000 });
+    while (event.kind === "pending") event = cursor.next({ maxSteps: 1_000_000 });
+    expect(event).toMatchObject({
+      kind: "fault",
+      error: expect.objectContaining({ kind: "infrastructure-fault", phase: "grounded-next" }),
+    });
+    cursor.close();
   });
 });
 
