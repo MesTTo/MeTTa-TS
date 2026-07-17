@@ -27,12 +27,33 @@ class MeTTa {
   getAtomTypes(atom: Atom): Atom[];                              // inferred types of an atom
   registerOperation(name: string, op: (args: Atom[]) => Atom[]): void;
   registerAsyncOperation(name: string, op: (args: Atom[]) => Promise<Atom[]>): void;
+  registerStreamingOperation(
+    name: string,
+    op: (args: Atom[], signal: AbortSignal) => Iterable<StreamingProduced>,
+    options?: StreamingOperationOptions,
+  ): void;                                                       // pull-based: `once` stops the producer
+  registerAsyncStreamingOperation(
+    name: string,
+    op: (args: Atom[], signal: AbortSignal) => AsyncIterable<StreamingProduced>,
+    options?: StreamingOperationOptions,
+  ): void;
   registerToken(regex: RegExp, constr: (token: string) => Atom): void;
   registerAtom(name: string, atom: Atom): void;                 // bind a token to a fixed atom
 }
+
+type StreamingProduced = Atom | StreamingAnswer;
+interface StreamingAnswer {
+  atom: Atom;
+  bindings?: Record<string, Atom>;   // values for variables in the call's arguments, by name
+  effects?: readonly AsyncOperationEffect[];
+}
+interface StreamingOperationOptions {
+  effects?: readonly EffectClass[];  // default ["atomspace-write"]
+  speculative?: boolean;             // default true
+}
 ```
 
-`run` extends the knowledge base with non-bang atoms and evaluates each `!`-query. `space()` is live: atoms added through it are visible to the evaluator. A grounded operation registered with `registerOperation` that throws produces a MeTTa `(Error ...)` atom; throw `IncorrectArgumentError` instead to leave the call unevaluated so other rules can match.
+`run` extends the knowledge base with non-bang atoms and evaluates each `!`-query. `space()` is live: atoms added through it are visible to the evaluator. A grounded operation registered with `registerOperation` that throws produces a MeTTa `(Error ...)` atom; throw `IncorrectArgumentError` instead to leave the call unevaluated so other rules can match. A streaming operation is pulled one answer at a time: an early-stopping consumer such as `once` closes the tail, a per-answer `bindings` record binds caller variables for that alternative, and per-answer `effects` apply only on that alternative's branch.
 
 ```ts
 class IncorrectArgumentError extends Error {}

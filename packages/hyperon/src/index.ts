@@ -42,6 +42,9 @@ export {
   type AsyncOperationEffect,
   type AsyncOperationResult,
   type AsyncOperationReturn,
+  type StreamingAnswer,
+  type StreamingOperationOptions,
+  type StreamingProduced,
 } from "./base";
 export { registerJsonModule, SpaceValue } from "./modules/json";
 export { registerCatalogModule, ModuleCatalog } from "./modules/catalog";

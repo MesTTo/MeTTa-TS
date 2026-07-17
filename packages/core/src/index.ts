@@ -24,6 +24,20 @@ export * from "./eval";
 export * from "./effect-journal";
 export * from "./search-cursor";
 export * from "./grounded-v2";
+export {
+  BindingFrame,
+  bindingFrameFromLegacy,
+  bindingFrameToLegacy,
+  emptyBindingFrame,
+  frameDeltaView,
+  frameTouchedSince,
+  type BindingClassSnapshot,
+  type BindingFrameFault,
+  type BindingFrameFaultCode,
+  type BindingFrameResult,
+  type FrameDeltaView,
+  type FrameVariable,
+} from "./binding-frame";
 export * from "./runner";
 export * from "./host";
 export * from "./extensions";

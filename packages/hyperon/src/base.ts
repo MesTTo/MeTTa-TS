@@ -50,6 +50,116 @@ function installBuiltinImports(env: core.MinEnv): void {
   for (const [name, atoms] of core.withBuiltinModules()) env.imports.set(name, atoms);
 }
 
+/** One answer of a streaming grounded operation: an atom alone, or an atom with values for
+ *  variables that appear in the call's arguments and effects to apply when the answer is
+ *  accepted. */
+export interface StreamingAnswer {
+  readonly atom: Atom;
+  readonly bindings?: Readonly<Record<string, Atom>>;
+  readonly effects?: readonly AsyncOperationEffect[];
+}
+
+export type StreamingProduced = Atom | StreamingAnswer;
+
+export interface StreamingOperationOptions {
+  /** Effect classes the operation may use (default `["atomspace-write"]`). */
+  readonly effects?: readonly core.EffectClass[];
+  /** Whether answers may be produced speculatively and pruned (default true). */
+  readonly speculative?: boolean;
+}
+
+function streamingRegistrationOptions(
+  mode: "sync" | "async",
+  options: StreamingOperationOptions | undefined,
+): {
+  mode: "sync" | "async";
+  effects: { classes: readonly core.EffectClass[]; speculative: boolean };
+} {
+  return {
+    mode,
+    effects: {
+      classes: options?.effects ?? ["atomspace-write"],
+      speculative: options?.speculative ?? true,
+    },
+  };
+}
+
+// A produced answer that cannot become a grounded answer (unknown binding name, bind conflict).
+class StreamAnswerError extends Error {}
+
+function streamCallAtom(name: string, context: core.GroundedCallContextV2): core.Atom {
+  return core.expr([core.sym(name), ...context.originalArgs]);
+}
+
+function streamFailureAtom(
+  name: string,
+  context: core.GroundedCallContextV2,
+  error: unknown,
+): core.Atom {
+  const message = error instanceof Error ? error.message : String(error);
+  return core.expr([core.sym("Error"), streamCallAtom(name, context), core.sym(message)]);
+}
+
+function streamingStartFailure(
+  name: string,
+  context: core.GroundedCallContextV2,
+  error: unknown,
+): core.GroundedStart {
+  if (error instanceof IncorrectArgumentError) return { tag: "stuck" };
+  return { tag: "language-error", error: streamFailureAtom(name, context, error) };
+}
+
+function producedGroundedAnswer(
+  name: string,
+  produced: StreamingProduced,
+  context: core.GroundedCallContextV2,
+): core.GroundedAnswer {
+  if (produced instanceof Atom) return { atom: produced.catom };
+  const effects = produced.effects?.map(asyncOperationEffectToReduceEffect);
+  let bindingDelta: core.BindingFrame | undefined;
+  if (produced.bindings !== undefined) {
+    let frame = context.bindings;
+    for (const [key, value] of Object.entries(produced.bindings)) {
+      const variable = context.visibleVariables.find((v) => v.name === key);
+      if (variable === undefined)
+        throw new StreamAnswerError(`${name}: no argument variable named $${key}`);
+      const bound = frame.bind(variable, value.catom);
+      if (!bound.ok) throw new StreamAnswerError(`${name}: $${key}: ${bound.fault.message}`);
+      frame = bound.value;
+    }
+    bindingDelta = frame;
+  }
+  return {
+    atom: produced.atom.catom,
+    ...(bindingDelta === undefined ? {} : { bindingDelta }),
+    ...(effects === undefined ? {} : { effects }),
+  };
+}
+
+function* streamedGroundedAnswers(
+  name: string,
+  source: Iterable<StreamingProduced>,
+  context: core.GroundedCallContextV2,
+): Generator<core.GroundedAnswer> {
+  try {
+    for (const produced of source) yield producedGroundedAnswer(name, produced, context);
+  } catch (error) {
+    yield { atom: streamFailureAtom(name, context, error) };
+  }
+}
+
+async function* streamedGroundedAnswersAsync(
+  name: string,
+  source: AsyncIterable<StreamingProduced>,
+  context: core.GroundedCallContextV2,
+): AsyncGenerator<core.GroundedAnswer> {
+  try {
+    for await (const produced of source) yield producedGroundedAnswer(name, produced, context);
+  } catch (error) {
+    yield { atom: streamFailureAtom(name, context, error) };
+  }
+}
+
 /** A reference to a Space: a store of atoms that can be added to, queried, and substituted over. */
 export class SpaceRef {
   constructor(readonly space: core.Space) {}
@@ -271,6 +381,67 @@ export class MeTTa {
         return { tag: "runtimeError", msg: e instanceof Error ? e.message : String(e) };
       }
     });
+  }
+
+  /** Register a streaming grounded operation callable from MeTTa source by `name`. The function
+   *  receives argument atoms and returns an iterable (typically a generator) of answers; the
+   *  evaluator pulls one answer at a time, so a consumer such as `once` stops the producer instead
+   *  of draining it. Each answer is an atom, or `{ atom, bindings?, effects? }` where `bindings`
+   *  gives values for variables that appear in the call's arguments (keyed by variable name, no
+   *  `$`) and `effects` are applied when that answer is accepted. A throw before the first answer
+   *  becomes a MeTTa `(Error ...)` result; {@link IncorrectArgumentError} leaves the expression
+   *  unevaluated for other rules. A throw or invalid answer mid-stream ends the stream with an
+   *  `(Error ...)` answer after the answers already produced. */
+  registerStreamingOperation(
+    name: string,
+    op: (args: Atom[], signal: AbortSignal) => Iterable<StreamingProduced>,
+    options?: StreamingOperationOptions,
+  ): void {
+    core.registerGroundedOperationV2(
+      this.env,
+      name,
+      (args, context) => {
+        let source: Iterable<StreamingProduced>;
+        try {
+          source = op(args.map(Atom.fromCAtom), context.signal);
+        } catch (e) {
+          return streamingStartFailure(name, context, e);
+        }
+        return {
+          tag: "answers",
+          answers: core.groundedSyncAnswers(streamedGroundedAnswers(name, source, context)),
+        };
+      },
+      streamingRegistrationOptions("sync", options),
+    );
+  }
+
+  /** Asynchronous twin of {@link registerStreamingOperation}: the function returns an async
+   *  iterable (typically an async generator), pulled one answer at a time by the async runner.
+   *  Closing the tail (for example under `once`) stops the producer; `signal` aborts when the
+   *  evaluation is cancelled. */
+  registerAsyncStreamingOperation(
+    name: string,
+    op: (args: Atom[], signal: AbortSignal) => AsyncIterable<StreamingProduced>,
+    options?: StreamingOperationOptions,
+  ): void {
+    core.registerGroundedOperationV2(
+      this.env,
+      name,
+      (args, context) => {
+        let source: AsyncIterable<StreamingProduced>;
+        try {
+          source = op(args.map(Atom.fromCAtom), context.signal);
+        } catch (e) {
+          return streamingStartFailure(name, context, e);
+        }
+        return {
+          tag: "answers",
+          answers: core.groundedAsyncAnswers(streamedGroundedAnswersAsync(name, source, context)),
+        };
+      },
+      streamingRegistrationOptions("async", options),
+    );
   }
 
   /** Parse every top-level atom of a program. */
