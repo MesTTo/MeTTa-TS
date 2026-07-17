@@ -20,6 +20,7 @@ import { expr, format, gint, gstr, sym } from "./index";
 import {
   branchRuntimeSnapshot,
   buildEnv,
+  createMettaAsyncSearchCursor,
   createMettaSearchCursor,
   groundedHostImportV2,
   initSt,
@@ -1261,6 +1262,69 @@ describe("Grounded V2 streamed tuple parity", () => {
       { numRuns: 60 },
     );
   }, 60_000);
+
+  // The async side of the same parity: an async V2 producer drained through the async cursor
+  // must produce the bag the eager sync evaluation produces from a sync producer.
+  function tupleRuntimeAsync() {
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...stdlibAtoms(),
+        ...parseAll(
+          "(= (choice) 1) (= (choice) 2) (= (bindq 7) marked) (= (boom) (Error boom bad))",
+          standardTokenizer(),
+        ).map((parsed) => parsed.atom),
+      ],
+      stdTable(),
+    );
+    registerGroundedOperationV2(
+      env,
+      "gen3-v2",
+      () => ({
+        tag: "answers",
+        answers: groundedAsyncAnswers(
+          (async function* (): AsyncGenerator<GroundedAnswer> {
+            for (const name of ["ga", "gb", "gc"]) {
+              await Promise.resolve();
+              yield { atom: sym(name) };
+            }
+          })(),
+        ),
+      }),
+      { mode: "async", effects: { classes: ["pure"], speculative: true } },
+    );
+    return env;
+  }
+
+  async function drainAsyncCursor(
+    env: ReturnType<typeof runtime>,
+    source: string,
+  ): Promise<string[]> {
+    const cursor = createMettaAsyncSearchCursor(env, atom(source));
+    const answers: string[] = [];
+    for (;;) {
+      const event = await cursor.next({ maxSteps: 1_000_000 });
+      if (event.kind === "answer") {
+        answers.push(format(event.value.atom));
+        continue;
+      }
+      if (event.kind === "exhausted") break;
+      if (event.kind === "cancelled" || event.kind === "fault")
+        throw new Error(`unexpected ${event.kind} event`);
+    }
+    await cursor.close();
+    return answers;
+  }
+
+  it.each(TUPLE_SHAPES)(
+    "streams %s from an async producer with the same answers as eager evaluation",
+    async (source) => {
+      const eagerEnv = tupleRuntime();
+      const [eager] = mettaEval(eagerEnv, 1_000_000, initSt(), [], atom(source));
+      const streamed = await drainAsyncCursor(tupleRuntimeAsync(), source);
+      expect(streamed).toEqual(eager.map(([result]) => format(result)));
+    },
+  );
 });
 
 describe("Grounded V2 randomized delta equivalence", () => {
