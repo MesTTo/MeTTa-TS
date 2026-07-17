@@ -30,7 +30,7 @@ A prerelease line ships ahead of stable on the `experimental` npm dist-tag, with
 npm install @metta-ts/core@experimental
 ```
 
-A plain `npm install @metta-ts/core` stays on the stable `latest` tag. The experimental surface may still change before it reaches a stable release.
+A plain `npm install @metta-ts/core` stays on the stable `latest` tag. The experimental surface may still change before it reaches a stable release. See [Experimental features](/guide/experimental) for what the channel contains and how to use it.
 
 ## Your first program
 
