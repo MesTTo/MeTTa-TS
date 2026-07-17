@@ -12,7 +12,7 @@ import {
   isContextIndependentGroundedOp,
   type ReduceResult,
 } from "../builtins";
-import { DEFAULT_RUNTIME_CAPABILITIES, rootEvaluationEnvironment } from "../eval/env";
+import { DEFAULT_RUNTIME_CAPABILITIES, rootEvaluationEnvironment } from "./env";
 import {
   type AsyncGroundFn,
   AsyncInSyncError,
@@ -24,14 +24,14 @@ import {
   type St,
   type TypeView,
   type World,
-} from "../eval/machine";
-import { typeViewFor } from "../eval/typeops";
+} from "./machine";
+import { typeViewFor } from "./typeops";
 import {
   type CandidateSource,
   checkWorldDeadline,
   groundedContextIdentity,
   worldRuntimeContext,
-} from "../eval/world";
+} from "./world";
 import {
   finishGeneratorAsync as finishDrivenGeneratorAsync,
   GeneratorUnwindFailures,

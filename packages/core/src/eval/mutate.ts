@@ -30,7 +30,7 @@ import {
   normalizedGroundedEffectPolicy,
   pinnedProgramEnvironments,
   rootEvaluationEnvironment,
-} from "../eval/env";
+} from "./env";
 import {
   exactCandidateSource,
   type Gen,
@@ -38,7 +38,7 @@ import {
   groundedCallContextWithSignal,
   isPromiseLike,
   pendingAsyncOpBox,
-} from "../eval/geneval";
+} from "./geneval";
 import {
   type AsyncGroundFn,
   AsyncInSyncError,
@@ -52,7 +52,7 @@ import {
   type StreamingIsolatedBranches,
   type World,
   type WorldMutation,
-} from "../eval/machine";
+} from "./machine";
 import {
   appendSpace,
   applyAtomDelta,
@@ -65,8 +65,8 @@ import {
   multisetDelta,
   releaseChildWorldRuntimes,
   type WorldDelta,
-} from "../eval/par";
-import { collectGroundedV2LegacyG, makeExpr, resolveStates } from "../eval/query";
+} from "./par";
+import { collectGroundedV2LegacyG, makeExpr, resolveStates } from "./query";
 import {
   addStaticRemoval,
   disableTabling,
@@ -75,9 +75,9 @@ import {
   runtimeAtoms,
   selfAtoms,
   staticRemovalState,
-} from "../eval/specializer";
-import { headKey, opOf } from "../eval/terms";
-import { buildWorldTypeView, selectPinnedProgramEnvironment } from "../eval/typeops";
+} from "./specializer";
+import { headKey, opOf } from "./terms";
+import { buildWorldTypeView, selectPinnedProgramEnvironment } from "./typeops";
 import {
   acquirePinnedProgram,
   type CandidateSource,
@@ -96,7 +96,7 @@ import {
   retireCachedProgramSnapshot,
   worldRuntimeContext,
   worldRuntimeContexts,
-} from "../eval/world";
+} from "./world";
 import { FlatAtomSpace } from "../flat-atomspace";
 import {
   type GroundedOperationV2,

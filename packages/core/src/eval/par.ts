@@ -17,17 +17,17 @@ import {
 } from "../atom";
 import { emptyLog, logAppendAll, logFromArray, logSize, logToArray } from "../atomlog";
 import { type GroundedModuleInstallation } from "../builtins";
-import { evaluationCacheEnvironment } from "../eval/env";
+import { evaluationCacheEnvironment } from "./env";
 import {
   type JournalWorldDelta,
   type MinEnv,
   type St,
   type World,
   type WorldMutation,
-} from "../eval/machine";
-import { parsedStateId, type StateCellId } from "../eval/query";
-import { disableTabling, runtimeAtoms } from "../eval/specializer";
-import { headKey, opOf } from "../eval/terms";
+} from "./machine";
+import { parsedStateId, type StateCellId } from "./query";
+import { disableTabling, runtimeAtoms } from "./specializer";
+import { headKey, opOf } from "./terms";
 import {
   inheritWorldRuntime,
   isTypeDeclaration,
@@ -39,7 +39,7 @@ import {
   resolveTok,
   worldRuntimeContext,
   worldRuntimeContexts,
-} from "../eval/world";
+} from "./world";
 import { FlatAtomSpace } from "../flat-atomspace";
 import { format } from "../parser";
 import { forkMap } from "../persistent-collection";

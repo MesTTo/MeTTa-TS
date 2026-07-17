@@ -23,7 +23,7 @@ import {
   programIdentityEnvironment,
   pushUniqueType,
   rootEvaluationEnvironment,
-} from "../eval/env";
+} from "./env";
 import {
   type AsyncGroundFn,
   type BranchEffectPayload,
@@ -38,8 +38,8 @@ import {
   type TypeView,
   type World,
   type WorldMutation,
-} from "../eval/machine";
-import { opOf } from "../eval/terms";
+} from "./machine";
+import { opOf } from "./terms";
 import { ForkableMap, ForkableSet, forkMap, forkSet } from "../persistent-collection";
 import {
   type CancellationReason,

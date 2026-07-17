@@ -42,7 +42,7 @@ import {
   stoppedMinimalCursorEvent,
   takeDeliveryCursorSteps,
   terminalCursorAnswer,
-} from "../eval/cursors";
+} from "./cursors";
 import {
   type ContextualPair,
   type CursorEvalRes,
@@ -58,7 +58,7 @@ import {
   NEVER_ABORTED_SIGNAL,
   recordCursorSteps,
   runGenAsync,
-} from "../eval/geneval";
+} from "./geneval";
 import {
   driverEffect,
   DualModeSearchCursor,
@@ -72,14 +72,14 @@ import {
   type St,
   type Stack,
   type World,
-} from "../eval/machine";
-import { checkApplication, errAtom, hasRuleFor } from "../eval/matchops";
+} from "./machine";
+import { checkApplication, errAtom, hasRuleFor } from "./matchops";
 import {
   applyReduceEffects,
   finishStreamingIsolatedBranches,
   mergeScheduledStates,
-} from "../eval/mutate";
-import { subTokens } from "../eval/par";
+} from "./mutate";
+import { subTokens } from "./par";
 import {
   checkedGroundedLanguageError,
   checkGroundedEffectsScope,
@@ -100,11 +100,11 @@ import {
   resolveStates,
   type SchedulerUnwindFailure,
   startGroundedV2G,
-} from "../eval/query";
-import { enforceDistinctLimit } from "../eval/tabling";
-import { argMask, evalResult, finItem, isEmbeddedOp, queryVarsOf } from "../eval/terms";
-import { isNormalForm, refreshEvaluationEnvironment, typeViewFor } from "../eval/typeops";
-import { cancelWorldRuntime, consumeWorldResource, releaseWorldRuntime } from "../eval/world";
+} from "./query";
+import { enforceDistinctLimit } from "./tabling";
+import { argMask, evalResult, finItem, isEmbeddedOp, queryVarsOf } from "./terms";
+import { isNormalForm, refreshEvaluationEnvironment, typeViewFor } from "./typeops";
+import { cancelWorldRuntime, consumeWorldResource, releaseWorldRuntime } from "./world";
 import { ExclusiveAsyncScope, GeneratorUnwindFailures } from "../generator-lifecycle";
 import { type GroundedAnswerCursor, type GroundedOperationV2Registration } from "../grounded-v2";
 import { type CancellationReason } from "../resources";

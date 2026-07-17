@@ -18,7 +18,7 @@ import {
   type St,
   type Stack,
   type World,
-} from "../eval/machine";
+} from "./machine";
 import { tryFormatTransportAtom } from "../standard-syntax";
 import { uniqueVariablesInAtoms } from "../variable-scope";
 import { isWorkerReplaySafeAtom } from "../worker-replay";

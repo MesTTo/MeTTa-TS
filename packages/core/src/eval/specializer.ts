@@ -19,10 +19,10 @@ import {
   nestedArgHead,
   pushTo,
   pushUniqueType,
-} from "../eval/env";
-import { type MinEnv, type World } from "../eval/machine";
-import { headKey, opOf } from "../eval/terms";
-import { namedSpaceAtoms, retireCachedProgramSnapshot } from "../eval/world";
+} from "./env";
+import { type MinEnv, type World } from "./machine";
+import { headKey, opOf } from "./terms";
+import { namedSpaceAtoms, retireCachedProgramSnapshot } from "./world";
 import { ForkableSet, forkSet } from "../persistent-collection";
 import { isVariableHeadedPattern } from "../reduction-dependency";
 import {

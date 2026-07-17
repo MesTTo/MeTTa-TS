@@ -17,16 +17,16 @@ import {
   pushUniqueType,
   rootContextEnvironments,
   rootEvaluationEnvironment,
-} from "../eval/env";
-import { inst, type MinEnv, type TypeView, type World } from "../eval/machine";
+} from "./env";
+import { inst, type MinEnv, type TypeView, type World } from "./machine";
 import {
   addAtomToEnv,
   buildEnv,
   hasVisibleStaticRuleHead,
   runtimeAtoms,
   visibleStaticRulesForHead,
-} from "../eval/specializer";
-import { headKey, lowerFunctionHead, opOf } from "../eval/terms";
+} from "./specializer";
+import { headKey, lowerFunctionHead, opOf } from "./terms";
 import {
   copyEvaluationContext,
   installTypeDeclaration,
@@ -34,7 +34,7 @@ import {
   namedSpaceAtoms,
   resolveTok,
   UNDEF,
-} from "../eval/world";
+} from "./world";
 import { matchAtoms, merge } from "../match";
 import { collectionRevision } from "../revision-collection";
 import { IMPURE_OPS } from "../tabling";

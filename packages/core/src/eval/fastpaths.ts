@@ -6,25 +6,21 @@ import { type Atom, atomEq, emptyExpr, expr, type ExprAtom, gint, sym, variable 
 import { emptyLog, idxCount, logGroundIdx, logNonGround, logSize } from "../atomlog";
 import { type Bindings, emptyBindings, hasLoop } from "../bindings";
 import { runDistinctChoicePlanBound } from "../choice-plan";
-import { evaluationCacheEnvironment } from "../eval/env";
-import { inst, type MinEnv, type St, type World } from "../eval/machine";
-import { choicePlanApplication, matchFromEmptyCollapseCheck } from "../eval/matchops";
-import { appendSpace, subTokens } from "../eval/par";
-import { candidatesW, resolveStates } from "../eval/query";
-import {
-  disableTabling,
-  staticRulesChangedFor,
-  visibleStaticRulesForHead,
-} from "../eval/specializer";
+import { evaluationCacheEnvironment } from "./env";
+import { inst, type MinEnv, type St, type World } from "./machine";
+import { choicePlanApplication, matchFromEmptyCollapseCheck } from "./matchops";
+import { appendSpace, subTokens } from "./par";
+import { candidatesW, resolveStates } from "./query";
+import { disableTabling, staticRulesChangedFor, visibleStaticRulesForHead } from "./specializer";
 import {
   canRunChoicePlan,
   choicePlanConstructor,
   choicePlanDataExpression,
   isClosedChoiceValue,
-} from "../eval/tabling";
-import { opOf } from "../eval/terms";
-import { typeViewFor } from "../eval/typeops";
-import { contextualSpaceName } from "../eval/world";
+} from "./tabling";
+import { opOf } from "./terms";
+import { typeViewFor } from "./typeops";
+import { contextualSpaceName } from "./world";
 import { matchAtoms } from "../match";
 import { addInt, type IntVal, subInt } from "../number";
 

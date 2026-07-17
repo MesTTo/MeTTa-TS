@@ -16,19 +16,19 @@ import { ExactAtomSet } from "../atom-set";
 import { type BindingRel, type Bindings, fromRelations, makeValRel } from "../bindings";
 import { isTableSafeGroundedOp } from "../builtins";
 import { readEnv } from "../env";
-import { runtimeModedPureCache, runtimePureCache, runtimeTableWorthCache } from "../eval/env";
-import { type MinEnv, type St, type World } from "../eval/machine";
-import { checkedCounterAdvance } from "../eval/par";
+import { runtimeModedPureCache, runtimePureCache, runtimeTableWorthCache } from "./env";
+import { type MinEnv, type St, type World } from "./machine";
+import { checkedCounterAdvance } from "./par";
 import {
   branchVariableNamespace,
   candidatesW,
   canMatchShallow,
   groundedEffectPolicy,
-} from "../eval/query";
-import { staticRulesChangedFor, staticRuleSetChanged } from "../eval/specializer";
-import { opOf } from "../eval/terms";
-import { isDefinedHead, typeViewFor } from "../eval/typeops";
-import { UNDEF } from "../eval/world";
+} from "./query";
+import { staticRulesChangedFor, staticRuleSetChanged } from "./specializer";
+import { opOf } from "./terms";
+import { isDefinedHead, typeViewFor } from "./typeops";
+import { UNDEF } from "./world";
 import { instantiate } from "../instantiate";
 import {
   containsOpaqueApplication,

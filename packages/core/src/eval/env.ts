@@ -18,8 +18,8 @@ import {
   type MinEnv,
   type NamedSpace,
   type StaticNestedMatchIndex,
-} from "../eval/machine";
-import { opOf } from "../eval/terms";
+} from "./machine";
+import { opOf } from "./terms";
 import {
   type GroundedOperationV2,
   type GroundedOperationV2Options,

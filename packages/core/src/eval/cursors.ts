@@ -27,7 +27,7 @@ import {
   pendingAsyncOpBox,
   runGenSync,
   takeCursorSteps,
-} from "../eval/geneval";
+} from "./geneval";
 import {
   AsyncInSyncError,
   DualModeSearchCursor,
@@ -38,10 +38,10 @@ import {
   type St,
   type StreamingIsolatedBranches,
   type World,
-} from "../eval/machine";
-import { captureWorldDelta, releaseChildWorldRuntimes } from "../eval/par";
-import { makeExpr } from "../eval/query";
-import { isNormalForm, refreshEvaluationEnvironment } from "../eval/typeops";
+} from "./machine";
+import { captureWorldDelta, releaseChildWorldRuntimes } from "./par";
+import { makeExpr } from "./query";
+import { isNormalForm, refreshEvaluationEnvironment } from "./typeops";
 import {
   cancelWorldRuntime,
   cloneWorld,
@@ -54,7 +54,7 @@ import {
   releaseWorldRuntime,
   worldRuntimeContext,
   worldRuntimeContexts,
-} from "../eval/world";
+} from "./world";
 import {
   closeGeneratorAsync as closeDrivenGeneratorAsync,
   closeGeneratorSync as closeDrivenGeneratorSync,

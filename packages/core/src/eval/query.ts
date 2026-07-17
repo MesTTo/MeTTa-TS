@@ -35,7 +35,7 @@ import { isContextIndependentGroundedOp, type ReduceEffect, type ReduceResult } 
 import { combineInitiatingAndCleanupFailure } from "../cleanup-fault";
 import { type EffectClass } from "../effect-journal";
 import { infrastructureFaultFromUnknown, type InfrastructureFaultOutcome } from "../eval-outcome";
-import { isNamedEvaluationEnvironment } from "../eval/env";
+import { isNamedEvaluationEnvironment } from "./env";
 import {
   type CursorMode,
   type Gen,
@@ -44,7 +44,7 @@ import {
   isPromiseLike,
   NEVER_ABORTED_SIGNAL,
   pendingAsyncOpBox,
-} from "../eval/geneval";
+} from "./geneval";
 import {
   type ActiveGroundedV2Call,
   AsyncInSyncError,
@@ -56,16 +56,16 @@ import {
   type St,
   type Stack,
   type World,
-} from "../eval/machine";
-import { candidates, visibleStaticRules } from "../eval/specializer";
-import { evalResult, finItem, headKey, opOf } from "../eval/terms";
+} from "./machine";
+import { candidates, visibleStaticRules } from "./specializer";
+import { evalResult, finItem, headKey, opOf } from "./terms";
 import {
   checkWorldCancellation,
   checkWorldDeadline,
   consumeWorldResource,
   recordOperationEffect,
   worldRuntimeContext,
-} from "../eval/world";
+} from "./world";
 import {
   type GroundedAnswer,
   type GroundedAnswerCursor,

@@ -28,12 +28,8 @@ import {
 import { isSingleResultGroundedOp, isTableSafeGroundedOp } from "../builtins";
 import { type CompiledImpureOps } from "../compile";
 import { readEnv } from "../env";
-import { argKey, KEY_SEP, nestedArgHead, orderedIndexedAtoms } from "../eval/env";
-import {
-  candidateCounterPadding,
-  type ContextualPair,
-  syntheticCandidateSource,
-} from "../eval/geneval";
+import { argKey, KEY_SEP, nestedArgHead, orderedIndexedAtoms } from "./env";
+import { candidateCounterPadding, type ContextualPair, syntheticCandidateSource } from "./geneval";
 import {
   inst,
   type Item,
@@ -42,9 +38,9 @@ import {
   type Stack,
   type TypeView,
   type World,
-} from "../eval/machine";
-import { compiledAddAtom, compiledAddIfAbsent, namedSpaceCandidateGetter } from "../eval/mutate";
-import { freshenRule, mutexKey, subTokens, typePrep } from "../eval/par";
+} from "./machine";
+import { compiledAddAtom, compiledAddIfAbsent, namedSpaceCandidateGetter } from "./mutate";
+import { freshenRule, mutexKey, subTokens, typePrep } from "./par";
 import {
   branchVariableNamespace,
   candidatesW,
@@ -56,14 +52,14 @@ import {
   resolveStates,
   runtimeCandidates,
   worldFreshVariableSuffix,
-} from "../eval/query";
+} from "./query";
 import {
   selfAtoms,
   staticAtomRemoved,
   staticRulesChangedFor,
   visibleStaticAtoms,
   visibleStaticRulesForHead,
-} from "../eval/specializer";
+} from "./specializer";
 import {
   type CollapseRoute,
   collapseRouteEnabled,
@@ -73,7 +69,7 @@ import {
   staticCustomMatcherCache,
   tailMatchBuild,
   voidBuildEnabled,
-} from "../eval/tabling";
+} from "./tabling";
 import {
   admitAtom,
   finItem,
@@ -82,7 +78,7 @@ import {
   opOf,
   skipApplicationCheck,
   strictArityError,
-} from "../eval/terms";
+} from "./terms";
 import {
   functionArity,
   getTypesWithView,
@@ -93,8 +89,8 @@ import {
   matchType,
   refreshEvaluationEnvironment,
   typeViewFor,
-} from "../eval/typeops";
-import { type CandidateSource, contextualSpaceName, UNDEF } from "../eval/world";
+} from "./typeops";
+import { type CandidateSource, contextualSpaceName, UNDEF } from "./world";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "../match";
 import { stdlibDocAtoms } from "../stdlib";
 import { Trail, unifyTrail } from "../trail";
