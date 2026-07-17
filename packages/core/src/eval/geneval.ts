@@ -350,7 +350,7 @@ export function isMinimalCursorSignal(value: GenYield): value is MinimalCursorSi
   );
 }
 
-interface SignalledGroundedCallContext extends CompleteGroundedCallContext {
+export interface SignalledGroundedCallContext extends CompleteGroundedCallContext {
   readonly signal: AbortSignal;
 }
 

@@ -3,76 +3,29 @@
 // SPDX-License-Identifier: MIT
 
 import { canonicalize } from "./alpha";
-import {
-  type Atom,
-  atomEq,
-  atomVars,
-  emptyExpr,
-  expr,
-  type ExprAtom,
-  gint,
-  isErrorAtom,
-  metaType,
-  sym,
-  variable,
-} from "./atom";
+import { type Atom, atomEq, emptyExpr, expr, type ExprAtom, gint, isErrorAtom, sym } from "./atom";
 import { dedupAlphaStable } from "./atom-set";
-import {
-  emptyLog,
-  idxCount,
-  logFromArray,
-  logGroundIdx,
-  logNonGround,
-  logSize,
-  logToArray,
-} from "./atomlog";
+import { emptyLog, logFromArray } from "./atomlog";
 import { bindingFrameFromLegacy, bindingFrameToLegacy, emptyBindingFrame } from "./binding-frame";
-import {
-  type Bindings,
-  emptyBindings,
-  eqRelations,
-  hasLoop,
-  lookupVal,
-  size,
-  valEntries,
-} from "./bindings";
-import {
-  isSingleResultGroundedOp,
-  isTableSafeGroundedOp,
-  pettaOpNames,
-  type ReduceResult,
-} from "./builtins";
-import { runChoicePlan, runDistinctChoicePlan, runDistinctChoicePlanBound } from "./choice-plan";
+import { type Bindings, emptyBindings } from "./bindings";
+import { pettaOpNames, type ReduceResult } from "./builtins";
+import { runChoicePlan, runDistinctChoicePlan } from "./choice-plan";
 import {
   aggregateCleanupFailures,
-  cleanupFailureLeaves,
   combineInitiatingAndCleanupFailure,
   selectWorkerQuiescenceFailure,
 } from "./cleanup-fault";
-import {
-  type CompiledImpureOps,
-  type CompiledRunResult,
-  type CooperativeCompiledRunEvent,
-  runCompiled,
-  runCompiledEffectCount,
-  startCooperativeCompiledRun,
-} from "./compile";
+import { type CompiledRunResult, runCompiled, runCompiledEffectCount } from "./compile";
 import { runDistinctIntRelation } from "./distinct-int";
-import { readEnv } from "./env";
 import {
   allocateStreamingIsolatedBranch,
   beginStreamingIsolatedBranches,
-  cancellationReasonsEqual,
   closeDirectParCursors,
-  closeGeneratorAsync,
   CompletedAsyncSearchCursor,
   completedParCandidate,
-  completeMinimalCursorGenerator,
-  consumeMinimalCursorSignal,
   contextualCursorAnswer,
   type CursorAnswerMaterializer,
   type CursorDeliveryControl,
-  cursorEffectAllowance,
   DEFAULT_FUEL,
   directParAllowances,
   type DirectParEvaluation,
@@ -85,42 +38,34 @@ import {
   MapTerminalSyncCursor,
   mettaCursorEmitter,
   mettaCursorMode,
-  MINIMAL_CURSOR_CLOSED,
   MINIMAL_DRAIN_QUANTUM,
-  minimalCancellation,
-  minimalCursorLimit,
-  minimalDrainEvent,
   minimalDrainResult,
   type MinimalInterpretOptions,
   newCursorBudget,
-  newMinimalCursorStatus,
   type PinnedCursorSource,
-  prepareCursorRead,
-  prepareMinimalCursorDrain,
   recordStreamingIsolatedTerminal,
   releaseStreamingIsolatedBranches,
-  restoreAllocationAuthority,
   snapshotBindings,
-  stableEvalCancellationReason,
   stackOverflowResult,
-  stoppedMinimalCursorEvent,
-  takeDeliveryCursorSteps,
   terminalCursorAnswer,
 } from "./eval/cursors";
 import {
   activeSpaceAtom,
   activeSpaceName,
-  argKey,
   bindingPacketRegistry,
   evaluationCacheEnvironment,
-  KEY_SEP,
-  nestedArgHead,
-  orderedIndexedAtoms,
   rootEvaluationEnvironment,
 } from "./eval/env";
 import {
+  tryFastAddUniqueOrFailCall,
+  tryFastNamedAddIfAbsent,
+  tryFastNamedOnceMatch,
+  tryFastQueueCall,
+  tryFastTilePuzzleBfsAll,
+  tryFastUniqueChoiceFunction,
+} from "./eval/fastpaths";
+import {
   callGroundedG,
-  candidateCounterPadding,
   type ContextualPair,
   type CursorEvalRes,
   type CursorMode,
@@ -129,14 +74,11 @@ import {
   emitMettaAnswersG,
   emitReturnedMettaAnswersG,
   type EvalRes,
-  finishGeneratorAsync,
   flushCursorProgressG,
   forwardReturnedMettaAnswersG,
   type Gen,
   groundedCallContext,
   groundedCallContextWithSignal,
-  isDriverEffect,
-  isMinimalCursorSignal,
   isPromiseLike,
   LAZY_ARGS_OPS,
   LEATTA_EVAL_ARGS_OPS,
@@ -149,7 +91,6 @@ import {
   recordCursorSteps,
   runGenAsync,
   runGenSync,
-  syntheticCandidateSource,
 } from "./eval/geneval";
 import {
   AsyncInSyncError,
@@ -169,9 +110,60 @@ import {
   type St,
   type Stack,
   type StreamingIsolatedBranches,
-  type TypeView,
-  type World,
 } from "./eval/machine";
+import {
+  argumentMayProduceAlternatives,
+  canStreamStdlibCase,
+  checkApplication,
+  choicePlanApplication,
+  COMPILED_IMPURE_OPS,
+  CTOR_SC,
+  emptyA,
+  errAtom,
+  exhaustedPair,
+  finalPair,
+  getDocOf,
+  getTypesForQuery,
+  hasRuleFor,
+  isDiscardedFiniteMatch,
+  isItemSource,
+  type ItemBatch,
+  type ItemSource,
+  mapReducedRulePairs,
+  matchConjCount,
+  matchCountTrail,
+  matchInsideOnce,
+  matchItemSource,
+  matchOp,
+  matchSetup,
+  mettaReturnsInputForExpectedType,
+  mettaTypeTerminal,
+  partialApplicationView,
+  planRulePair,
+  prepareCollapseRoute,
+  rememberGroundEvaluation,
+  spaceMutate,
+  STREAM_CASE,
+  streamCaseSource,
+  type StreamedInterpretedPass,
+  tryCountAggregate,
+  typeCheckArgs,
+  typeMismatch,
+  unitA,
+} from "./eval/matchops";
+import {
+  applyBranchStateDelta,
+  applyReduceEffects,
+  applyWorldDelta,
+  callHostImportG,
+  eraseSpace,
+  finishStreamingIsolatedBranches,
+  importModuleName,
+  mergeScheduledStates,
+  moduleContentHash,
+  pinAsyncEvaluation,
+  recordModuleInstallation,
+} from "./eval/mutate";
 import {
   allocateSpaceName,
   allocateStateCell,
@@ -180,7 +172,6 @@ import {
   type BranchStateDelta,
   captureBranchStateDelta,
   captureWorldDelta,
-  freshenRule,
   mutexKey,
   releaseChildWorldRuntimes,
   stateHandle,
@@ -191,9 +182,6 @@ import {
 } from "./eval/par";
 import {
   bindChainAnswer,
-  branchVariableNamespace,
-  candidatesW,
-  canMatchShallow,
   checkedGroundedLanguageError,
   checkGroundedEffectsScope,
   closeGroundedV2G,
@@ -212,14 +200,11 @@ import {
   queryOp,
   recordGroundedOperationEffects,
   reduceEffectAtoms,
-  resolveAll,
   resolveStates,
   restrictBnd,
-  runtimeCandidates,
   type SchedulerUnwindFailure,
   startGroundedV2G,
   unifyOp,
-  worldFreshVariableSuffix,
 } from "./eval/query";
 import {
   disableTabling,
@@ -228,19 +213,14 @@ import {
   restoreEnvironmentMutations,
   selfAtoms,
   snapshotEnvironmentMutations,
-  staticAtomRemoved,
   staticRulesChangedFor,
   staticRuleSetChanged,
-  visibleStaticAtoms,
-  visibleStaticRulesForHead,
 } from "./eval/specializer";
 import {
   canRunChoicePlan,
   choiceBranchesParallelSafe,
   choicePlanConstructor,
   choicePlanDataExpression,
-  type CollapseRoute,
-  collapseRouteEnabled,
   type CompletedTableKey,
   conjCountEnabled,
   containsImpureHead,
@@ -253,16 +233,10 @@ import {
   enforceDistinctLimit,
   freshenModedResult,
   groundTableVersionIfAdmissible,
-  hasAnyAtomVar,
-  isClosedChoiceValue,
   rememberGroundTable,
   rememberModedTable,
   runtimeFunctorPureModed,
   runtimeFunctorTableWorth,
-  splitVoidBuild,
-  staticCustomMatcherCache,
-  tailMatchBuild,
-  voidBuildEnabled,
 } from "./eval/tabling";
 import {
   admitAtom,
@@ -272,7 +246,6 @@ import {
   collapseBindDiscardsBindings,
   evalResult,
   finItem,
-  headKey,
   isEmbeddedOp,
   isFinal,
   legacyHyperposeEffect,
@@ -280,16 +253,11 @@ import {
   opOf,
   queryVarsOf,
   scopeVars,
-  skipApplicationCheck,
-  strictArityError,
 } from "./eval/terms";
 import {
   functionArity,
   getTypesWithView,
-  headOr,
-  isDefinedHead,
   isNormalForm,
-  isNormalFormAssumingVars,
   matchType,
   refreshEvaluationEnvironment,
   returnsAtom,
@@ -300,8 +268,6 @@ import {
 import {
   acquirePinnedProgram,
   type AsyncEvaluationSession,
-  cancelWorldRuntime,
-  type CandidateSource,
   checkWorldCancellation,
   checkWorldDeadline,
   cloneWorld,
@@ -319,15 +285,13 @@ import {
   withWorldRuntimePolicy,
   worldRuntimeContext,
 } from "./eval/world";
-import { ExclusiveAsyncScope, GeneratorUnwindFailures } from "./generator-lifecycle";
 import {
   type GroundedAnswerCursor,
   type GroundedOperationV2Registration,
   groundedV2Registration,
 } from "./grounded-v2";
-import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
+import { merge } from "./match";
 import { applyConsAtom, applyDeconsAtom } from "./minimal-instruction";
-import { addInt, type IntVal, subInt } from "./number";
 import { type CancellationReason, ResourceLimitError } from "./resources";
 import {
   type AsyncSearchCursor,
@@ -339,36 +303,37 @@ import {
   OnceAsyncCursor,
   OnceSyncCursor,
   ParallelSourceOrderedAsyncCursor,
-  type SearchBatchEvent,
   type SearchDrainResult,
   type SearchEvent,
-  type SearchNextOptions,
-  SourceOrderedAsyncCursor,
   type SyncSearchCursor,
 } from "./search-cursor";
-import { stdlibDocAtoms } from "./stdlib";
 import { runStructuredTaskGroup } from "./structured-task-group";
 import { type ActiveTableEntry } from "./table-space";
 import { keyWellFormed, MODED_IMPURE_OPS } from "./tabling";
-import { Trail, unifyTrail } from "./trail";
-import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 import { isWorkerQuiescenceError } from "./worker-protocol";
 import {
-  applyBranchStateDelta,
-  applyReduceEffects,
-  applyWorldDelta,
-  callHostImportG,
-  compiledAddAtom,
-  compiledAddIfAbsent,
-  eraseSpace,
-  finishStreamingIsolatedBranches,
-  importModuleName,
-  mergeScheduledStates,
-  moduleContentHash,
-  namedSpaceCandidateGetter,
-  pinAsyncEvaluation,
-  recordModuleInstallation,
-} from "./eval/mutate";
+  type DirectAsyncGroundedApplication,
+  type DirectParBranch,
+  GeneratorAsyncSearchCursor,
+  type PrefetchedDirectParBranch,
+  applySettledDirectParEffects,
+  chargeSchedulerStepsG,
+  closeMinimalGroundedV2G,
+  closeMinimalMettaCallG,
+  closeScheduleG,
+  completedDirectParBranch,
+  directAsyncGroundedApplication,
+  directParApplications,
+  invokeDirectParBranch,
+  prefetchedDirectParSchedule,
+  resumeMinimalGroundedV2G,
+  resumeMinimalMettaCallG,
+  runCompiledCooperativelyG,
+  schedulerCancellationError,
+  startMinimalGroundedV2G,
+  takeFirstScheduledAnswerG,
+} from "./eval/schedule";
+export { checkApplication } from "./eval/matchops";
 export {
   registerAsyncGroundedOperation,
   registerGroundedOperation,
@@ -411,34 +376,10 @@ export {
   type StackCons,
   type World,
 } from "./eval/machine";
-// The minimal MeTTa interpreter and type-directed evaluator: a faithful port of LeaTTa
-// `MettaHyperonFull/Minimal/Interpreter.lean` (itself a port of Hyperon `interpreter.rs`).
-// A CPS nondeterministic stack machine over the minimal instructions, with `mettaEval` (the
-// type-directed metta-call loop) on top. The driver is iterative to keep the JS stack shallow.
-
-// Constructor / normal-form short-circuit, on by default. `METTA_CTOR_SC=0` disables it for A/B measurement.
-const CTOR_SC = readEnv("METTA_CTOR_SC") !== "0";
-// Internal A/B gate for the `(case (match ...) cases)` streaming path. Default on; `0` restores the
-// materializing stdlib expansion in one binary.
-const STREAM_CASE = readEnv("METTA_STREAM_CASE") !== "0";
 
 // ---------- generator-based evaluation (sync core, optional async) ----------
 
 // ---------- machine types ----------
-interface ItemSource {
-  readonly endState: St;
-  foldItems(): Iterable<Item>;
-}
-type ItemBatch = Item[] | ItemSource;
-function isItemSource(work: Item[] | ItemSource): work is ItemSource {
-  return !Array.isArray(work);
-}
-
-const emptyA = sym("Empty");
-const collapsedEmptyA = expr([sym(",")]);
-const collapsedEmptySpellings: readonly Atom[] = [emptyExpr, collapsedEmptyA];
-const unitA = emptyExpr;
-const errAtom = (a: Atom, msg: string): Atom => expr([sym("Error"), a, sym(msg)]);
 
 // ---------- atom destructuring helpers ----------
 
@@ -536,36 +477,6 @@ async function runWithMutexAsync(
 
 // ---------- query + eval ops ----------
 
-// Does any `=` rule in scope reduce `a`? Used to let a program's own definition win over a PeTTa-compat
-// grounded op of the same name (those ops are a fallback, not an override).
-function hasRuleFor(env: MinEnv, w: World, counter: number, a: Atom): boolean {
-  for (const [lhs, rhs] of candidatesW(env, w, a)) {
-    const [fl] = freshenRule(counter, lhs, rhs, branchVariableNamespace(w));
-    if (matchAtoms(fl, a).length > 0) return true;
-  }
-  return false;
-}
-
-function* closeMinimalGroundedV2G(
-  continuation: MinimalGroundedV2Continuation,
-  initiating: SchedulerUnwindFailure = { active: false, error: undefined },
-): Gen<void> {
-  if (continuation.closed) return;
-  continuation.closed = true;
-  try {
-    yield* closeGroundedV2G(
-      continuation.answers,
-      continuation.operation,
-      continuation.call,
-      continuation.subject,
-      initiating,
-    );
-  } finally {
-    releaseStreamingIsolatedBranches(continuation.isolation);
-    continuation.call.close();
-  }
-}
-
 function mettaCallSchedule(
   env: MinEnv,
   fuel: number,
@@ -579,252 +490,6 @@ function mettaCallSchedule(
     () =>
       ownedAsyncSearchCursor("metta", env, atom, { fuel, state, bindings }, contextualCursorAnswer),
   );
-}
-
-function* closeMinimalMettaCallG(
-  continuation: MinimalMettaCallContinuation,
-  initiating: SchedulerUnwindFailure = { active: false, error: undefined },
-): Gen<void> {
-  if (continuation.closed) return;
-  continuation.closed = true;
-  yield* closeScheduleG(
-    continuation.schedule,
-    { code: "parent-closed", message: `${continuation.operation} consumer closed` },
-    initiating,
-  );
-}
-
-/**
- * Pull one answer from a streamed `metta`/`metta-thread` call. Each answer's state is adopted
- * through its journal ancestry, so the world a continuation observes is the one that produced the
- * answer, and the exhausted terminal commits only the remaining suffix.
- */
-function* resumeMinimalMettaCallG(
-  st: St,
-  continuation: MinimalMettaCallContinuation,
-  cursor?: CursorMode,
-): Gen<[Item[], St]> {
-  let handedOff = false;
-  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
-  try {
-    for (;;) {
-      const event = (yield continuation.schedule.nextEffect()) as SearchEvent<
-        MinimalSearchAnswer,
-        St
-      >;
-      yield* chargeSchedulerStepsG(cursor, st, event.steps);
-      switch (event.kind) {
-        case "answer": {
-          const retained: Item = {
-            stack: null,
-            bnd: continuation.bnd,
-            mettaCall: continuation,
-          };
-          handedOff = true;
-          return [
-            [...continuation.project(event.value), retained],
-            restoreAllocationAuthority(st, event.value.state),
-          ];
-        }
-        case "pending":
-          break;
-        case "exhausted":
-          continuation.closed = true;
-          return [[], restoreAllocationAuthority(st, event.terminal)];
-        case "cancelled":
-          throw schedulerCancellationError(continuation.operation, event.reason);
-        case "fault":
-          throw event.error;
-      }
-    }
-  } catch (error) {
-    unwind.active = true;
-    unwind.error = error;
-    throw error;
-  } finally {
-    if (!handedOff) yield* closeMinimalMettaCallG(continuation, unwind);
-  }
-}
-
-function* resumeMinimalGroundedV2G(
-  env: MinEnv,
-  st: St,
-  continuation: MinimalGroundedV2Continuation,
-  cursor?: CursorMode,
-): Gen<[Item[], St]> {
-  let handedOff = false;
-  let current = st;
-  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
-  if (continuation.isolation !== undefined) {
-    if (continuation.activeIsolatedAnswer) {
-      recordStreamingIsolatedTerminal(continuation.isolation, st);
-      continuation.activeIsolatedAnswer = false;
-    }
-    current = continuation.isolation.parent;
-  }
-  try {
-    for (;;) {
-      const event = yield* pullGroundedV2G(
-        continuation.answers,
-        current.world,
-        continuation.operation,
-        continuation.call,
-        continuation.subject,
-        cursor,
-      );
-      consumeWorldResource(current.world, "steps", event.steps, `${continuation.operation}-pull`);
-      yield* chargeSchedulerStepsG(cursor, current, event.steps);
-      if (event.kind === "pending") continue;
-      if (event.kind === "exhausted") {
-        if (continuation.isolation !== undefined)
-          current = finishStreamingIsolatedBranches(env, continuation.isolation);
-        return [[], current];
-      }
-      if (event.kind === "cancelled")
-        throw {
-          kind: "cancelled",
-          reason: event.reason,
-          bindings: continuation.call.frame,
-          subject: continuation.subject,
-          trace: continuation.call.trace,
-        };
-      if (event.kind === "fault")
-        throw groundedV2Fault(
-          "grounded-next",
-          event.error,
-          continuation.call,
-          continuation.subject,
-        );
-      const prepared = prepareGroundedAnswer(
-        env,
-        event.value,
-        continuation.call,
-        continuation.context,
-        continuation.subject,
-      );
-      if (prepared.kind === "conflict") continue;
-      if (continuation.isolation !== undefined)
-        current = allocateStreamingIsolatedBranch(continuation.isolation);
-      consumeGroundedPayloadResources(
-        current.world,
-        continuation.operation,
-        prepared.value.resourceAtoms,
-        true,
-      );
-      const applied = applyReduceEffects(
-        env,
-        current,
-        prepared.value.bindings,
-        prepared.value.effects,
-      );
-      const answer =
-        applied.tag === "error" ? errAtom(continuation.subject, applied.msg) : prepared.value.atom;
-      if (applied.tag === "ok") current = applied.state;
-      const retained: Item = {
-        stack: null,
-        bnd: prepared.value.bindings,
-        groundedV2: continuation,
-      };
-      continuation.activeIsolatedAnswer = continuation.isolation !== undefined;
-      handedOff = true;
-      return [
-        [
-          evalResult(
-            continuation.continuation,
-            answer,
-            prepared.value.bindings,
-            continuation.subject,
-          ),
-          retained,
-        ],
-        current,
-      ];
-    }
-  } catch (error) {
-    unwind.active = true;
-    unwind.error = error;
-    throw error;
-  } finally {
-    if (!handedOff) yield* closeMinimalGroundedV2G(continuation, unwind);
-  }
-}
-
-function* startMinimalGroundedV2G(
-  registration: GroundedOperationV2Registration,
-  env: MinEnv,
-  st: St,
-  previous: Stack,
-  subject: ExprAtom,
-  operation: string,
-  originalArgs: readonly Atom[],
-  args: readonly Atom[],
-  bindings: Bindings,
-  cursor?: CursorMode,
-): Gen<[Item[], St]> {
-  const call = createGroundedV2Call(env, st.world, operation, originalArgs, bindings);
-  let answers: GroundedAnswerCursor | undefined;
-  let handedOff = false;
-  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
-  try {
-    const context = call.context(NEVER_ABORTED_SIGNAL);
-    const start = yield* startGroundedV2G(registration, st.world, operation, args, call, subject);
-    recordGroundedOperationEffects(st.world, operation, registration.options.effects, []);
-    if (start.tag === "host-fault") throw start.fault;
-    if (start.tag === "language-error") {
-      const error = checkedGroundedLanguageError(start.error, call, context, subject);
-      consumeGroundedPayloadResources(st.world, operation, [error], true);
-      return [[finItem(previous, error, bindings)], st];
-    }
-    if (start.tag === "stuck") return queryOp(env, st, previous, subject, bindings);
-    answers = start.answers;
-    if (answers.mode !== registration.options.mode)
-      throw groundedV2Fault(
-        "grounded-start",
-        new TypeError(
-          `${operation}: ${registration.options.mode} operation returned ${answers.mode} cursor`,
-        ),
-        call,
-        subject,
-      );
-    checkGroundedEffectsScope(start.preEffects, call, context, subject);
-    const instantiatedPreEffects = instantiateReduceEffects(call.frame, start.preEffects);
-    consumeGroundedPayloadResources(
-      st.world,
-      operation,
-      reduceEffectAtoms(instantiatedPreEffects),
-      false,
-    );
-    const preEffects = applyReduceEffects(env, st, bindings, instantiatedPreEffects);
-    if (preEffects.tag === "error")
-      return [[finItem(previous, errAtom(subject, preEffects.msg), bindings)], st];
-    const isolation = beginStreamingIsolatedBranches(preEffects.state, false);
-    const continuation: MinimalGroundedV2Continuation = {
-      operation,
-      subject,
-      continuation: previous,
-      call,
-      context,
-      answers,
-      ...(isolation === undefined ? {} : { isolation }),
-      activeIsolatedAnswer: false,
-      closed: false,
-    };
-    handedOff = true;
-    return yield* resumeMinimalGroundedV2G(env, preEffects.state, continuation, cursor);
-  } catch (error) {
-    unwind.active = true;
-    unwind.error = error;
-    throw error;
-  } finally {
-    if (!handedOff) {
-      try {
-        if (answers !== undefined)
-          yield* closeGroundedV2G(answers, operation, call, subject, unwind);
-      } finally {
-        call.close();
-      }
-    }
-  }
 }
 
 function* reduceGroundedV2ApplicationG(
@@ -1166,605 +831,12 @@ function* evalOpG(
 }
 
 // ---------- final-item helpers ----------
-function finalPair(env: MinEnv, it: Item): ContextualPair {
-  const f = it.stack;
-  const selected = it.evaluationScope?.env;
-  const active = selected ?? env;
-  return f === null
-    ? selected === undefined
-      ? [emptyA, []]
-      : [emptyA, [], selected]
-    : selected === undefined
-      ? [inst(active, it.bnd, f.head.atom), it.bnd]
-      : [inst(active, it.bnd, f.head.atom), it.bnd, selected];
-}
-function exhaustedPair(env: MinEnv, it: Item): ContextualPair {
-  const f = it.stack;
-  const selected = it.evaluationScope?.env;
-  const active = selected ?? env;
-  const atom =
-    f === null
-      ? emptyA
-      : makeExpr(active, [sym("Error"), inst(active, it.bnd, f.head.atom), sym("StackOverflow")]);
-  return selected === undefined ? [atom, it.bnd] : [atom, it.bnd, selected];
-}
-
-function partialApplicationView(env: MinEnv, w: World, atom: Atom): Atom {
-  if (atom.kind !== "expr" || atom.items.length < 2) return atom;
-  const head = atom.items[0]!;
-  if (head.kind !== "sym") return atom;
-  const args = atom.items.slice(1);
-  const arity = functionArity(env, w, head.name);
-  if (arity === undefined || args.length >= arity) return atom;
-  return makeExpr(env, [sym("partial"), head, makeExpr(env, args)]);
-}
 
 // ---------- types ----------
 
-/** The type(s) reported by the user-facing `get-type` op. Same as `getTypes`, but with hyperon's tuple
- *  case: when an expression's head is not a function, the whole expression is a tuple and its type is the
- *  tuple of its elements' types, e.g. `(a b)` with `a:A`, `b:B` is `(A B)`. When an element has SEVERAL
- *  types the result is the cartesian product, one tuple type per combination (hyperon types.rs:
- *  `get_atom_types((a b))` is `[(A B), (B B)]` when `a:{A,B}`). This is kept out of `getTypes` itself
- *  because that drives type-directed argument evaluation, which must stay conservative (%Undefined%) for an
- *  ordinary tuple expression rather than invent a tuple type. */
-function getTypesForQuery(env: MinEnv, w: World, a: Atom): Atom[] {
-  return getTypesForQueryWithView(env, w, typeViewFor(env, w), a);
-}
-
-function getTypesForQueryWithView(env: MinEnv, w: World, view: TypeView, a: Atom): Atom[] {
-  const base = getTypesWithView(env, view, a);
-  if (a.kind !== "expr" || a.items.length === 0) return base;
-  if (base.length > 0 && !base.every((t) => atomEq(t, UNDEF))) return base;
-  const f = a.items[0]!;
-  if (f.kind === "sym" && isDefinedHead(env, w, f.name)) return base;
-  if (getTypesWithView(env, view, f).some((t) => opOf(t) === "->")) return base;
-  // Cartesian product of each element's type list, building one tuple type per combination.
-  let combos: Atom[][] = [[]];
-  for (const x of a.items) {
-    const ts = getTypesForQueryWithView(env, w, view, x);
-    const opts = ts.length > 0 ? ts : [UNDEF];
-    const next: Atom[][] = [];
-    for (const combo of combos) for (const t of opts) next.push([...combo, t]);
-    combos = next;
-  }
-  return combos.map((c) => makeExpr(env, c));
-}
-
-function typeCheckArgs(
-  env: MinEnv,
-  w: World,
-  argTypes: readonly Atom[],
-  i: number,
-  tb: Bindings,
-  argsLeft: readonly Atom[],
-  view: TypeView = typeViewFor(env, w),
-): [number, Atom, Atom] | undefined {
-  if (argsLeft.length === 0) return undefined;
-  const ti0 = argTypes[i];
-  if (ti0 === undefined) return undefined;
-  const ti = inst(env, tb, ti0);
-  // A top parameter type (`Atom`/`%Undefined%`) accepts any argument, so the argument is well-typed
-  // without inferring its type. Checking this by name first skips both `typePrep` and `getTypes`, each an
-  // O(term-size) walk, on the very common case (e.g. `add-atom`'s `Atom` parameter). Without it, adding
-  // deeply-nested terms re-walks each one every time and turns add-heavy programs quadratic.
-  if (ti.kind === "sym" && (ti.name === "Atom" || ti.name === "%Undefined%"))
-    return typeCheckArgs(env, w, argTypes, i + 1, tb, argsLeft.slice(1), view);
-  const ai = argsLeft[0]!;
-  const prepped = typePrep(env, w, ai);
-  // Hyperon `check_arg_types` (types.rs): an argument satisfies a parameter whose type names the
-  // argument's meta-type (`meta.contains(expected)`), checked before any declared/inferred type. So a
-  // computed expression like `(+ 5 5)` (inferred value-type Number, meta-type Expression) satisfies an
-  // `Expression` parameter. Without this, ops with meta-typed parameters (lib_he's `evalc`/`noreduce-eq`,
-  // `map-atom`) wrongly raise BadArgType on unevaluated expression arguments.
-  if (ti.kind === "sym" && ti.name === metaType(prepped))
-    return typeCheckArgs(env, w, argTypes, i + 1, tb, argsLeft.slice(1), view);
-  const actuals = getTypesWithView(env, view, prepped);
-  for (const act of actuals) {
-    const tb2 = matchType(tb, ti, act);
-    if (tb2 !== undefined)
-      return typeCheckArgs(env, w, argTypes, i + 1, tb2, argsLeft.slice(1), view);
-  }
-  return [i + 1, ti, headOr(actuals, UNDEF)];
-}
-function typeMismatch(
-  env: MinEnv,
-  w: World,
-  op: string,
-  args: readonly Atom[],
-  ts?: Atom[],
-): [number, Atom, Atom] | undefined {
-  const view = typeViewFor(env, w);
-  if (arguments.length < 5) ts = view.sigs.get(op);
-  if (ts === undefined) return undefined;
-  return typeCheckArgs(env, w, ts.slice(0, -1), 0, [], args, view);
-}
-
-export function checkApplication(
-  env: MinEnv,
-  w: World,
-  op: string,
-  args: readonly Atom[],
-  opSig?: Atom[],
-): Atom | null {
-  const view = typeViewFor(env, w);
-  if (arguments.length < 5) opSig = view.sigs.get(op);
-  if (skipApplicationCheck(op, args)) return null;
-  const strictErr = strictArityError(op, args);
-  if (strictErr !== null) return strictErr;
-  // Hyperon `interpret_expression`/`check_if_function_type_is_applicable` (interpreter.rs): when the
-  // operator's only types are function types and none applies because the argument count differs from
-  // the parameter count, the call reduces to `(Error <call> IncorrectNumberOfArguments)`. Confirmed by
-  // Hyperon's own tests: `(foo b c)` and `(add-reducts k1)` both yield it. The reference LeaTTa binary
-  // lacks this check (it leaves such calls unreduced); Hyperon is the authority here. A signature
-  // `[param1 ... paramN, return]` has `length - 1` parameters. Skip when the operator also has a
-  // non-function (tuple) type, matching Hyperon's `has_tuple_type` fallback. The eval loop passes a
-  // precomputed `opSig` it then reuses for partial application, so the signature is looked up once per
-  // application.
-  if (opSig !== undefined && opSig.length >= 1 && args.length !== opSig.length - 1) {
-    const hasTupleType = (view.types.get(op) ?? []).some((t) => opOf(t) !== "->");
-    // PeTTa-style partial application is allowed for grounded ops. User-declared typed functions keep
-    // Hyperon's strict arity errors.
-    const underAppliedPartial =
-      env.gt.has(op) && args.length >= 1 && args.length < opSig.length - 1;
-    if (!hasTupleType && !underAppliedPartial)
-      return expr([sym("Error"), expr([sym(op), ...args]), sym("IncorrectNumberOfArguments")]);
-  }
-  const mm = typeMismatch(env, w, op, args, opSig);
-  if (mm !== undefined) {
-    const [pos, expected, actual] = mm;
-    return expr([
-      sym("Error"),
-      expr([sym(op), ...args]),
-      expr([sym("BadArgType"), gint(pos), expected, actual]),
-    ]);
-  }
-  return null;
-}
-
 // ---------- conjunctive match ----------
-/** Candidate `&self` atoms that could match a (instantiated) pattern, using the functor index. A
- *  functor-headed pattern only scans atoms with that head key plus the variable-headed atoms (which can
- *  unify with any functor); a variable-headed pattern must scan everything. State atoms are resolved
- *  only when the world actually holds state. This is what turns a linear `match` into an indexed one. */
-function matchCandidates(
-  env: MinEnv,
-  w: World,
-  pInst: Atom,
-  allowNested: boolean,
-): CandidateSource {
-  const k = headKey(pInst);
-  if (k === undefined) {
-    return {
-      *[Symbol.iterator](): Iterator<Atom> {
-        // A variable-headed pattern must consider everything.
-        for (const atom of resolveAll(w, visibleStaticAtoms(w, env.atoms))) yield atom;
-        yield* runtimeCandidates(w, undefined);
-      },
-    };
-  }
-  const headCandidates = env.factIndex.get(k) ?? [];
-  const nestedMatchIndex = env.nestedMatchIndex;
-  // Skipping a failed non-ground candidate changes the suffix used to freshen later facts. Restrict nested
-  // indexing to a ground, state-free candidate domain and restore the skipped attempts through counterPadding.
-  // Leaf indexing keeps its established admission and counter behavior.
-  const nestedIndexSafe =
-    allowNested &&
-    nestedMatchIndex !== undefined &&
-    !nestedMatchIndex.nonGroundFactHeads.has(k) &&
-    env.varHeadedFacts.length === 0 &&
-    w.removedStatic === null &&
-    w.store.size === 0 &&
-    w.selfExtra === null &&
-    (w.flatSelfExtra?.size ?? 0) === 0;
-  // Pick the most selective eligible argument position. Nested buckets include custom grounded matchers
-  // from the residual bucket, then merge by source occurrence id.
-  let bestKey: string | undefined;
-  let bestPosKey: string | undefined;
-  let bestIsNested = false;
-  let bestSize = Infinity;
-  const hasLeafConstraint =
-    pInst.kind === "expr" &&
-    pInst.items.slice(1).some((argument) => argKey(argument) !== undefined);
-  if (pInst.kind === "expr")
-    for (let i = 1; i < pInst.items.length; i++) {
-      const argument = pInst.items[i]!;
-      const posKey = k + KEY_SEP + i;
-      const ak = argKey(argument);
-      if (ak !== undefined) {
-        const ik = k + KEY_SEP + i + KEY_SEP + ak;
-        const size =
-          (env.argIndex.get(ik)?.length ?? 0) + (env.nonGroundAtPos.get(posKey)?.length ?? 0);
-        if (size < bestSize) {
-          bestSize = size;
-          bestKey = ik;
-          bestPosKey = posKey;
-          bestIsNested = false;
-        }
-      }
-
-      // The established leaf source yields exact values before residual custom matchers. Keep that source
-      // whenever a leaf constraint exists so adding a nested constraint cannot reorder successful matches.
-      const nestedHead =
-        nestedIndexSafe && !hasLeafConstraint ? nestedArgHead(argument) : undefined;
-      if (nestedHead !== undefined) {
-        const ik = k + KEY_SEP + i + KEY_SEP + nestedHead;
-        const size =
-          (nestedMatchIndex!.byHead.get(ik)?.length ?? 0) +
-          (nestedMatchIndex!.wildcardAtPos.get(posKey)?.length ?? 0);
-        if (size < bestSize && size < headCandidates.length) {
-          bestSize = size;
-          bestKey = ik;
-          bestPosKey = posKey;
-          bestIsNested = true;
-        }
-      }
-    }
-  let cands: Atom[];
-  let counterPadding = 0;
-  if (bestKey !== undefined) {
-    if (bestIsNested) {
-      cands = orderedIndexedAtoms(
-        env,
-        nestedMatchIndex!.byHead.get(bestKey) ?? [],
-        nestedMatchIndex!.wildcardAtPos.get(bestPosKey!) ?? [],
-      );
-      counterPadding = headCandidates.length - cands.length;
-    } else {
-      // Retain the established leaf-index order: exact candidates, then the residual bucket.
-      cands = [
-        ...(env.argIndex.get(bestKey) ?? []),
-        ...(env.nonGroundAtPos.get(bestPosKey!) ?? []),
-      ];
-    }
-  } else {
-    // no bound argument position: the whole functor bucket.
-    cands = headCandidates.slice();
-  }
-  cands.push(...env.varHeadedFacts);
-  if (w.removedStatic !== null) cands = cands.filter((a) => !staticAtomRemoved(w, a));
-  const iterate = function* (): Iterator<Atom> {
-    // A ground pattern over a ground runtime log is an exact-membership query. The pattern itself is the
-    // only runtime atom that can match, so yield that many copies instead of scanning the log.
-    if (
-      pInst.ground &&
-      logNonGround(w.selfExtra) === 0 &&
-      (w.flatSelfExtra?.nonGroundCount ?? 0) === 0 &&
-      w.store.size === 0
-    ) {
-      const c = w.selfExtra === null ? 0 : idxCount(logGroundIdx(w.selfExtra), pInst);
-      for (const atom of cands) yield atom;
-      const flatCount = w.flatSelfExtra?.exactCount(pInst) ?? 0;
-      for (let i = 0; i < c + flatCount; i++) yield pInst;
-      return;
-    }
-    for (const atom of resolveAll(w, cands)) yield atom;
-    yield* runtimeCandidates(w, k, pInst);
-  };
-  return counterPadding === 0
-    ? { [Symbol.iterator]: iterate }
-    : { counterPadding, [Symbol.iterator]: iterate };
-}
-
-function matchConj(
-  env: MinEnv,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  patterns: readonly Atom[],
-  st: St,
-  sols: Bindings[],
-): [Bindings[], St] {
-  let cur = sols;
-  let counter = st.counter;
-  for (const p of patterns) {
-    const next: Bindings[] = [];
-    for (const b of cur) {
-      const pInst = inst(env, b, p);
-      const source = getCandidates(pInst);
-      for (const atom of source) {
-        const atom2 = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
-        counter += 1;
-        for (const mb of matchAtoms(pInst, atom2))
-          for (const m of merge(b, mb)) if (!hasLoop(m)) next.push(m);
-      }
-      counter += candidateCounterPadding(source);
-    }
-    cur = next;
-  }
-  return [cur, { counter, world: st.world }];
-}
-
-// Conjunctive `match` via a worst-case-optimal join. A conjunct whose every candidate match binds all
-// its variables to ground terms (e.g. the `(N != M)` constraint facts) becomes a relation joined by
-// `wcoJoin`, which is AGM-bounded and avoids the nested loop's intermediate cross-product blowup (a
-// triangle of `!=` constraints is N^1.5, not N^2, the difference between finishing and not on the
-// permutations benchmark). Conjuncts whose matches bind variables to variables (templates like
-// `(E $a ... $state)`) are threaded by the nested loop over each WCO solution, where the join variables
-// are already ground. Degrades to the plain nested loop when no conjunct is ground-relational, so it is
-// only used for `(, ...)` with two or more goals (single-pattern match keeps its scan order).
-// Split the conjunction goals into ground-relational factors (joined AGM-optimally by wcoJoin) and the
-// non-ground tail, advancing the freshening counter. Shared by matchConjJoin (which materializes the join)
-// and matchConjCount (which folds it), so neither duplicates the wcoJoin setup.
-function splitConjGoals(
-  env: MinEnv,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  patterns: readonly Atom[],
-  st: St,
-  b0: Bindings,
-  perPositionAdmit: boolean,
-): {
-  groundRels: Array<Relation<Atom>>;
-  otherPatterns: Atom[];
-  counter: number;
-} {
-  let counter = st.counter;
-  const insts = patterns.map((p) => inst(env, b0, p));
-  const pvarsList = insts.map((pInst) => atomVars(pInst));
-  // Join variables: a query var shared by two or more goals (the leapfrog's intersection keys). Under the
-  // unify-capable per-position admission, a schematic fact binding a join variable to a non-ground term is
-  // the one case a column-wise leapfrog fabricates answers (the mork-uni-join witness), so it declines; a
-  // non-ground binding at a non-join position is a free output column the join just enumerates, so it rides
-  // the fast path. Without per-position routing (the result path, where answer order is observable), any
-  // non-ground value declines, keeping the conservative split byte-identical.
-  let joinVars: Set<string> | undefined;
-  if (perPositionAdmit) {
-    const seen = new Set<string>();
-    const shared = new Set<string>();
-    for (const pvars of pvarsList)
-      for (const v of new Set(pvars)) (seen.has(v) ? shared : seen).add(v);
-    joinVars = shared;
-  }
-  const groundRels: Array<Relation<Atom>> = [];
-  const otherPatterns: Atom[] = [];
-  for (let i = 0; i < patterns.length; i++) {
-    const p = patterns[i]!;
-    const pvars = pvarsList[i]!;
-    if (pvars.length === 0) {
-      otherPatterns.push(p); // fully-ground existence check: cheap, leave to the nested loop
-      continue;
-    }
-    const pInst = insts[i]!;
-    const tuples: Array<Map<string, Atom>> = [];
-    let relational = true;
-    const source = getCandidates(pInst);
-    for (const atom of source) {
-      const fresh = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
-      counter += 1;
-      for (const mb of matchAtoms(pInst, fresh)) {
-        const t = new Map<string, Atom>();
-        for (const v of pvars) {
-          const val = lookupVal(mb, v) ?? variable(v);
-          t.set(v, val);
-          if (!val.ground && (joinVars === undefined || joinVars.has(v))) relational = false;
-        }
-        tuples.push(t);
-      }
-    }
-    counter += candidateCounterPadding(source);
-    if (relational) groundRels.push({ vars: pvars, tuples });
-    else otherPatterns.push(p);
-  }
-  return { groundRels, otherPatterns, counter };
-}
-
-// The join phase for matchConjJoin: split the goals, then materialize the wcoJoin solutions as binding sets.
-function conjJoinPartials(
-  env: MinEnv,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  patterns: readonly Atom[],
-  st: St,
-  b0: Bindings,
-): { partials: Bindings[]; otherPatterns: Atom[]; counter: number } {
-  const { groundRels, otherPatterns, counter } = splitConjGoals(
-    env,
-    getCandidates,
-    patterns,
-    st,
-    b0,
-    // Result path: admit schematic facts at non-join positions to the leapfrog only when the fast matcher is
-    // on. The leapfrog reorders results and freshens differently, so an admitted schematic goal makes the
-    // answer alpha-equivalent (not byte-identical) to the coupled path; the default (trail off) keeps the
-    // conservative all-ground gate, so the byte-identical reference order holds and the oracle is unaffected.
-    env.useTrail === true,
-  );
-  let partials: Bindings[];
-  if (groundRels.length > 0) {
-    partials = [];
-    for (const sol of wcoJoin(groundRels, mutexKey)) {
-      let bs: Bindings[] = [b0];
-      for (const [v, val] of sol) {
-        const nb: Bindings[] = [];
-        for (const b of bs) nb.push(...addVarBinding(b, v, val));
-        bs = nb;
-      }
-      for (const b of bs) if (!hasLoop(b)) partials.push(b);
-    }
-  } else {
-    partials = [b0];
-  }
-  return { partials, otherPatterns, counter };
-}
-
-function matchConjJoin(
-  env: MinEnv,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  patterns: readonly Atom[],
-  st: St,
-  b0: Bindings,
-): [Bindings[], St] {
-  const {
-    partials,
-    otherPatterns,
-    counter: c0,
-  } = conjJoinPartials(env, getCandidates, patterns, st, b0);
-  let cur = partials;
-  let counter = c0;
-  for (const p of otherPatterns) {
-    const next: Bindings[] = [];
-    // The same candidate facts are matched against every WCO solution; a fact's freshened copies differ
-    // only in their fresh variable names, which each match binds independently inside its own result. So
-    // freshen each fact once and reuse it across solutions. Freshening (a full term copy for a
-    // template-shaped fact) is the allocation-heavy part of the emit and was being redone per result. The
-    // cache is per-conjunct, so distinct conjuncts that match the same fact still get distinct fresh vars.
-    const freshCache = new Map<Atom, Atom>();
-    for (const b of cur) {
-      const pInst = inst(env, b, p);
-      const source = getCandidates(pInst);
-      const cache = syntheticCandidateSource(source) ? undefined : freshCache;
-      for (const atom of source) {
-        let fresh = cache?.get(atom);
-        if (fresh === undefined) {
-          fresh = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
-          counter += 1;
-          cache?.set(atom, fresh);
-        }
-        for (const mb of matchAtoms(pInst, fresh))
-          for (const m of merge(b, mb)) if (!hasLoop(m)) next.push(m);
-      }
-      counter += candidateCounterPadding(source);
-    }
-    cur = next;
-  }
-  return [cur, { counter, world: st.world }];
-}
-
-// Count a multi-goal conjunctive `match` without materializing its answers: run wcoJoin for the
-// ground-relational goals (its partials are far fewer than the final answer set, ~40k vs ~360k for
-// permutations), then count the remaining non-ground goals per partial on the zero-allocation trail. The
-// count is name-independent, so it is byte-identical to counting matchConjJoin's solutions. Returns
-// undefined to fall back when the trail tail declines (a custom grounded matcher, or the node budget).
-function matchConjCount(
-  env: MinEnv,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  patterns: readonly Atom[],
-  st: St,
-  b0: Bindings,
-): { count: number; counter: number } | undefined {
-  const {
-    groundRels,
-    otherPatterns,
-    counter: c0,
-    // Match the result path's admission gate (conjJoinPartials) so the fold and the materializing count split
-    // goals identically and advance the gensym counter in lockstep: the conservative all-ground split by
-    // default (byte-identical, the reference the corpus pins), the per-position unify-capable admission only
-    // under experimental.trail (where the result path also admits, so both stay consistent).
-  } = splitConjGoals(env, getCandidates, patterns, st, b0, env.useTrail === true);
-  // No ground-relational goal: there is no join to fold, so count the whole (non-ground) conjunction on a
-  // single trail seeded from b0.
-  if (groundRels.length === 0) {
-    for (const p of patterns) if (atomHasCustomGrounded(p)) return undefined;
-    return countTrailDFS(
-      seededTrail(b0),
-      getCandidates,
-      patterns,
-      c0,
-      branchVariableNamespace(st.world),
-    );
-  }
-  for (const p of otherPatterns) if (atomHasCustomGrounded(p)) return undefined;
-  // One trail, synced to the wcoJoin descent: each join variable binds in place on the way down and undoes
-  // on the way back up, so at every leaf the join's assignment is already on the trail and the non-ground
-  // tail counts with zero per-leaf allocation (MORK's trie_join_count: aggregate without materializing).
-  const tr = seededTrail(b0);
-  // One freshen cache per tail goal, each shared across all join leaves: a tail candidate freshens once per
-  // goal, but two goals matching the same stored fact get distinct fresh variables (see countTrailDFS).
-  const tailFreshCaches = otherPatterns.map(() => new Map<Atom, Atom>());
-  let counter = c0;
-  let count = 0;
-  let bailed = false;
-  const marks: number[] = [];
-  wcoJoinFold(groundRels, mutexKey, {
-    onDescend: (v, val) => {
-      marks.push(tr.mark());
-      tr.bind(v, val);
-    },
-    onAscend: () => tr.undo(marks.pop()!),
-    onLeaf: () => {
-      if (bailed) return;
-      if (otherPatterns.length === 0) {
-        count += 1;
-        return;
-      }
-      const tc = countTrailDFS(
-        tr,
-        getCandidates,
-        otherPatterns,
-        counter,
-        branchVariableNamespace(st.world),
-        tailFreshCaches,
-      );
-      if (tc === undefined) {
-        bailed = true;
-        return;
-      }
-      count += tc.count;
-      counter = tc.counter;
-    },
-  });
-  return bailed ? undefined : { count, counter };
-}
 
 // ---------- get-doc ----------
-function getDocOf(env: MinEnv, w: World, atom: Atom): Atom {
-  const atoms = selfAtoms(env, w);
-  const view = typeViewFor(env, w);
-  const ty =
-    atom.kind === "sym"
-      ? headOr(view.types.get(atom.name) ?? [], UNDEF)
-      : (view.exprTypes.find((p) => atomEq(p[0], atom))?.[1] ?? UNDEF);
-  const matchesDoc = (a: Atom): boolean =>
-    opOf(a) === "@doc" && a.kind === "expr" && a.items.length >= 2 && atomEq(a.items[1]!, atom);
-  // A program's own @doc (in its space) wins; the stdlib's @doc is kept out of the eval env and consulted
-  // here as a fallback, so documentation never bloats a program's space.
-  const doc = atoms.find(matchesDoc) ?? stdlibDocAtoms().find(matchesDoc);
-  if (doc === undefined || doc.kind !== "expr") return sym("Empty");
-  if (doc.items.length === 5) {
-    const desc = doc.items[2]!;
-    const paramsWrap = doc.items[3]!;
-    const retWrap = doc.items[4]!;
-    const params = paramsWrap.kind === "expr" ? paramsWrap.items[1] : undefined;
-    const paramList = params && params.kind === "expr" ? params.items : [];
-    const retDesc = retWrap.kind === "expr" ? retWrap.items[1]! : UNDEF;
-    const n = paramList.length;
-    let paramTys: Atom[];
-    let retTy: Atom;
-    if (opOf(ty) === "->" && ty.kind === "expr" && ty.items.length - 1 === n + 1) {
-      const rest = ty.items.slice(1);
-      paramTys = rest.slice(0, -1);
-      retTy = rest[rest.length - 1]!;
-    } else {
-      paramTys = Array<Atom>(n).fill(UNDEF);
-      retTy = UNDEF;
-    }
-    const params2 = paramList.map((pp, i) => {
-      if (opOf(pp) === "@param" && pp.kind === "expr" && pp.items.length === 2)
-        return expr([
-          sym("@param"),
-          expr([sym("@type"), paramTys[i] ?? UNDEF]),
-          expr([sym("@desc"), pp.items[1]!]),
-        ]);
-      return pp;
-    });
-    return expr([
-      sym("@doc-formal"),
-      expr([sym("@item"), atom]),
-      expr([sym("@kind"), sym("function")]),
-      expr([sym("@type"), ty]),
-      desc,
-      expr([sym("@params"), expr(params2)]),
-      expr([sym("@return"), expr([sym("@type"), retTy]), expr([sym("@desc"), retDesc])]),
-    ]);
-  }
-  if (doc.items.length === 3) {
-    return expr([
-      sym("@doc-formal"),
-      expr([sym("@item"), atom]),
-      expr([sym("@kind"), sym("atom")]),
-      expr([sym("@type"), ty]),
-      doc.items[2]!,
-    ]);
-  }
-  return sym("Empty");
-}
 
 // ---------- the step function ----------
 function* interpretStack1G(
@@ -2523,47 +1595,6 @@ function* interpretStack1G(
   ];
 }
 
-function spaceMutate(
-  env: MinEnv,
-  st: St,
-  prev: Stack,
-  s: Atom,
-  b: Bindings,
-  f: (w: World, name: string) => World,
-): [Item[], St] {
-  const name = contextualSpaceName(env, st.world, inst(env, b, s));
-  if (name === undefined) return [[finItem(prev, errAtom(inst(env, b, s), "not a space"), b)], st];
-  return [[finItem(prev, emptyExpr, b)], { counter: st.counter, world: f(st.world, name) }];
-}
-
-/** The `(match space pattern template)` solutions a compiled nondet body consumes: the same
- *  candidate source, per-candidate freshening, and counter accounting as the interpreted match
- *  (matchSetup + matchSingleSolutions/EndState), returning each instantiated template with its
- *  solution bindings. Undefined when the pattern splits into a conjunction (outside the compiled
- *  subset; the holder bails to the interpreter). */
-function compiledMatchSolutions(
-  env: MinEnv,
-  st: St,
-  space: Atom,
-  pattern: Atom,
-  template: Atom,
-): { pairs: ReadonlyArray<readonly [Atom, Bindings]>; counterDelta: number } | undefined {
-  const { getCandidates, patterns } = matchSetup(env, st, space, pattern, emptyBindings);
-  if (patterns.length !== 1) return undefined;
-  const pat = patterns[0]!;
-  const { endState } = matchSingleEndState(env, getCandidates, pat, template, st, emptyBindings);
-  const pairs: Array<readonly [Atom, Bindings]> = [];
-  for (const m of matchSingleSolutions(env, getCandidates, pat, st, emptyBindings))
-    pairs.push([inst(env, m, template), m]);
-  return { pairs, counterDelta: endState.counter - st.counter };
-}
-
-const COMPILED_IMPURE_OPS: CompiledImpureOps = {
-  addAtom: compiledAddAtom,
-  matchSolutions: compiledMatchSolutions,
-  addIfAbsent: compiledAddIfAbsent,
-};
-
 function* getTypeOpG(
   env: MinEnv,
   fuel: number,
@@ -2599,844 +1630,6 @@ function* getTypeOpG(
     return illTyped ? [[], st] : yield* emit(st);
   }
   return yield* emit(st);
-}
-
-// Shared setup for `match`: resolve the queried space, normalize a `(, ...)` conjunction into its goal
-// patterns, and build the candidate-fact generator (&self's functor index, or a named space's atoms).
-// Factored out of matchOp so the trail counter reuses the exact same candidate semantics (no second copy).
-function matchSetup(
-  env: MinEnv,
-  st: St,
-  space: Atom,
-  pattern: Atom,
-  b: Bindings,
-): { getCandidates: (pInst: Atom) => CandidateSource; patterns: Atom[] } {
-  const sn = contextualSpaceName(env, st.world, inst(env, b, space));
-  const subbed = subTokens(st.world, pattern, env.intern);
-  const patterns =
-    opOf(subbed) === "," && subbed.kind === "expr"
-      ? subbed.items.slice(1).map((p) => resolveStates(st.world, p))
-      : [resolveStates(st.world, subbed)];
-  // &self uses the functor index. Named spaces use the same exact-ground log index when it is sound,
-  // otherwise they scan in insertion order.
-  if (sn === undefined || sn === "&self") {
-    return {
-      getCandidates: (pInst) => matchCandidates(env, st.world, pInst, patterns.length === 1),
-      patterns,
-    };
-  }
-  return {
-    getCandidates: namedSpaceCandidateGetter(st.world, st.world.spaces.get(sn)),
-    patterns,
-  };
-}
-
-function matchInsideOnce(a: Atom): ExprAtom | undefined {
-  if (a.kind !== "expr" || opOf(a) !== "once" || a.items.length !== 2) return undefined;
-  const inner = a.items[1]!;
-  return inner.kind === "expr" && opOf(inner) === "match" && inner.items.length === 4
-    ? inner
-    : undefined;
-}
-
-function matchFromEmptyCollapseCheck(a: Atom): ExprAtom | undefined {
-  if (a.kind !== "expr" || opOf(a) !== "==" || a.items.length !== 3) return undefined;
-  const left = a.items[1]!;
-  const right = a.items[2]!;
-  const collapseArg = (x: Atom): ExprAtom | undefined =>
-    x.kind === "expr" && opOf(x) === "collapse" && x.items.length === 2
-      ? matchInsideOnce(x.items[1]!)
-      : undefined;
-  if (collapsedEmptySpellings.some((e) => atomEq(left, e))) return collapseArg(right);
-  if (collapsedEmptySpellings.some((e) => atomEq(right, e))) return collapseArg(left);
-  return undefined;
-}
-
-function tryFastNamedOnceMatch(
-  env: MinEnv,
-  st: St,
-  body: Atom,
-  b: Bindings,
-): { value: Atom | undefined; state: St } | undefined {
-  if (body.kind !== "expr" || opOf(body) !== "match" || body.items.length !== 4) return undefined;
-  const sn = contextualSpaceName(env, st.world, inst(env, b, body.items[1]!));
-  if (sn === undefined || sn === "&self") return undefined;
-  const subbed = subTokens(st.world, body.items[2]!, env.intern);
-  if (opOf(subbed) === "," && subbed.kind === "expr") return undefined;
-  const pInst = inst(env, b, resolveStates(st.world, subbed));
-  const space = st.world.spaces.get(sn) ?? emptyLog;
-  if (!pInst.ground || logNonGround(space) !== 0 || st.world.store.size !== 0) return undefined;
-  const st2 = { counter: st.counter + logSize(space), world: st.world };
-  if (idxCount(logGroundIdx(space), pInst) === 0) return { value: undefined, state: st2 };
-  return { value: inst(env, b, body.items[3]!), state: st2 };
-}
-
-function tryFastNamedAddIfAbsent(
-  env: MinEnv,
-  st: St,
-  ifExpr: ExprAtom,
-  b: Bindings,
-): { added: boolean; state: St } | undefined {
-  const match = matchFromEmptyCollapseCheck(ifExpr.items[1]!);
-  if (match === undefined) return undefined;
-  const add = ifExpr.items[2]!;
-  const otherwise = ifExpr.items[3]!;
-  if (
-    add.kind !== "expr" ||
-    opOf(add) !== "add-atom" ||
-    add.items.length !== 3 ||
-    otherwise.kind !== "expr" ||
-    opOf(otherwise) !== "empty" ||
-    otherwise.items.length !== 1
-  )
-    return undefined;
-  const matchSpace = inst(env, b, match.items[1]!);
-  const addSpace = inst(env, b, add.items[1]!);
-  const matchAtom = inst(
-    env,
-    b,
-    resolveStates(st.world, subTokens(st.world, match.items[2]!, env.intern)),
-  );
-  const addAtom = inst(env, b, add.items[2]!);
-  if (!atomEq(matchSpace, addSpace) || !atomEq(matchAtom, addAtom)) return undefined;
-  const name = contextualSpaceName(env, st.world, matchSpace);
-  if (name === undefined || name === "&self") return undefined;
-  const space = st.world.spaces.get(name) ?? emptyLog;
-  if (!matchAtom.ground || logNonGround(space) !== 0 || st.world.store.size !== 0) return undefined;
-  const checked: St = { counter: st.counter + logSize(space), world: st.world };
-  if (idxCount(logGroundIdx(space), matchAtom) !== 0) return { added: false, state: checked };
-  if (opOf(addAtom) === "=") disableTabling(evaluationCacheEnvironment(env));
-  return {
-    added: true,
-    state: {
-      counter: checked.counter,
-      world: appendSpace(env, checked.world, name, [addAtom]),
-    },
-  };
-}
-
-function isCanonicalAddUniqueRule(lhs: Atom, rhs: Atom): boolean {
-  if (lhs.kind !== "expr" || opOf(lhs) !== "add-unique-or-fail" || lhs.items.length !== 3)
-    return false;
-  const spaceVar = lhs.items[1]!;
-  const exprVar = lhs.items[2]!;
-  if (spaceVar.kind !== "var" || exprVar.kind !== "var") return false;
-  if (rhs.kind !== "expr" || opOf(rhs) !== "let" || rhs.items.length !== 4) return false;
-  const stVar = rhs.items[1]!;
-  const key = rhs.items[2]!;
-  const body = rhs.items[3]!;
-  if (stVar.kind !== "var") return false;
-  if (
-    key.kind !== "expr" ||
-    opOf(key) !== "s" ||
-    key.items.length !== 2 ||
-    key.items[1]!.kind !== "expr" ||
-    opOf(key.items[1]!) !== "repra" ||
-    key.items[1]!.items.length !== 2 ||
-    !atomEq(key.items[1]!.items[1]!, exprVar)
-  )
-    return false;
-  if (body.kind !== "expr" || opOf(body) !== "if" || body.items.length !== 4) return false;
-  const match = matchFromEmptyCollapseCheck(body.items[1]!);
-  const add = body.items[2]!;
-  const otherwise = body.items[3]!;
-  return (
-    match !== undefined &&
-    atomEq(match.items[1]!, spaceVar) &&
-    atomEq(match.items[2]!, stVar) &&
-    add.kind === "expr" &&
-    opOf(add) === "add-atom" &&
-    add.items.length === 3 &&
-    atomEq(add.items[1]!, spaceVar) &&
-    atomEq(add.items[2]!, stVar) &&
-    otherwise.kind === "expr" &&
-    opOf(otherwise) === "empty" &&
-    otherwise.items.length === 1
-  );
-}
-
-function tryFastAddUniqueOrFailCall(
-  env: MinEnv,
-  st: St,
-  call: ExprAtom,
-  b: Bindings,
-): { added: boolean; state: St } | undefined {
-  const rules = candidatesW(env, st.world, call);
-  if (rules.length !== 1 || !isCanonicalAddUniqueRule(rules[0]![0], rules[0]![1])) return undefined;
-  const spaceAtom = inst(env, b, call.items[1]!);
-  const name = contextualSpaceName(env, st.world, spaceAtom);
-  if (name === undefined || name === "&self") return undefined;
-  const value = inst(env, b, call.items[2]!);
-  const key = expr([sym("s"), expr([sym("repra"), value])]);
-  const space = st.world.spaces.get(name) ?? emptyLog;
-  if (!key.ground || logNonGround(space) !== 0 || st.world.store.size !== 0) return undefined;
-  const checked: St = {
-    counter: st.counter + rules.length + logSize(space),
-    world: st.world,
-  };
-  if (idxCount(logGroundIdx(space), key) !== 0) return { added: false, state: checked };
-  return {
-    added: true,
-    state: {
-      counter: checked.counter,
-      world: appendSpace(env, checked.world, name, [key]),
-    },
-  };
-}
-
-type QueueParts = { inList: ExprAtom; outList: ExprAtom; size: IntVal };
-type FastRuleResult = { results: Array<[Atom, Bindings]>; state: St };
-
-const isExprOp = (a: Atom, op: string, len: number): a is ExprAtom =>
-  a.kind === "expr" && a.items.length === len && opOf(a) === op;
-
-const isRuleVar = (a: Atom): boolean => a.kind === "var";
-
-const isIntLiteral = (a: Atom, n: IntVal): boolean => atomEq(a, gint(n));
-
-const intValue = (a: Atom): IntVal | undefined =>
-  a.kind === "gnd" && a.value.g === "int" ? a.value.n : undefined;
-
-type QueueRuleArgs = { eVar: Atom; inVar: Atom; outAtom: Atom; nVar: Atom };
-
-function queueRuleArgs(lhs: Atom, op: "enqueue" | "dequeue"): QueueRuleArgs | undefined {
-  if (!isExprOp(lhs, op, 3)) return undefined;
-  const eVar = lhs.items[1]!;
-  const lhsQueue = lhs.items[2]!;
-  if (!isRuleVar(eVar) || !isExprOp(lhsQueue, "queue", 4)) return undefined;
-  return {
-    eVar,
-    inVar: lhsQueue.items[1]!,
-    outAtom: lhsQueue.items[2]!,
-    nVar: lhsQueue.items[3]!,
-  };
-}
-
-function queueParts(a: Atom): QueueParts | undefined {
-  if (!isExprOp(a, "queue", 4)) return undefined;
-  const inList = a.items[1]!;
-  const outList = a.items[2]!;
-  const size = intValue(a.items[3]!);
-  if (inList.kind !== "expr" || outList.kind !== "expr" || size === undefined) return undefined;
-  return { inList, outList, size };
-}
-
-function plusOne(a: Atom, v: Atom): boolean {
-  return isExprOp(a, "+", 3) && atomEq(a.items[1]!, v) && isIntLiteral(a.items[2]!, 1);
-}
-
-function minusOne(a: Atom, v: Atom): boolean {
-  return isExprOp(a, "-", 3) && atomEq(a.items[1]!, v) && isIntLiteral(a.items[2]!, 1);
-}
-
-function isCanonicalEmptyQueueRule(lhs: Atom, rhs: Atom): boolean {
-  return (
-    isExprOp(lhs, "empty-queue", 1) &&
-    isExprOp(rhs, "queue", 4) &&
-    atomEq(rhs.items[1]!, emptyExpr) &&
-    atomEq(rhs.items[2]!, emptyExpr) &&
-    isIntLiteral(rhs.items[3]!, 0)
-  );
-}
-
-function isCanonicalEnqueueRule(lhs: Atom, rhs: Atom): boolean {
-  const lhsVars = queueRuleArgs(lhs, "enqueue");
-  if (lhsVars === undefined || !isExprOp(rhs, "queue", 4)) return false;
-  const { eVar, inVar, outAtom: outVar, nVar } = lhsVars;
-  const rhsIn = rhs.items[1]!;
-  return (
-    isRuleVar(inVar) &&
-    isRuleVar(outVar) &&
-    isRuleVar(nVar) &&
-    isExprOp(rhsIn, "cons", 3) &&
-    atomEq(rhsIn.items[1]!, eVar) &&
-    atomEq(rhsIn.items[2]!, inVar) &&
-    atomEq(rhs.items[2]!, outVar) &&
-    plusOne(rhs.items[3]!, nVar)
-  );
-}
-
-function isCanonicalNormalDequeueRule(lhs: Atom, rhs: Atom): boolean {
-  const lhsVars = queueRuleArgs(lhs, "dequeue");
-  if (lhsVars === undefined || !isExprOp(rhs, "queue", 4)) return false;
-  const { eVar, inVar, outAtom: outCons, nVar } = lhsVars;
-  if (!isRuleVar(inVar) || !isRuleVar(nVar) || !isExprOp(outCons, "cons", 3)) return false;
-  const outVar = outCons.items[2]!;
-  return (
-    isRuleVar(outVar) &&
-    atomEq(outCons.items[1]!, eVar) &&
-    atomEq(rhs.items[1]!, inVar) &&
-    atomEq(rhs.items[2]!, outVar) &&
-    minusOne(rhs.items[3]!, nVar)
-  );
-}
-
-function isCanonicalReverseDequeueRule(lhs: Atom, rhs: Atom): boolean {
-  const lhsVars = queueRuleArgs(lhs, "dequeue");
-  if (lhsVars === undefined || !isExprOp(rhs, "let", 4)) return false;
-  const { eVar, inVar, outAtom, nVar } = lhsVars;
-  if (!isRuleVar(inVar) || !atomEq(outAtom, emptyExpr) || !isRuleVar(nVar)) return false;
-  const pat = rhs.items[1]!;
-  const rev = rhs.items[2]!;
-  const body = rhs.items[3]!;
-  if (!isExprOp(pat, "cons", 3) || !isExprOp(rev, "reverse", 2) || !isExprOp(body, "queue", 4))
-    return false;
-  const restVar = pat.items[2]!;
-  return (
-    isRuleVar(restVar) &&
-    atomEq(pat.items[1]!, eVar) &&
-    atomEq(rev.items[1]!, inVar) &&
-    atomEq(body.items[1]!, emptyExpr) &&
-    atomEq(body.items[2]!, restVar) &&
-    minusOne(body.items[3]!, nVar)
-  );
-}
-
-function isCanonicalEmptyQueueCall(a: Atom): boolean {
-  return isExprOp(a, "empty-queue", 1);
-}
-
-function isCanonicalAddUniqueOrFailCall(a: Atom, space: Atom, value: Atom): boolean {
-  return (
-    isExprOp(a, "add-unique-or-fail", 3) && atomEq(a.items[1]!, space) && atomEq(a.items[2]!, value)
-  );
-}
-
-function letStarParts(
-  a: Atom,
-): { readonly bindings: readonly Atom[]; readonly body: Atom } | undefined {
-  if (!isExprOp(a, "let*", 3)) return undefined;
-  const bindings = a.items[1]!;
-  return bindings.kind === "expr" ? { bindings: bindings.items, body: a.items[2]! } : undefined;
-}
-
-function bindingPair(a: Atom): readonly [Atom, Atom] | undefined {
-  return a.kind === "expr" && a.items.length === 2 ? [a.items[0]!, a.items[1]!] : undefined;
-}
-
-function isMoveAnyCall(a: Atom, state: Atom): boolean {
-  return isExprOp(a, "move", 3) && atomEq(a.items[1]!, state) && a.items[2]!.kind === "var";
-}
-
-function isCanonicalTilePuzzleBfsAllRule(lhs: Atom, rhs: Atom): boolean {
-  if (!isExprOp(lhs, "bfs_all", 2)) return false;
-  const start = lhs.items[1]!;
-  if (start.kind !== "var") return false;
-  const parts = letStarParts(rhs);
-  if (parts === undefined || parts.bindings.length !== 2) return false;
-  const first = bindingPair(parts.bindings[0]!);
-  const second = bindingPair(parts.bindings[1]!);
-  if (first === undefined || second === undefined) return false;
-  const [ptVar, markStart] = first;
-  const [qVar, enqueueStart] = second;
-  if (ptVar.kind !== "var" || qVar.kind !== "var") return false;
-  if (!isCanonicalAddUniqueOrFailCall(markStart, sym("&dup"), start)) return false;
-  if (!isExprOp(enqueueStart, "enqueue", 3)) return false;
-  if (!atomEq(enqueueStart.items[1]!, start)) return false;
-  if (!isCanonicalEmptyQueueCall(enqueueStart.items[2]!)) return false;
-  return (
-    isExprOp(parts.body, "bfs_loop", 3) &&
-    atomEq(parts.body.items[1]!, qVar) &&
-    isIntLiteral(parts.body.items[2]!, 0)
-  );
-}
-
-function isCanonicalTilePuzzleBfsLoopEmptyRule(lhs: Atom, rhs: Atom): boolean {
-  return (
-    isExprOp(lhs, "bfs_loop", 3) &&
-    isCanonicalEmptyQueueCall(lhs.items[1]!) &&
-    lhs.items[2]!.kind === "var" &&
-    atomEq(lhs.items[2]!, rhs)
-  );
-}
-
-function isCanonicalTilePuzzleBfsLoopStepRule(lhs: Atom, rhs: Atom): boolean {
-  if (!isExprOp(lhs, "bfs_loop", 3)) return false;
-  const q = lhs.items[1]!;
-  const n0 = lhs.items[2]!;
-  if (q.kind !== "var" || n0.kind !== "var") return false;
-  const parts = letStarParts(rhs);
-  if (parts === undefined || parts.bindings.length !== 4) return false;
-  const q1 = bindingPair(parts.bindings[0]!);
-  const ln = bindingPair(parts.bindings[1]!);
-  const q2 = bindingPair(parts.bindings[2]!);
-  const n1 = bindingPair(parts.bindings[3]!);
-  if (q1 === undefined || ln === undefined || q2 === undefined || n1 === undefined) return false;
-  const [q1Var, dequeueCall] = q1;
-  const [lnVar, collapseCall] = ln;
-  const [q2Var, foldCall] = q2;
-  const [n1Var, plusCall] = n1;
-  if (q1Var.kind !== "var" || lnVar.kind !== "var" || q2Var.kind !== "var" || n1Var.kind !== "var")
-    return false;
-  if (!isExprOp(dequeueCall, "once", 2)) return false;
-  const dequeue = dequeueCall.items[1]!;
-  if (!isExprOp(dequeue, "dequeue", 3) || dequeue.items[1]!.kind !== "var") return false;
-  const stateVar = dequeue.items[1]!;
-  if (!atomEq(dequeue.items[2]!, q)) return false;
-  if (!isExprOp(collapseCall, "collapse", 2)) return false;
-  const collapseBody = collapseCall.items[1]!;
-  const inner = letStarParts(collapseBody);
-  if (inner === undefined || inner.bindings.length !== 2) return false;
-  const snew = bindingPair(inner.bindings[0]!);
-  const marker = bindingPair(inner.bindings[1]!);
-  if (snew === undefined || marker === undefined) return false;
-  const [snewVar, moveCall] = snew;
-  const [, markCall] = marker;
-  if (snewVar.kind !== "var") return false;
-  if (!isMoveAnyCall(moveCall, stateVar)) return false;
-  if (!isCanonicalAddUniqueOrFailCall(markCall, sym("&dup"), snewVar)) return false;
-  if (!atomEq(inner.body, snewVar)) return false;
-  if (!isExprOp(foldCall, "foldl", 4)) return false;
-  if (!atomEq(foldCall.items[1]!, sym("enqueue"))) return false;
-  if (!atomEq(foldCall.items[2]!, lnVar) || !atomEq(foldCall.items[3]!, q1Var)) return false;
-  if (
-    !isExprOp(plusCall, "+", 3) ||
-    !atomEq(plusCall.items[1]!, n0) ||
-    !isIntLiteral(plusCall.items[2]!, 1)
-  )
-    return false;
-  return (
-    isExprOp(parts.body, "bfs_loop", 3) &&
-    atomEq(parts.body.items[1]!, q2Var) &&
-    atomEq(parts.body.items[2]!, n1Var)
-  );
-}
-
-function tryFastEmptyQueueCall(env: MinEnv, st: St, call: ExprAtom): FastRuleResult | undefined {
-  const rules = candidatesW(env, st.world, call);
-  if (rules.length !== 1 || !isCanonicalEmptyQueueRule(rules[0]![0], rules[0]![1]))
-    return undefined;
-  return {
-    results: [[expr([sym("queue"), emptyExpr, emptyExpr, gint(0)]), emptyBindings]],
-    state: { counter: st.counter + rules.length, world: st.world },
-  };
-}
-
-function tryFastEnqueueCall(env: MinEnv, st: St, call: ExprAtom): FastRuleResult | undefined {
-  const rules = candidatesW(env, st.world, call);
-  if (rules.length !== 1 || !isCanonicalEnqueueRule(rules[0]![0], rules[0]![1])) return undefined;
-  const q = queueParts(call.items[2]!);
-  if (q === undefined) return undefined;
-  const nextIn = expr([call.items[1]!, ...q.inList.items]);
-  return {
-    results: [[expr([sym("queue"), nextIn, q.outList, gint(addInt(q.size, 1))]), emptyBindings]],
-    // The interpreted RHS calls the stdlib `(cons ...)` rule once before `queue` becomes inert.
-    state: { counter: st.counter + rules.length + 1, world: st.world },
-  };
-}
-
-function queuePopBindings(want: Atom, got: Atom): Bindings[] | undefined {
-  const ms = matchAtoms(want, got).filter((m) => !hasLoop(m));
-  return ms.length === 0 ? undefined : ms;
-}
-
-function tryFastDequeueCall(env: MinEnv, st: St, call: ExprAtom): FastRuleResult | undefined {
-  const rules = candidatesW(env, st.world, call);
-  if (
-    rules.length !== 2 ||
-    !isCanonicalNormalDequeueRule(rules[0]![0], rules[0]![1]) ||
-    !isCanonicalReverseDequeueRule(rules[1]![0], rules[1]![1])
-  )
-    return undefined;
-  const q = queueParts(call.items[2]!);
-  if (q === undefined) return undefined;
-  const wanted = call.items[1]!;
-  if (q.outList.items.length > 0) {
-    const got = q.outList.items[0]!;
-    const ms = queuePopBindings(wanted, got);
-    if (ms === undefined) return undefined;
-    const next = expr([
-      sym("queue"),
-      q.inList,
-      expr(q.outList.items.slice(1)),
-      gint(subInt(q.size, 1)),
-    ]);
-    return {
-      results: ms.map((m) => [next, m]),
-      state: { counter: st.counter + rules.length, world: st.world },
-    };
-  }
-  if (q.inList.items.length === 0) return undefined;
-  const reversed = [...q.inList.items].reverse();
-  const got = reversed[0]!;
-  const ms = queuePopBindings(wanted, got);
-  if (ms === undefined) return undefined;
-  const next = expr([sym("queue"), emptyExpr, expr(reversed.slice(1)), gint(subInt(q.size, 1))]);
-  return {
-    results: ms.map((m) => [next, m]),
-    // The reverse branch applies the dequeue rule, then the stdlib `let` rule.
-    state: { counter: st.counter + rules.length + 1, world: st.world },
-  };
-}
-
-function tryFastQueueCall(env: MinEnv, st: St, call: ExprAtom): FastRuleResult | undefined {
-  const op = opOf(call);
-  if (op === "empty-queue" && call.items.length === 1) return tryFastEmptyQueueCall(env, st, call);
-  if (op === "enqueue" && call.items.length === 3) return tryFastEnqueueCall(env, st, call);
-  if (op === "dequeue" && call.items.length === 3) return tryFastDequeueCall(env, st, call);
-  return undefined;
-}
-
-function tileCellKey(a: Atom): string | undefined {
-  if (a.kind === "sym") return "s:" + a.name;
-  if (a.kind === "gnd" && a.value.g === "int") return "i:" + String(a.value.n);
-  return undefined;
-}
-
-function tileStateKey(a: Atom): string | undefined {
-  if (a.kind !== "expr" || a.items.length !== 9) return undefined;
-  const parts: string[] = [];
-  let blanks = 0;
-  for (const cell of a.items) {
-    if (cell.kind === "sym" && cell.name === "___") blanks += 1;
-    const k = tileCellKey(cell);
-    if (k === undefined) return undefined;
-    parts.push(k);
-  }
-  return blanks === 1 ? parts.join("|") : undefined;
-}
-
-function tileNeighbors(state: ExprAtom): ExprAtom[] {
-  const blank = state.items.findIndex((x) => x.kind === "sym" && x.name === "___");
-  const swaps =
-    blank === 0
-      ? [1, 3]
-      : blank === 1
-        ? [0, 2, 4]
-        : blank === 2
-          ? [1, 5]
-          : blank === 3
-            ? [0, 4, 6]
-            : blank === 4
-              ? [1, 3, 5, 7]
-              : blank === 5
-                ? [2, 4, 8]
-                : blank === 6
-                  ? [3, 7]
-                  : blank === 7
-                    ? [4, 6, 8]
-                    : [5, 7];
-  const out: ExprAtom[] = [];
-  for (const j of swaps) {
-    const items = state.items.slice();
-    [items[blank], items[j]] = [items[j]!, items[blank]!];
-    out.push(expr(items));
-  }
-  return out;
-}
-
-function tileVisitedAtom(state: Atom): Atom {
-  return expr([sym("s"), expr([sym("repra"), state])]);
-}
-
-function hasCanonicalTilePuzzleRuntime(env: MinEnv, w: World): boolean {
-  if ((env.ruleIndex.get("move")?.length ?? 0) !== 24) return false;
-  const bfsAllRules = visibleStaticRulesForHead(env, w, "bfs_all");
-  if (
-    bfsAllRules.length !== 1 ||
-    !isCanonicalTilePuzzleBfsAllRule(bfsAllRules[0]![0], bfsAllRules[0]![1])
-  )
-    return false;
-  const bfsLoopRules = visibleStaticRulesForHead(env, w, "bfs_loop");
-  if (
-    bfsLoopRules.length !== 2 ||
-    !isCanonicalTilePuzzleBfsLoopEmptyRule(bfsLoopRules[0]![0], bfsLoopRules[0]![1]) ||
-    !isCanonicalTilePuzzleBfsLoopStepRule(bfsLoopRules[1]![0], bfsLoopRules[1]![1])
-  )
-    return false;
-  if (logSize(w.spaces.get("&dup") ?? emptyLog) !== 0) return false;
-  const emptyRules = candidatesW(env, w, expr([sym("empty-queue")]));
-  if (emptyRules.length !== 1 || !isCanonicalEmptyQueueRule(emptyRules[0]![0], emptyRules[0]![1]))
-    return false;
-  const enqueueRules = candidatesW(
-    env,
-    w,
-    expr([sym("enqueue"), emptyExpr, expr([sym("queue"), emptyExpr, emptyExpr, gint(0)])]),
-  );
-  if (
-    enqueueRules.length !== 1 ||
-    !isCanonicalEnqueueRule(enqueueRules[0]![0], enqueueRules[0]![1])
-  )
-    return false;
-  const dequeueRules = candidatesW(
-    env,
-    w,
-    expr([sym("dequeue"), variable("_"), expr([sym("queue"), emptyExpr, emptyExpr, gint(0)])]),
-  );
-  if (
-    dequeueRules.length !== 2 ||
-    !isCanonicalNormalDequeueRule(dequeueRules[0]![0], dequeueRules[0]![1]) ||
-    !isCanonicalReverseDequeueRule(dequeueRules[1]![0], dequeueRules[1]![1])
-  )
-    return false;
-  const addUniqueRules = candidatesW(
-    env,
-    w,
-    expr([sym("add-unique-or-fail"), sym("&dup"), emptyExpr]),
-  );
-  return (
-    addUniqueRules.length === 1 &&
-    isCanonicalAddUniqueRule(addUniqueRules[0]![0], addUniqueRules[0]![1])
-  );
-}
-
-function tryFastTilePuzzleBfsAll(env: MinEnv, st: St, call: ExprAtom): FastRuleResult | undefined {
-  if (opOf(call) !== "bfs_all" || call.items.length !== 2 || st.world.store.size !== 0)
-    return undefined;
-  const start = call.items[1]!;
-  const startKey = tileStateKey(start);
-  if (start.kind !== "expr" || startKey === undefined) return undefined;
-  if (!hasCanonicalTilePuzzleRuntime(env, st.world)) return undefined;
-  const seen = new Set<string>();
-  const added: Atom[] = [];
-  const queue: ExprAtom[] = [start];
-  let head = 0;
-  while (head < queue.length) {
-    const state = queue[head++]!;
-    for (const next of tileNeighbors(state)) {
-      const key = tileStateKey(next)!;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      added.push(tileVisitedAtom(next));
-      queue.push(next);
-    }
-  }
-  return {
-    results: [[gint(queue.length), emptyBindings]],
-    state: {
-      counter: st.counter,
-      world: appendSpace(env, st.world, "&dup", added),
-    },
-  };
-}
-
-// True if `a` carries a grounded atom with a custom matcher (`.match`). unifyTrail compares grounded atoms
-// by equality, so a query touching one declines to the immutable matcher (which honors `.match`).
-function atomHasCustomGrounded(a: Atom): boolean {
-  if (a.kind === "gnd") return (a as { match?: unknown }).match !== undefined;
-  if (a.kind === "expr") return a.items.some(atomHasCustomGrounded);
-  return false;
-}
-
-// Naive trail DFS counts each candidate per node, so a large cyclic join (which wcoJoin handles AGM-
-// optimally) would blow up; this caps the per-query node visits and declines past it. matchConjCount only
-// ever runs the trail over the small non-ground tail, so this is a safety net, not the common path.
-const TRAIL_COUNT_BUDGET = 8_000_000;
-
-// Count the solutions of a conjunctive `match` on a WAM-style trail (experimental.trail): bind variables in
-// place over a DFS of the candidate facts, undoing on backtrack, never building a `Bindings`. The immutable
-// `merge` path allocates a binding set per solution (`permutations` builds ~360k); this allocates none. A
-// solution *count* is name-independent, so the gensym ordering that blocks a byte-identical result-producing
-// trail match does not affect it — this is byte-identical to counting the immutable matcher's solutions.
-// Returns undefined to fall back when a pattern/candidate carries a custom grounded matcher unifyTrail
-// cannot reproduce.
-// A fresh trail seeded with `b0`'s value bindings and eq aliases: the starting point for a trail count.
-function seededTrail(b0: Bindings): Trail {
-  const tr = new Trail();
-  for (const [x, a] of valEntries(b0)) tr.bind(x, a);
-  for (const r of eqRelations(b0)) if (tr.get(r.x) === undefined) tr.bind(r.x, variable(r.y));
-  return tr;
-}
-
-// Count the solutions of `patterns` over a pre-seeded trail: bind each candidate in place over a DFS,
-// undoing on backtrack, never building a binding set. Returns undefined to decline (a custom grounded
-// matcher, or the node budget). Shared by matchCountTrail (the whole match) and matchConjCount's tail.
-function countTrailDFS(
-  tr: Trail,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  patterns: readonly Atom[],
-  counter0: number,
-  branchNamespace: string | undefined,
-  freshCaches?: ReadonlyArray<Map<Atom, Atom>>,
-): { count: number; counter: number } | undefined {
-  let counter = counter0;
-  let count = 0;
-  let bailed = false;
-  let nodes = 0;
-  const rec = (i: number): void => {
-    if (++nodes > TRAIL_COUNT_BUDGET) {
-      bailed = true; // a non-ground tail that is itself a large naive join: decline to the immutable path
-      return;
-    }
-    if (i === patterns.length) {
-      count += 1;
-      return;
-    }
-    const pInst = tr.resolve(patterns[i]!);
-    const source = getCandidates(pInst);
-    // One freshen cache PER GOAL LEVEL, not one shared across the whole tail: two tail goals can match the
-    // same stored fact, and a single cache would hand them the SAME freshened copy, so a fresh variable that
-    // goal i bound to a query variable would reappear in goal i+1's candidate and fail to unify (a spurious
-    // coreference). matchConjJoin allocates a fresh cache per tail goal for exactly this reason; mirror it.
-    // The per-level cache is still shared across all join leaves, so each tail candidate freshens once.
-    const cache = syntheticCandidateSource(source) ? undefined : freshCaches?.[i];
-    for (const cand of source) {
-      if (atomHasCustomGrounded(cand)) {
-        bailed = true;
-        return;
-      }
-      // Freshen the candidate's variables. The same fact recurs at every join leaf (the E template over all
-      // 40320 permutations), so a cache shared across leaves freshens it once, not once per leaf — and the
-      // counter then advances exactly as matchConjJoin's freshCache, keeping the fold's gensym in step.
-      let fresh = cache?.get(cand);
-      if (fresh === undefined) {
-        fresh = freshenRule(counter, cand, cand, branchNamespace)[0];
-        counter += 1;
-        cache?.set(cand, fresh);
-      }
-      const mk = tr.mark();
-      if (unifyTrail(tr, pInst, fresh)) rec(i + 1);
-      tr.undo(mk);
-      if (bailed) return;
-    }
-    counter += candidateCounterPadding(source);
-  };
-  rec(0);
-  return bailed ? undefined : { count, counter };
-}
-
-function matchCountTrail(
-  getCandidates: (pInst: Atom) => CandidateSource,
-  patterns: readonly Atom[],
-  st: St,
-  b0: Bindings,
-): { count: number; counter: number } | undefined {
-  for (const p of patterns) if (atomHasCustomGrounded(p)) return undefined;
-  return countTrailDFS(
-    seededTrail(b0),
-    getCandidates,
-    patterns,
-    st.counter,
-    branchVariableNamespace(st.world),
-  );
-}
-
-interface MatchPlan {
-  readonly endState: St;
-  readonly valuesAreNormal: boolean;
-  foldItems(prev: Stack): Iterable<Item>;
-  foldValues(): Iterable<Atom>;
-}
-
-function* matchSingleSolutions(
-  env: MinEnv,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  pattern: Atom,
-  st: St,
-  b0: Bindings,
-): Iterable<Bindings> {
-  let counter = st.counter;
-  const pInst = inst(env, b0, pattern);
-  const source = getCandidates(pInst);
-  for (const atom of source) {
-    const fresh = freshenRule(counter, atom, atom, branchVariableNamespace(st.world))[0];
-    counter += 1;
-    for (const mb of matchAtoms(pInst, fresh))
-      for (const m of merge(b0, mb)) if (!hasLoop(m)) yield m;
-  }
-  counter += candidateCounterPadding(source);
-}
-
-function matchSingleEndState(
-  env: MinEnv,
-  getCandidates: (pInst: Atom) => CandidateSource,
-  pattern: Atom,
-  template: Atom,
-  st: St,
-  b0: Bindings,
-): { endState: St; valuesAreNormal: boolean } {
-  const pInst = inst(env, b0, pattern);
-  let valuesAreNormal =
-    isNormalForm(env, st.world, pInst) && isNormalFormAssumingVars(env, st.world, template);
-  let counter = st.counter;
-  const source = getCandidates(pInst);
-  for (const atom of source) {
-    counter += 1;
-    if (valuesAreNormal && !isNormalForm(env, st.world, atom)) valuesAreNormal = false;
-  }
-  counter += candidateCounterPadding(source);
-  return { endState: { counter, world: st.world }, valuesAreNormal };
-}
-
-function matchPlan(
-  env: MinEnv,
-  st: St,
-  space: Atom,
-  pattern: Atom,
-  template: Atom,
-  b: Bindings,
-): MatchPlan {
-  const { getCandidates, patterns } = matchSetup(env, st, space, pattern, b);
-  if (patterns.length === 1) {
-    const pat = patterns[0]!;
-    const { endState, valuesAreNormal } = matchSingleEndState(
-      env,
-      getCandidates,
-      pat,
-      template,
-      st,
-      b,
-    );
-    const solutions = (): Iterable<Bindings> =>
-      matchSingleSolutions(env, getCandidates, pat, st, b);
-    return {
-      endState,
-      valuesAreNormal,
-      *foldItems(prev: Stack): Iterable<Item> {
-        for (const m of solutions()) yield finItem(prev, inst(env, m, template), m);
-      },
-      *foldValues(): Iterable<Atom> {
-        for (const m of solutions()) yield inst(env, m, template);
-      },
-    };
-  }
-  const [sols, endState] =
-    patterns.length >= 2
-      ? matchConjJoin(env, getCandidates, patterns, st, b)
-      : matchConj(env, getCandidates, patterns, st, [b]);
-  return {
-    endState,
-    valuesAreNormal: false,
-    *foldItems(prev: Stack): Iterable<Item> {
-      for (const m of sols) if (!hasLoop(m)) yield finItem(prev, inst(env, m, template), m);
-    },
-    *foldValues(): Iterable<Atom> {
-      for (const m of sols) if (!hasLoop(m)) yield inst(env, m, template);
-    },
-  };
-}
-
-function matchOp(
-  env: MinEnv,
-  st: St,
-  prev: Stack,
-  space: Atom,
-  pattern: Atom,
-  template: Atom,
-  b: Bindings,
-): [Item[], St] {
-  const plan = matchPlan(env, st, space, pattern, template, b);
-  const out: Item[] = [];
-  for (const item of plan.foldItems(prev)) out.push(item);
-  return [out, plan.endState];
-}
-
-function matchItemSource(
-  env: MinEnv,
-  st: St,
-  prev: Stack,
-  space: Atom,
-  pattern: Atom,
-  template: Atom,
-  b: Bindings,
-): ItemSource {
-  const plan = matchPlan(env, st, space, pattern, template, b);
-  return {
-    endState: plan.endState,
-    foldItems(): Iterable<Item> {
-      return plan.foldItems(prev);
-    },
-  };
 }
 
 // ---------- driver (iterative) ----------
@@ -3740,157 +1933,6 @@ function* reduceChildrenG(
 
 // ---------- runtime-rule tabling (fibadd: a `(= (fib $N) ...)` added at runtime via add-atom) ----------
 
-function prepareCollapseRoute(
-  env: MinEnv,
-  st: St,
-  bnd: Bindings,
-  call: Atom,
-): CollapseRoute | undefined {
-  if (
-    !collapseRouteEnabled() ||
-    size(bnd) !== 0 ||
-    call.kind !== "expr" ||
-    !call.ground ||
-    call.items.length === 0 ||
-    call.items[0]!.kind !== "sym" ||
-    env.varRulesVar.length !== 0 ||
-    st.world.selfVarRules.length !== 0
-  )
-    return undefined;
-  if (isDefinedHead(env, st.world, DONE_UNIT.name)) return undefined;
-  const op = call.items[0]!.name;
-  if (
-    st.world.selfRules.has(op) ||
-    staticRulesChangedFor(st.world, op) ||
-    env.pureFunctors?.has(op) === true
-  )
-    return undefined;
-  const rules = visibleStaticRulesForHead(env, st.world, op);
-  if (rules === undefined || rules.length !== 1) return undefined;
-  const args = call.items.slice(1);
-  if (args.some((arg) => !isNormalForm(env, st.world, arg))) return undefined;
-  if (typeMismatch(env, st.world, op, args, typeViewFor(env, st.world).sigs.get(op)) !== undefined)
-    return undefined;
-
-  const [lhs, rhs] = rules[0]!;
-  if (lhs.kind !== "expr" || lhs.items.length !== call.items.length || !canMatchShallow(lhs, call))
-    return undefined;
-
-  const suffix = worldFreshVariableSuffix(st.world, st.counter);
-  const matches: Bindings[] = [];
-  for (const mb of matchAtomsScoped(lhs, call, suffix))
-    for (const m of merge(bnd, mb)) if (!hasLoop(m)) matches.push(m);
-  if (matches.length !== 1) return undefined;
-
-  const body = inst(env, matches[0]!, rhs, suffix);
-  const tail = tailMatchBuild(body);
-  if (tail === undefined) return undefined;
-  if (hasAnyAtomVar(tail.boundVars, tail.tailMatch.items.slice(1))) return undefined;
-  let buildExpr = tail.buildExpr;
-  let voidCalls: ReadonlyArray<{ readonly op: string; readonly args: readonly Atom[] }> | undefined;
-  if (voidBuildEnabled()) {
-    const split = splitVoidBuild(buildExpr, env);
-    if (split !== undefined) {
-      buildExpr = split.prefix;
-      voidCalls = split.calls;
-    }
-  }
-  return {
-    buildExpr,
-    tailMatch: tail.tailMatch,
-    st: { counter: st.counter + 1, world: st.world },
-    bnd: matches[0]!,
-    voidCalls,
-  };
-}
-
-// Count-aggregate (the FAQ / factorized-database COUNT, mork-uni-join's `Count` semiring): a
-// `(match space (head $v1..$vk) tmpl)` whose pattern is all-distinct bare variables unifies with exactly the
-// space atoms of that head and arity, so the number of solutions is a tally, not an enumeration. Count the
-// head/arity-matching candidates in one pass over the matcher's own candidate source, with no per-candidate
-// freshen, unify, trail, or collapse materialisation. The gensym still advances once per candidate the
-// streaming match would *iterate* (every head-matching atom the source yields, including ones a different
-// arity rules out), so `counter += iterated` stays byte-identical to the unfused path; `count` is the
-// arity-matching subset (a bare-variable atom in the space unifies any arity). Returns undefined (fall back)
-// unless the resolved pattern is a single all-distinct-variable expression.
-function tryCountAggregate(
-  env: MinEnv,
-  st: St,
-  bnd: Bindings,
-  match: ExprAtom,
-): { count: number; iterated: number } | undefined {
-  if (match.items.length < 3) return undefined;
-  const { getCandidates, patterns } = matchSetup(env, st, match.items[1]!, match.items[2]!, bnd);
-  if (patterns.length !== 1) return undefined;
-  const pat = inst(env, bnd, patterns[0]!);
-  if (pat.kind !== "expr" || pat.items.length === 0 || pat.items[0]!.kind !== "sym")
-    return undefined;
-  const seen = new Set<string>();
-  for (let i = 1; i < pat.items.length; i++) {
-    const a = pat.items[i]!;
-    if (a.kind !== "var" || seen.has(a.name)) return undefined;
-    seen.add(a.name);
-  }
-  // A ground (nullary) pattern routes through the exact-membership index, which advances the counter
-  // differently from a per-candidate scan, so require at least one variable argument: then the streaming
-  // match is the candidate scan whose count and counter this tally reproduces.
-  if (seen.size === 0) return undefined;
-  const k = headKey(pat)!; // defined: the head is a symbol (guarded above)
-  const arity = pat.items.length;
-  // A candidate unifies with the all-distinct-variable, symbol-headed pattern `(k $v..)` iff it is a bare
-  // variable, or an expr of the same arity whose head is the same symbol `k` or a variable. A same-arity
-  // candidate whose head is a different symbol, a grounded value, or a nested expr does NOT unify, though it
-  // is still yielded as a candidate (so it advances `iterated`/the counter). Counting by arity alone
-  // over-counts those: a named space yields the whole space unfiltered, and `&self` admits headKey-undefined
-  // (grounded- or expr-headed) atoms.
-  const unifies = (a: Atom): boolean =>
-    a.kind === "var" ||
-    (a.kind === "expr" &&
-      a.items.length === arity &&
-      (headKey(a) === k || a.items[0]!.kind === "var"));
-  const w = st.world;
-  // Direct tally over the runtime &self store, skipping the materialisation (and, for the flat space, the
-  // decoding) of a ~1.5M-element candidate array, when the candidate set IS exactly that store: a &self match
-  // with no state to resolve and no static or variable-headed facts of this head, so `matchCandidates` would
-  // yield only the runtime atoms whose head is `k` (or which are variable-headed). Counting is
-  // order-independent, so the newest-first log walk is fine. Same head filter as `runtimeCandidates`, so
-  // `iterated` (and thus the counter) is identical. The flat store tallies columnar-ly (countHeadArity
-  // mirrors `unifies` exactly); at most one of the two stores is non-empty, and summing keeps the tally
-  // right either way.
-  const sn = contextualSpaceName(env, w, inst(env, bnd, match.items[1]!));
-  if (
-    (sn === undefined || sn === "&self") &&
-    w.store.size === 0 &&
-    env.varHeadedFacts.length === 0 &&
-    (env.factIndex.get(k)?.length ?? 0) === 0
-  ) {
-    let count = 0;
-    let iterated = 0;
-    for (let p = w.selfExtra; p !== null; p = p.prev) {
-      const akk = headKey(p.atom);
-      if (akk === undefined || akk === k) {
-        iterated += 1;
-        if (unifies(p.atom)) count += 1;
-      }
-    }
-    if (w.flatSelfExtra !== undefined) {
-      const flat = w.flatSelfExtra.countHeadArity(k, arity);
-      count += flat.count;
-      iterated += flat.iterated;
-    }
-    return { count, iterated };
-  }
-  const source = getCandidates(pat);
-  let count = 0;
-  let iterated = 0;
-  for (const cand of source) {
-    iterated += 1;
-    if (unifies(cand)) count += 1;
-  }
-  iterated += candidateCounterPadding(source);
-  return { count, iterated };
-}
-
 function* countTailMatchG(
   env: MinEnv,
   fuel: number,
@@ -4002,228 +2044,7 @@ function* tryCollapseRouteG(
   };
 }
 
-function canStreamStdlibCase(env: MinEnv, w: World): boolean {
-  return (
-    STREAM_CASE &&
-    (env.ruleIndex.get("case")?.length ?? 0) === 1 &&
-    env.varRulesVar.length === 0 &&
-    !w.selfRules.has("case") &&
-    !staticRulesChangedFor(w, "case") &&
-    w.selfVarRules.length === 0
-  );
-}
-
-const choicePlanApplication =
-  (env: MinEnv, world: World) =>
-  (name: string, args: readonly Atom[]): boolean =>
-    checkApplication(env, world, name, args) === null;
-
-function staticSpaceHasCustomMatcher(env: MinEnv): boolean {
-  const cached = staticCustomMatcherCache.get(env);
-  if (cached?.atomCount === env.atoms.length) return cached.hasCustomMatcher;
-  const hasCustomMatcher = env.atoms.some(atomHasCustomGrounded);
-  staticCustomMatcherCache.set(env, { atomCount: env.atoms.length, hasCustomMatcher });
-  return hasCustomMatcher;
-}
-
-function isDiscardedFiniteMatch(env: MinEnv, world: World, call: ExprAtom): boolean {
-  if (
-    opOf(call) !== "let" ||
-    call.items.length !== 4 ||
-    call.items[1]!.kind !== "var" ||
-    call.items[2]!.kind !== "expr" ||
-    opOf(call.items[2]!) !== "match" ||
-    call.items[2]!.items.length !== 4 ||
-    call.items[3]!.kind !== "expr" ||
-    opOf(call.items[3]!) !== "empty" ||
-    call.items[3]!.items.length !== 1 ||
-    (env.ruleIndex.get("let")?.length ?? 0) !== 1 ||
-    (env.ruleIndex.get("match")?.length ?? 0) !== 0 ||
-    (env.ruleIndex.get("empty")?.length ?? 0) !== 0 ||
-    env.varRulesVar.length > 0 ||
-    world.selfVarRules.length > 0 ||
-    world.selfRules.has("let") ||
-    world.selfRules.has("match") ||
-    world.selfRules.has("empty") ||
-    staticRulesChangedFor(world, "let") ||
-    staticRulesChangedFor(world, "match") ||
-    staticRulesChangedFor(world, "empty") ||
-    env.gt.has("let") ||
-    env.agt.has("let") ||
-    env.gt.has("match") ||
-    env.agt.has("match") ||
-    !env.gt.has("empty") ||
-    env.agt.has("empty") ||
-    !isTableSafeGroundedOp("empty", env.gt.get("empty")!) ||
-    world.store.size !== 0 ||
-    world.tokens.size !== 0
-  )
-    return false;
-  const match = call.items[2]! as ExprAtom;
-  const space = match.items[1]!;
-  if (space.kind !== "sym") return false;
-  if (atomHasCustomGrounded(match.items[2]!) || atomHasCustomGrounded(match.items[3]!))
-    return false;
-  if (space.name === "&self") {
-    if (staticSpaceHasCustomMatcher(env)) return false;
-    return !logToArray(world.selfExtra).some(atomHasCustomGrounded);
-  }
-  const named = world.spaces.get(space.name);
-  return named === undefined || !logToArray(named).some(atomHasCustomGrounded);
-}
-
-function tryFastUniqueChoiceFunction(
-  env: MinEnv,
-  world: World,
-  op: string,
-  args: readonly Atom[],
-): Atom[] | undefined {
-  if (
-    typeViewFor(env, world).sigs.has(op) ||
-    world.selfRules.has(op) ||
-    staticRulesChangedFor(world, op)
-  )
-    return undefined;
-  const rules = env.ruleIndex.get(op);
-  if (rules?.length !== 1) return undefined;
-  const [lhs, rhs] = rules[0]!;
-  if (
-    lhs.kind !== "expr" ||
-    lhs.items.length !== args.length + 1 ||
-    lhs.items[0]!.kind !== "sym" ||
-    lhs.items[0]!.name !== op ||
-    rhs.kind !== "expr" ||
-    opOf(rhs) !== "unique-atom" ||
-    rhs.items.length !== 2
-  )
-    return undefined;
-  const collapse = rhs.items[1]!;
-  if (collapse.kind !== "expr" || opOf(collapse) !== "collapse" || collapse.items.length !== 2)
-    return undefined;
-  if (!canRunChoicePlan(env, world) || !args.every((arg) => isClosedChoiceValue(env, world, arg)))
-    return undefined;
-  const bindings = new Map<string, Atom>();
-  for (let index = 0; index < args.length; index++) {
-    const parameter = lhs.items[index + 1]!;
-    if (parameter.kind !== "var" || bindings.has(parameter.name)) return undefined;
-    bindings.set(parameter.name, args[index]!);
-  }
-  const planned = runDistinctChoicePlanBound(
-    collapse.items[1]!,
-    bindings,
-    choicePlanConstructor(env, world),
-    choicePlanDataExpression(env, world),
-    choicePlanApplication(env, world),
-  );
-  if (planned === undefined) return undefined;
-  return [sym(","), ...planned];
-}
-
-function streamCaseSource(
-  env: MinEnv,
-  st: St,
-  bnd: Bindings,
-  matchExpr: ExprAtom,
-  cases: Atom,
-): ItemSource | undefined {
-  if (cases.kind !== "expr" || cases.items.length !== 1) return undefined;
-  const onlyCase = cases.items[0]!;
-  if (onlyCase.kind !== "expr" || onlyCase.items.length !== 2 || onlyCase.items[0]!.kind !== "var")
-    return undefined;
-  const casePattern = inst(env, bnd, onlyCase.items[0]!);
-  const caseTemplate = inst(env, bnd, onlyCase.items[1]!);
-  const caseRuleEnd = { counter: st.counter + 1, world: st.world };
-  const plan = matchPlan(
-    env,
-    caseRuleEnd,
-    matchExpr.items[1]!,
-    matchExpr.items[2]!,
-    matchExpr.items[3]!,
-    bnd,
-  );
-  if (!plan.valuesAreNormal) return undefined;
-  let valueCount = 0;
-  const valueIter = plan.foldValues()[Symbol.iterator]();
-  for (let next = valueIter.next(); !next.done; next = valueIter.next()) valueCount += 1;
-  const switchCount = valueCount === 0 ? 1 : valueCount;
-  const endState = {
-    counter: plan.endState.counter + 2 * switchCount,
-    world: plan.endState.world,
-  };
-  const bodyFor = (value: Atom): Atom => {
-    for (const mb of matchAtoms(value, casePattern))
-      for (const m of merge(bnd, mb)) if (!hasLoop(m)) return inst(env, m, caseTemplate);
-    return sym("Empty");
-  };
-  return {
-    endState,
-    *foldItems(): Iterable<Item> {
-      let any = false;
-      for (const value of plan.foldValues()) {
-        any = true;
-        yield {
-          stack: admitAtom(expr([sym("metta"), bodyFor(value), UNDEF, sym("&self")]), null),
-          bnd,
-        };
-      }
-      if (!any)
-        yield {
-          stack: admitAtom(expr([sym("metta"), bodyFor(sym("Empty")), UNDEF, sym("&self")]), null),
-          bnd,
-        };
-    },
-  };
-}
-
 // ---------- mettaEval (type-directed metta-call loop) ----------
-interface RulePairPlan {
-  readonly selected: MinEnv;
-  readonly pb: Bindings;
-  /** Terminal answer pairs when the alternative needs no nested evaluation; undefined otherwise. */
-  readonly final: Array<[Atom, Bindings]> | undefined;
-}
-
-/**
- * Classify one interpreted-rule alternative. A plain call instead of a generator so the deep
- * recursion (the eval case delegates into mettaEvalG at each level) holds no extra native frame
- * per level; both the batch loop and the streaming pass share it.
- */
-function planRulePair(
-  env: MinEnv,
-  world: World,
-  queryVars: readonly string[],
-  partB: Bindings,
-  wApp: Atom,
-  p: ContextualPair,
-  opReturnsAtom: boolean,
-): RulePairPlan {
-  const selected = refreshEvaluationEnvironment(p[2] ?? env, world);
-  const pb = mergeRestrict(selected, queryVars, partB, p[1]);
-  if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
-    // wApp did not reduce (a constructor application / data term). Cache a ground one so the next visit
-    // short-circuits instead of re-walking it.
-    return { selected, pb, final: [[wApp, partB]] };
-  }
-  if (opReturnsAtom && !isEmbeddedOp(p[0])) return { selected, pb, final: [[p[0], pb]] };
-  if (isErrorAtom(p[0])) {
-    // Error atoms are terminal data in Minimal MeTTa. Re-evaluating one can repeatedly wrap or reproduce
-    // the same host failure instead of publishing it.
-    return { selected, pb, final: [[p[0], pb]] };
-  }
-  return { selected, pb, final: undefined };
-}
-
-/** Map nested evaluation results back through the rule's restricted bindings. */
-function mapReducedRulePairs(
-  plan: RulePairPlan,
-  queryVars: readonly string[],
-  more: ReadonlyArray<readonly [Atom, Bindings]>,
-): Array<[Atom, Bindings]> {
-  return more.map((m): [Atom, Bindings] => [
-    m[0],
-    mergeRestrict(plan.selected, queryVars, plan.pb, m[1]),
-  ]);
-}
 
 function* reduceRulePairsG(
   env: MinEnv,
@@ -4285,15 +2106,6 @@ function* reduceRulePairsG(
         alternatives.branches.map((branch) => branch.world),
       );
   }
-}
-
-interface StreamedInterpretedPass {
-  /** `single` preserves the caller's one-pair tail-call trampoline; `streamed` already reduced,
-   *  emitted, and (subject to the retention flag) collected every alternative. */
-  readonly kind: "single" | "streamed";
-  readonly pair?: ContextualPair;
-  readonly out: Array<[Atom, Bindings]>;
-  readonly state: St;
 }
 
 /**
@@ -4517,100 +2329,6 @@ function* finishDirectGroundedApplicationG(
   );
 }
 
-class SchedulerCancellationError extends Error {
-  readonly reason: CancellationReason;
-
-  constructor(operation: string, reason: CancellationReason) {
-    super(`${operation} cancelled: ${reason.message ?? reason.code}`);
-    this.name = "SchedulerCancellationError";
-    this.reason = reason;
-  }
-}
-
-function schedulerCancellationError(
-  operation: string,
-  reason: CancellationReason,
-): SchedulerCancellationError {
-  return new SchedulerCancellationError(operation, reason);
-}
-
-function* closeScheduleG<T, R>(
-  schedule: DualModeSearchCursor<T, R>,
-  reason: CancellationReason,
-  initiating: SchedulerUnwindFailure,
-): Gen<void> {
-  try {
-    yield schedule.closeEffect(reason);
-  } catch (cleanupError) {
-    if (!initiating.active) throw cleanupError;
-    throw Object.is(cleanupError, initiating.error)
-      ? initiating.error
-      : combineInitiatingAndCleanupFailure(
-          initiating.error,
-          cleanupError,
-          "scheduler operation and cleanup both failed",
-        );
-  }
-}
-
-function* chargeSchedulerStepsG(
-  cursor: CursorMode | undefined,
-  state: St,
-  steps: number,
-): Gen<void> {
-  if (cursor === undefined) return;
-  recordCursorSteps(cursor, steps);
-  yield* flushCursorProgressG(cursor, state);
-}
-
-function* takeFirstScheduledAnswerG(
-  operation: "race" | "once",
-  schedule: DualModeSearchCursor<MinimalSearchAnswer, St>,
-  continuation: Stack,
-  state: St,
-  cursor: CursorMode | undefined,
-): Gen<[Item[], St]> {
-  let finished = false;
-  const unwind: SchedulerUnwindFailure = { active: false, error: undefined };
-  try {
-    for (;;) {
-      const event = (yield schedule.nextEffect()) as SearchEvent<MinimalSearchAnswer, St>;
-      yield* chargeSchedulerStepsG(cursor, state, event.steps);
-      switch (event.kind) {
-        case "answer":
-          finished = true;
-          return [
-            [finItem(continuation, event.value.atom, event.value.bindings)],
-            restoreAllocationAuthority(state, event.value.state),
-          ];
-        case "pending":
-          break;
-        case "exhausted":
-          finished = true;
-          return [[], event.terminal];
-        case "cancelled":
-          throw schedulerCancellationError(operation, event.reason);
-        case "fault":
-          throw event.error;
-      }
-    }
-  } catch (error) {
-    unwind.active = true;
-    unwind.error = error;
-    throw error;
-  } finally {
-    if (!finished)
-      yield* closeScheduleG(
-        schedule,
-        {
-          code: "parent-closed",
-          message: `${operation} tail closed`,
-        },
-        unwind,
-      );
-  }
-}
-
 function* evaluateChoiceBranchesG(
   operation: "superpose" | "hyperpose",
   env: MinEnv,
@@ -4764,166 +2482,23 @@ function* evaluateChoiceBranchesG(
   }
 }
 
-function* runCompiledCooperativelyG(
-  env: MinEnv,
-  op: string,
-  args: readonly Atom[],
-  state: St,
-  cursor: CursorMode,
-): Gen<
-  | { readonly kind: "done"; readonly result: CompiledRunResult }
-  | { readonly kind: "bail"; readonly residualArgs: readonly Atom[] }
-  | undefined
-> {
-  const run = startCooperativeCompiledRun(env, op, args);
-  if (run === undefined) return undefined;
-  for (;;) {
-    const event = (yield driverEffect(
-      `compiled:${op}`,
-      (maxSteps) => run.next(maxSteps ?? DEFAULT_SEARCH_QUANTUM),
-      async (signal, maxSteps) => {
-        signal.throwIfAborted();
-        const result = run.next(maxSteps ?? DEFAULT_SEARCH_QUANTUM);
-        signal.throwIfAborted();
-        return result;
-      },
-    )) as CooperativeCompiledRunEvent;
-    yield* chargeSchedulerStepsG(cursor, state, event.steps);
-    if (event.kind === "pending") continue;
-    return event.kind === "done"
-      ? { kind: "done", result: event.result }
-      : { kind: "bail", residualArgs: event.residualArgs };
-  }
+/** Constant leaf result for the ground evaluated-mark fast path. */
+function* evaluatedInputG(input: Atom, bnd: Bindings, st: St): Gen<[Array<[Atom, Bindings]>, St]> {
+  return [[[input, bnd]], st];
 }
 
-function argumentMayProduceAlternatives(env: MinEnv, world: World, argument: Atom): boolean {
-  if (argument.kind === "gnd") return false;
-  if (argument.kind === "var") return true;
-  if (argument.kind === "sym")
-    return (
-      (env.ruleIndex.get(argument.name)?.length ?? 0) > 0 ||
-      (world.selfRules.get(argument.name)?.length ?? 0) > 0 ||
-      env.varRulesVar.length > 0 ||
-      world.selfVarRules.length > 0
-    );
-  if (argument.items.length === 0) return false;
-  if (isNormalForm(env, world, argument)) return false;
-  const operation = opOf(argument);
-  if (operation === undefined) return true;
-  const grounded = env.gt.get(operation);
-  if (grounded !== undefined && isSingleResultGroundedOp(operation, grounded)) return false;
-  const compiled = env.compiled?.get(operation);
-  return !(
-    compiled?.kind === "functional" &&
-    !world.selfRules.has(operation) &&
-    !staticRulesChangedFor(world, operation) &&
-    world.selfVarRules.length === 0
-  );
-}
-
-interface DirectAsyncGroundedApplication {
-  readonly application: ExprAtom;
-  readonly op: string;
-  readonly args: readonly Atom[];
-  readonly queryVars: readonly string[];
-  readonly opReturnsAtom: boolean;
-}
-
-function directAsyncGroundedApplication(
-  env: MinEnv,
-  state: St,
-  input: Atom,
-): DirectAsyncGroundedApplication | undefined {
-  if (input.kind !== "expr" || input.items[0]?.kind !== "sym") return undefined;
-  const op = input.items[0].name;
-  if (!env.agt.has(op) || groundedV2For(env, op) !== undefined) return undefined;
-  if (pettaOpNames.has(op) && hasRuleFor(env, state.world, state.counter, input)) return undefined;
-  const args = input.items.slice(1);
-  const signature = typeViewFor(env, state.world).sigs.get(op);
-  if (checkApplication(env, state.world, op, args, signature) !== null) return undefined;
-  const mask = LAZY_ARGS_OPS.has(op)
-    ? args.map(() => false)
-    : LEATTA_EVAL_ARGS_OPS.has(op)
-      ? args.map(() => true)
-      : argMask(signature, args.length);
-  if (
-    !args.every(
-      (argument, index) =>
-        mask[index] !== true || (argument.ground && isNormalForm(env, state.world, argument)),
-    )
-  )
-    return undefined;
-  return {
-    application: input,
-    op,
-    args,
-    queryVars: queryVarsOf(args),
-    opReturnsAtom:
-      signature !== undefined &&
-      signature.length > 0 &&
-      atomEq(signature[signature.length - 1]!, sym("Atom")),
-  };
-}
-
-function sameBindingRelations(left: Bindings, right: Bindings): boolean {
-  if (left === right) return true;
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index++) {
-    const l = left[index]!;
-    const r = right[index]!;
-    if (l.tag !== r.tag || l.x !== r.x) return false;
-    if (l.tag === "val") {
-      if (r.tag !== "val" || !atomEq(l.a, r.a)) return false;
-    } else if (r.tag !== "eq" || l.y !== r.y) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function rememberGroundEvaluation(
-  env: MinEnv,
-  input: Atom,
-  bindings: Bindings,
-  start: St,
-  pairs: readonly [Atom, Bindings][],
-  end: St,
-): void {
-  if (
-    input.kind !== "expr" ||
-    !input.ground ||
-    pairs.length !== 1 ||
-    !atomEq(pairs[0]![0], input) ||
-    !sameBindingRelations(pairs[0]![1], bindings) ||
-    end.world !== start.world
-  )
-    return;
-  env.evaluatedAtoms.add(input);
-}
-
-function* mettaEvalG(
-  env: MinEnv,
+/** Ground-input evaluation with the ground-memo write on exit. */
+function* mettaEvalRememberG(
+  selected: MinEnv,
   fuel: number,
   st: St,
   bnd: Bindings,
   a: Atom,
+  input: Atom,
   cursor?: CursorMode,
   emitter?: MettaAnswerEmitter,
   preEvaluatedApplication?: PreEvaluatedApplication,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
-  const selected = refreshEvaluationEnvironment(env, st.world);
-  const input = inst(selected, bnd, a);
-  if (input.kind === "expr" && input.ground) {
-    if (selected.evaluatedAtoms.has(input)) return [[[input, bnd]], st];
-    if (
-      selected.varRulesVar.length === 0 &&
-      st.world.selfVarRules.length === 0 &&
-      isNormalForm(selected, st.world, input)
-    ) {
-      selected.evaluatedAtoms.add(input);
-      return [[[input, bnd]], st];
-    }
-  }
   const [pairs, endState] = yield* mettaEvalUncachedG(
     selected,
     fuel,
@@ -4937,6 +2512,57 @@ function* mettaEvalG(
   );
   rememberGroundEvaluation(selected, input, bnd, st, pairs, endState);
   return [pairs, endState];
+}
+
+// A plain dispatcher, not a generator: the deep non-ground recursion delegates straight into
+// mettaEvalUncachedG, so each evaluation level holds one suspended generator frame instead of
+// two. rememberGroundEvaluation is a no-op unless the input is a ground expression, so only the
+// ground path pays for the memo-writing wrapper.
+function mettaEvalG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  bnd: Bindings,
+  a: Atom,
+  cursor?: CursorMode,
+  emitter?: MettaAnswerEmitter,
+  preEvaluatedApplication?: PreEvaluatedApplication,
+): Gen<[Array<[Atom, Bindings]>, St]> {
+  const selected = refreshEvaluationEnvironment(env, st.world);
+  const input = inst(selected, bnd, a);
+  if (input.kind === "expr" && input.ground) {
+    if (selected.evaluatedAtoms.has(input)) return evaluatedInputG(input, bnd, st);
+    if (
+      selected.varRulesVar.length === 0 &&
+      st.world.selfVarRules.length === 0 &&
+      isNormalForm(selected, st.world, input)
+    ) {
+      selected.evaluatedAtoms.add(input);
+      return evaluatedInputG(input, bnd, st);
+    }
+    return mettaEvalRememberG(
+      selected,
+      fuel,
+      st,
+      bnd,
+      a,
+      input,
+      cursor,
+      emitter,
+      preEvaluatedApplication,
+    );
+  }
+  return mettaEvalUncachedG(
+    selected,
+    fuel,
+    st,
+    bnd,
+    a,
+    input,
+    cursor,
+    emitter,
+    preEvaluatedApplication,
+  );
 }
 
 function* mettaEvalUncachedG(
@@ -6055,16 +3681,6 @@ function* mettaEvalUncachedG(
   );
 }
 
-function mettaReturnsInputForExpectedType(atom: Atom, expectedType: Atom): boolean {
-  if (atom.kind === "var") return true;
-  if (expectedType.kind !== "sym") return false;
-  return expectedType.name === "Atom" || expectedType.name === metaType(atom);
-}
-
-function mettaTypeTerminal(atom: Atom): boolean {
-  return atomEq(atom, emptyA) || atomEq(atom, notReducibleA) || isErrorAtom(atom);
-}
-
 /** Apply Hyperon's `metta` expected-type contract around the ordinary type-directed evaluator. */
 function* mettaEvalExpectedG(
   env: MinEnv,
@@ -6187,19 +3803,6 @@ function* mettaCursorGenerator(
   return [result[0], finalState];
 }
 
-function isCancellationFailure(error: unknown, reason: CancellationReason): boolean {
-  if (error === reason) return true;
-  if (error instanceof SchedulerCancellationError)
-    return cancellationReasonsEqual(error.reason, reason);
-  if (typeof error !== "object" || error === null) return false;
-  try {
-    const candidate = error as { readonly name?: unknown; readonly cause?: unknown };
-    return candidate.name === "AbortError" && candidate.cause === reason;
-  } catch {
-    return false;
-  }
-}
-
 function pinnedCursorSource(
   kind: "minimal" | "metta",
   env: MinEnv,
@@ -6249,476 +3852,6 @@ export class MettaSyncSearchCursor extends GeneratorSyncSearchCursor<MinimalSear
   constructor(env: MinEnv, atom: Atom, options: MinimalInterpretOptions = {}) {
     const source = pinnedCursorSource("metta", env, atom, options);
     super(source.generator, source.state, source.delivery, source.release, contextualCursorAnswer);
-  }
-}
-
-class GeneratorAsyncSearchCursor<T extends InternalSearchAnswer> implements AsyncSearchCursor<
-  T,
-  St
-> {
-  readonly #generator: Gen<[ContextualPair[], St]>;
-  readonly #controller = new AbortController();
-  readonly #driverSignal: AbortSignal | undefined;
-  readonly #scope = new ExclusiveAsyncScope();
-  readonly #releaseSnapshot: () => void;
-  readonly #delivery: CursorDeliveryControl;
-  readonly #materializeAnswer: CursorAnswerMaterializer<T>;
-  readonly #runtimeWorld: World | undefined;
-  readonly #unwindFailures = new GeneratorUnwindFailures();
-  readonly #status = newMinimalCursorStatus();
-  #state: St;
-  readonly #cleanupFaults: unknown[] = [];
-  #cleanupFailure: unknown;
-  #hasCleanupFailure = false;
-  #closing: Promise<void> | undefined;
-  #generatorFinished = false;
-  #released = false;
-
-  constructor(
-    generator: Gen<CursorEvalRes>,
-    state: St,
-    releaseSnapshot: () => void,
-    delivery: CursorDeliveryControl,
-    materializeAnswer: CursorAnswerMaterializer<T>,
-    driverSignal?: AbortSignal,
-    runtimeWorld?: World,
-  ) {
-    this.#state = state;
-    this.#driverSignal = driverSignal;
-    this.#releaseSnapshot = releaseSnapshot;
-    this.#generator = generator;
-    this.#delivery = delivery;
-    this.#materializeAnswer = materializeAnswer;
-    this.#runtimeWorld = runtimeWorld;
-  }
-
-  get closed(): boolean {
-    return (
-      this.#status.closedReason !== undefined ||
-      this.#status.terminal !== undefined ||
-      this.#status.hasFault
-    );
-  }
-
-  next(options: SearchNextOptions = {}): Promise<SearchEvent<T, St>> {
-    return this.#scope.run(async () => {
-      minimalCursorLimit(options);
-      this.#status.started = true;
-      return await this.#drive(options);
-    });
-  }
-
-  nextBatch(options: SearchNextOptions = {}): Promise<SearchBatchEvent<T, St>> {
-    return this.#scope.run(async () => {
-      minimalCursorLimit(options);
-      if (!this.#status.started && this.#delivery.directDrain === true) {
-        this.#delivery.batchDrain = true;
-        this.#delivery.streaming = false;
-      }
-      this.#status.started = true;
-      const values: T[] = [];
-      const event = await this.#drive(options, values, this.#delivery.batchDrain === true);
-      switch (event.kind) {
-        case "answer":
-          values.push(event.value);
-          return { kind: "pending", values, steps: event.steps };
-        case "pending":
-          return { ...event, values };
-        case "exhausted":
-          return { ...event, values };
-        case "cancelled":
-          return { ...event, values };
-        case "fault":
-          return { ...event, values };
-      }
-    });
-  }
-
-  drain(options: SearchNextOptions = {}): Promise<SearchDrainResult<T, St>> {
-    return this.#scope.run(() => this.#drain(options));
-  }
-
-  close(reason: CancellationReason = MINIMAL_CURSOR_CLOSED): Promise<void> {
-    // Publish the public close promise before cleanup can re-enter this cursor. Active code may already have
-    // started owned cleanup without joining itself, so this boundary joins both cleanup and the active read.
-    return this.#scope.close(() => {
-      this.#beginClose(reason);
-      return this.#closing!;
-    });
-  }
-
-  async #drain(options: SearchNextOptions): Promise<SearchDrainResult<T, St>> {
-    const prepared = prepareMinimalCursorDrain<T>(options, this.#delivery, this.#status);
-    if (prepared.stopped !== undefined) return prepared.stopped;
-    if (prepared.terminalPairs && this.#delivery.directDrain === true)
-      return this.#drainDirect(options, prepared.values);
-    for (;;) {
-      const event = await this.#drive(options, prepared.values, prepared.terminalPairs);
-      const terminal = minimalDrainEvent(prepared.values, event);
-      if (terminal !== undefined) return terminal;
-    }
-  }
-
-  async #drainDirect(options: SearchNextOptions, values: T[]): Promise<SearchDrainResult<T, St>> {
-    const cancellation = minimalCancellation(options);
-    if (cancellation !== undefined) {
-      this.#beginClose(cancellation, false);
-      try {
-        await this.#closing;
-      } catch (error) {
-        this.#recordCleanupFault(error);
-        this.#status.fault = isWorkerQuiescenceError(this.#status.fault)
-          ? this.#status.fault
-          : combineInitiatingAndCleanupFailure(
-              cancellation,
-              this.#cleanupFailure,
-              "evaluation cancellation and cleanup both failed",
-            );
-        this.#status.hasFault = true;
-        return { kind: "fault", values, error: this.#status.fault };
-      }
-      return { kind: "cancelled", values, reason: cancellation };
-    }
-    // An owned scheduler child already receives this exact signal as its driver signal. The parent aborts
-    // the group and calls child.close in one close operation, so a second per-read listener only duplicates
-    // propagation and doubles EventTarget churn across every answer boundary.
-    const readSignal = options.signal === this.#driverSignal ? undefined : options.signal;
-    const onAbort = (): void => {
-      this.#beginClose(readSignal?.reason);
-    };
-    readSignal?.addEventListener("abort", onAbort, { once: true });
-    try {
-      const [pairs, terminal] = await runGenAsync(this.#generator, this.#controller.signal);
-      this.#status.terminal = terminal;
-      this.#state = terminal;
-      for (const pair of pairs) values.push(this.#materializeAnswer(pair, terminal));
-      this.#release();
-      return { kind: "exhausted", values, terminal };
-    } catch (error) {
-      const cancelled = this.#status.closedReason ?? minimalCancellation(options);
-      if (cancelled !== undefined) {
-        if (!isCancellationFailure(error, cancelled)) {
-          this.#recordCleanupFault(error);
-          this.#status.fault = isWorkerQuiescenceError(this.#status.fault)
-            ? this.#status.fault
-            : combineInitiatingAndCleanupFailure(
-                cancelled,
-                this.#cleanupFailure,
-                "evaluation cancellation and cleanup both failed",
-              );
-          this.#status.hasFault = true;
-        }
-        this.#status.closedReason = cancelled;
-        if (this.#status.hasFault) return { kind: "fault", values, error: this.#status.fault };
-        return { kind: "cancelled", values, reason: cancelled };
-      }
-      this.#status.fault = error;
-      this.#status.hasFault = true;
-      this.#release();
-      return { kind: "fault", values, error };
-    } finally {
-      this.#generatorFinished = true;
-      readSignal?.removeEventListener("abort", onAbort);
-    }
-  }
-
-  async #drive(
-    options: SearchNextOptions,
-    values?: T[],
-    terminalPairs = false,
-  ): Promise<SearchEvent<T, St>> {
-    const maxSteps = minimalCursorLimit(options);
-    const stopped = stoppedMinimalCursorEvent<T>(
-      this.#status.closedReason,
-      this.#status.terminal,
-      this.#status.hasFault,
-      this.#status.fault,
-    );
-    if (stopped !== undefined) return stopped;
-    const cancellation = minimalCancellation(options);
-    if (cancellation !== undefined) {
-      this.#beginClose(cancellation, false);
-      try {
-        await this.#closing;
-      } catch (error) {
-        this.#recordCleanupFault(error);
-        if (isWorkerQuiescenceError(this.#status.fault))
-          return { kind: "fault", error: this.#status.fault, steps: 0 };
-        // `close()` exposes ordinary cleanup failure. Cancellation remains the first visible terminal.
-      }
-      return { kind: "cancelled", reason: cancellation, steps: 0 };
-    }
-
-    // The owning scheduler propagates its driver signal through child.close. Keep a per-read listener only
-    // for a distinct caller signal, such as a public cursor read made outside that scheduler.
-    const readSignal = options.signal === this.#driverSignal ? undefined : options.signal;
-    const onAbort = (): void => {
-      this.#beginClose(readSignal?.reason);
-    };
-    readSignal?.addEventListener("abort", onAbort, { once: true });
-    prepareCursorRead(this.#delivery, maxSteps);
-    let steps = 0;
-    const driverSignal = this.#driverSignal ?? this.#controller.signal;
-    try {
-      let result = this.#generator.next();
-      for (;;) {
-        if (this.#status.closedReason !== undefined) {
-          steps += takeDeliveryCursorSteps(this.#delivery);
-          return this.#finishCancelledRead(steps);
-        }
-        if (result.done) {
-          const completed = completeMinimalCursorGenerator(
-            result.value,
-            this.#delivery,
-            this.#unwindFailures,
-            "asynchronous effect and generator unwind both failed",
-            terminalPairs,
-            values,
-            this.#materializeAnswer,
-            steps,
-          );
-          this.#generatorFinished = true;
-          this.#status.terminal = completed.terminal;
-          this.#state = this.#status.terminal;
-          this.#release();
-          return {
-            kind: "exhausted",
-            terminal: this.#status.terminal,
-            steps: completed.steps,
-          };
-        }
-        if (isMinimalCursorSignal(result.value)) {
-          this.#state = result.value.state;
-          steps += result.value.steps;
-          const answer = this.#unwindFailures.active
-            ? undefined
-            : consumeMinimalCursorSignal(result.value, values, this.#materializeAnswer);
-          if (answer !== undefined) return { kind: "answer", value: answer, steps };
-          if (steps >= maxSteps) return { kind: "pending", steps };
-          result = this.#generator.next();
-          continue;
-        }
-        steps += takeDeliveryCursorSteps(this.#delivery);
-        try {
-          driverSignal.throwIfAborted();
-          const value = isDriverEffect(result.value)
-            ? await result.value.runAsync(
-                driverSignal,
-                cursorEffectAllowance(this.#delivery, maxSteps - steps),
-              )
-            : await result.value;
-          driverSignal.throwIfAborted();
-          result = this.#generator.next(value);
-        } catch (error) {
-          if (
-            this.#status.closedReason === undefined ||
-            !isCancellationFailure(error, this.#status.closedReason)
-          )
-            this.#unwindFailures.record(error);
-          try {
-            result = this.#generator.throw(error);
-          } catch (unwindError) {
-            this.#generatorFinished = true;
-            if (
-              this.#status.closedReason === undefined ||
-              !isCancellationFailure(unwindError, this.#status.closedReason)
-            )
-              this.#unwindFailures.record(unwindError);
-            if (this.#status.closedReason === undefined)
-              throw this.#unwindFailures.active
-                ? this.#unwindFailures.failure(
-                    "asynchronous effect and generator unwind both failed",
-                  )
-                : unwindError;
-            if (this.#unwindFailures.active)
-              this.#recordCleanupFault(
-                this.#unwindFailures.failure(
-                  "asynchronous effect and generator unwind both failed",
-                ),
-              );
-            steps += takeDeliveryCursorSteps(this.#delivery);
-            return this.#finishCancelledRead(steps);
-          }
-          if (this.#status.closedReason !== undefined) {
-            try {
-              await finishGeneratorAsync(this.#generator, result, this.#controller.signal);
-            } catch (cleanupError) {
-              if (!isCancellationFailure(cleanupError, this.#status.closedReason))
-                this.#unwindFailures.record(cleanupError);
-            } finally {
-              this.#generatorFinished = true;
-            }
-            if (this.#unwindFailures.active)
-              this.#recordCleanupFault(
-                this.#unwindFailures.failure(
-                  "asynchronous effect and generator unwind both failed",
-                ),
-              );
-            steps += takeDeliveryCursorSteps(this.#delivery);
-            return this.#finishCancelledRead(steps);
-          }
-        }
-      }
-    } catch (error) {
-      steps += takeDeliveryCursorSteps(this.#delivery);
-      if (this.#status.closedReason !== undefined) {
-        if (!isCancellationFailure(error, this.#status.closedReason))
-          this.#recordCleanupFault(error);
-        if (this.#status.hasFault && isWorkerQuiescenceError(this.#status.fault))
-          return { kind: "fault", error: this.#status.fault, steps };
-        return { kind: "cancelled", reason: this.#status.closedReason, steps };
-      }
-      this.#status.fault = error;
-      this.#status.hasFault = true;
-      try {
-        await this.#finishGenerator();
-      } catch (cleanupError) {
-        this.#status.fault = combineInitiatingAndCleanupFailure(
-          error,
-          cleanupError,
-          "evaluation and asynchronous generator cleanup both failed",
-        );
-      }
-      this.#release();
-      return { kind: "fault", error: this.#status.fault, steps };
-    } finally {
-      readSignal?.removeEventListener("abort", onAbort);
-    }
-  }
-
-  #beginClose(reason: unknown, joinActive = true): void {
-    if (
-      this.#closing !== undefined ||
-      this.#status.terminal !== undefined ||
-      this.#status.hasFault
-    ) {
-      this.#closing ??= Promise.resolve();
-      return;
-    }
-    this.#status.closedReason = this.#stableCancellationReason(reason);
-    this.#delivery.lifecycle.unwinding = true;
-    if (this.#runtimeWorld !== undefined)
-      cancelWorldRuntime(this.#runtimeWorld, this.#status.closedReason);
-    this.#controller.abort(this.#status.closedReason);
-    const active = joinActive ? this.#scope.active : undefined;
-    if (active === undefined) {
-      // Defer generator cleanup by one microtask so #closing is assigned before a finalizer can re-enter.
-      this.#closing = Promise.resolve()
-        .then(() => this.#finishGenerator())
-        .finally(() => this.#release());
-      void this.#closing.catch(() => undefined);
-      return;
-    }
-    this.#closing = active
-      .then(
-        () => this.#finishGenerator(),
-        async (error: unknown) => {
-          await this.#finishGenerator();
-          if (!isCancellationFailure(error, this.#status.closedReason!)) throw error;
-        },
-      )
-      .finally(() => this.#release());
-    void this.#closing.catch(() => undefined);
-  }
-
-  async #finishCancelledRead(steps: number): Promise<SearchEvent<T, St>> {
-    try {
-      await this.#finishGenerator();
-    } catch {
-      // #finishGenerator records cleanup failures. Ordinary failures remain on close's second channel.
-    }
-    if (this.#unwindFailures.active) {
-      const failure = this.#unwindFailures.failure(
-        "asynchronous effect and generator unwind both failed",
-      );
-      if (!isCancellationFailure(failure, this.#status.closedReason!))
-        this.#recordCleanupFault(failure);
-    }
-    this.#release();
-    if (this.#status.hasFault && isWorkerQuiescenceError(this.#status.fault))
-      return { kind: "fault", error: this.#status.fault, steps };
-    return { kind: "cancelled", reason: this.#status.closedReason!, steps };
-  }
-
-  async #finishGenerator(): Promise<void> {
-    if (!this.#generatorFinished) {
-      this.#delivery.lifecycle.unwinding = true;
-      try {
-        await closeGeneratorAsync(this.#generator, this.#state, this.#controller.signal);
-      } catch (error) {
-        if (
-          this.#status.closedReason === undefined ||
-          !isCancellationFailure(error, this.#status.closedReason)
-        )
-          this.#recordCleanupFault(error);
-      } finally {
-        this.#generatorFinished = true;
-      }
-    }
-    if (this.#hasCleanupFailure)
-      throw this.#status.hasFault && isWorkerQuiescenceError(this.#status.fault)
-        ? this.#status.fault
-        : this.#cleanupFailure;
-  }
-
-  #recordCleanupFault(error: unknown): void {
-    for (const failure of cleanupFailureLeaves(error)) {
-      if (
-        this.#status.closedReason !== undefined &&
-        isCancellationFailure(failure, this.#status.closedReason)
-      )
-        continue;
-      this.#recordCleanupFailureLeaf(failure);
-    }
-  }
-
-  #recordCleanupFailureLeaf(error: unknown): void {
-    if (
-      this.#status.hasFault &&
-      isWorkerQuiescenceError(this.#status.fault) &&
-      Object.is(error, this.#status.fault)
-    )
-      return;
-    if (this.#hasCleanupFailure && Object.is(error, this.#cleanupFailure)) return;
-    this.#cleanupFaults.push(error);
-    this.#cleanupFailure = aggregateCleanupFailures(
-      this.#cleanupFaults,
-      "multiple asynchronous evaluation cleanups failed",
-    );
-    this.#hasCleanupFailure = true;
-    if (isWorkerQuiescenceError(this.#cleanupFailure)) {
-      this.#status.fault =
-        this.#status.closedReason === undefined
-          ? this.#cleanupFailure
-          : combineInitiatingAndCleanupFailure(
-              this.#status.closedReason,
-              this.#cleanupFailure,
-              "evaluation cancellation and worker cleanup both failed",
-            );
-      this.#status.hasFault = true;
-    }
-  }
-
-  #release(): void {
-    if (this.#released) return;
-    this.#released = true;
-    try {
-      this.#releaseSnapshot();
-    } finally {
-      if (this.#runtimeWorld !== undefined) releaseWorldRuntime(this.#runtimeWorld);
-    }
-  }
-
-  #stableCancellationReason(reason: unknown): CancellationReason {
-    if (
-      this.#driverSignal?.aborted === true &&
-      Object.is(reason, this.#driverSignal.reason) &&
-      typeof reason === "object" &&
-      reason !== null &&
-      Object.isFrozen(reason)
-    )
-      return reason as CancellationReason;
-    return stableEvalCancellationReason(reason);
   }
 }
 
@@ -7122,192 +4255,6 @@ function raceSchedule(
     return new MapTerminalAsyncCursor(new OnceAsyncCursor(source), () => parentState);
   };
   return new DualModeSearchCursor("race", undefined, asyncFactory);
-}
-
-interface DirectParBranch {
-  readonly env: MinEnv;
-  readonly state: St;
-  readonly direct: DirectAsyncGroundedApplication;
-}
-
-interface SettledDirectParBranch extends DirectParBranch {
-  readonly result: ReduceResult;
-  readonly effectsApplied?: boolean;
-}
-
-interface PrefetchedDirectParBranch {
-  readonly branch: SettledDirectParBranch;
-  readonly event: Extract<
-    SearchBatchEvent<InternalSearchAnswer, St>,
-    { readonly kind: "pending" | "exhausted" }
-  >;
-  readonly cursor?: AsyncSearchCursor<InternalSearchAnswer, St>;
-  /** True when the settled host result required an interpreter continuation. */
-  readonly evaluated: boolean;
-}
-
-function directParApplications(
-  env: MinEnv,
-  fuel: number,
-  state: St,
-  bindings: Bindings,
-  branches: readonly Atom[],
-):
-  | readonly { readonly env: MinEnv; readonly direct: DirectAsyncGroundedApplication }[]
-  | undefined {
-  if (fuel <= 0 || branches.length === 0) return undefined;
-  const applications: Array<{
-    readonly env: MinEnv;
-    readonly direct: DirectAsyncGroundedApplication;
-  }> = [];
-  for (const branch of branches) {
-    const selected = refreshEvaluationEnvironment(env, state.world);
-    const input = inst(selected, bindings, branch);
-    if (!input.ground || (input.kind === "expr" && selected.evaluatedAtoms.has(input)))
-      return undefined;
-    const direct = directAsyncGroundedApplication(selected, state, input);
-    if (direct === undefined) return undefined;
-    applications.push({ env: selected, direct });
-  }
-  return applications;
-}
-
-async function invokeDirectParBranch(
-  branch: DirectParBranch,
-  signal: AbortSignal,
-  context = groundedCallContextWithSignal(branch.env, branch.state.world, signal),
-): Promise<ReduceResult> {
-  const effectPolicy = groundedEffectPolicy(branch.env, branch.direct.op);
-  if (groundedEffectRejected(branch.state.world, effectPolicy))
-    return {
-      tag: "incorrectArgument",
-      msg: `${branch.direct.op}: irreversible effect is not allowed in an isolated branch`,
-    };
-  const grounded = branch.env.agt.get(branch.direct.op);
-  if (grounded === undefined)
-    throw new Error(`async grounded operation '${branch.direct.op}' disappeared during par`);
-  const args = branch.direct.args.map((argument) =>
-    resolveStates(branch.state.world, subTokens(branch.state.world, argument, branch.env.intern)),
-  );
-  const result = await grounded(args, context);
-  signal.throwIfAborted();
-  if (result.tag === "ok")
-    recordGroundedOperationEffects(
-      branch.state.world,
-      branch.direct.op,
-      effectPolicy,
-      result.results,
-    );
-  return result;
-}
-
-function completedDirectParBranch(
-  branch: SettledDirectParBranch,
-): readonly InternalSearchAnswer[] | undefined {
-  let atoms: readonly Atom[];
-  switch (branch.result.tag) {
-    case "ok":
-      if (branch.result.effects !== undefined && branch.result.effects.length > 0) return undefined;
-      atoms = branch.result.results;
-      break;
-    case "runtimeError":
-      atoms = [errAtom(branch.direct.application, branch.result.msg)];
-      break;
-    case "incorrectArgument":
-      atoms = [errTextAtom(branch.direct.application, branch.result.msg)];
-      break;
-    case "noReduce":
-      return undefined;
-  }
-
-  const answers: InternalSearchAnswer[] = [];
-  for (const atom of atoms) {
-    let value: Atom;
-    if (atomEq(atom, notReducibleA) || atomEq(atom, branch.direct.application)) {
-      value = branch.direct.application;
-    } else if (branch.direct.opReturnsAtom && !isEmbeddedOp(atom)) {
-      value = atom;
-    } else if (isErrorAtom(atom) || isNormalForm(branch.env, branch.state.world, atom)) {
-      value = atom;
-    } else {
-      return undefined;
-    }
-    answers.push(terminalCursorAnswer([value, emptyBindings]));
-    enforceDistinctLimit(branch.env, answers.length);
-  }
-  return answers;
-}
-
-function applySettledDirectParEffects(
-  branch: SettledDirectParBranch,
-  bindings: Bindings,
-): SettledDirectParBranch {
-  if (
-    branch.result.tag !== "ok" ||
-    branch.result.effects === undefined ||
-    branch.result.effects.length === 0
-  )
-    return branch;
-  const applied = applyReduceEffects(branch.env, branch.state, bindings, branch.result.effects);
-  return applied.tag === "error"
-    ? {
-        ...branch,
-        result: { tag: "runtimeError", msg: applied.msg },
-        effectsApplied: true,
-      }
-    : {
-        ...branch,
-        state: applied.state,
-        result: { tag: "ok", results: branch.result.results },
-        effectsApplied: true,
-      };
-}
-
-function prefetchedDirectParCursor(
-  branch: PrefetchedDirectParBranch,
-): AsyncSearchCursor<InternalSearchAnswer, St> {
-  if (branch.event.kind === "exhausted") {
-    const terminal = branch.event.terminal;
-    return new CompletedAsyncSearchCursor(
-      branch.event.values,
-      () => terminal,
-      () => releaseWorldRuntime(terminal.world),
-    );
-  }
-  if (branch.cursor === undefined)
-    throw new Error("pending direct par branch lost its continuation cursor");
-  const prefix = new CompletedAsyncSearchCursor<InternalSearchAnswer, St | undefined>(
-    branch.event.values,
-    () => undefined,
-  );
-  const source = new SourceOrderedAsyncCursor<InternalSearchAnswer, St | undefined>([
-    prefix,
-    branch.cursor,
-  ]);
-  return new MapTerminalAsyncCursor(source, (terminals) => {
-    const terminal = terminals[1];
-    if (terminal === undefined)
-      throw new Error("direct par continuation exhausted without a terminal state");
-    return terminal;
-  });
-}
-
-function prefetchedDirectParSchedule(
-  env: MinEnv,
-  parentState: St,
-  branches: readonly PrefetchedDirectParBranch[],
-  controller: AbortController,
-): DualModeSearchCursor<InternalSearchAnswer, St> {
-  const asyncFactory = (): AsyncSearchCursor<InternalSearchAnswer, St> => {
-    const source = new ParallelSourceOrderedAsyncCursor(
-      branches.map(prefetchedDirectParCursor),
-      controller,
-    );
-    return new MapTerminalAsyncCursor(source, (terminals) =>
-      mergeScheduledStates(env, parentState, terminals),
-    );
-  };
-  return new DualModeSearchCursor("par", undefined, asyncFactory);
 }
 
 function* tryDirectParG(
