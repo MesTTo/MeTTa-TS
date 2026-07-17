@@ -34,16 +34,19 @@ import {
   groundedV2AsyncAdapter,
   groundedV2SyncAdapter,
   type GroundedAnswer,
-  type GroundedAsyncAnswerCursor,
   type GroundedOperationV2,
   type GroundedOperationV2Options,
   type GroundedOperationV2Registration,
-  type GroundedSyncAnswerCursor,
 } from "./grounded-v2";
-import type { SearchEvent, SearchNextOptions } from "./search-cursor";
-import type { CancellationReason } from "./resources";
+import type { SearchEvent } from "./search-cursor";
 import { makeValRel, type Bindings } from "./bindings";
 import type { Atom } from "./atom";
+import {
+  answerEvent,
+  exhaustedEvent,
+  ScriptedAsyncCursor,
+  ScriptedSyncCursor,
+} from "./grounded-v2-test-utils";
 import { parseAll } from "./parser";
 import { preludeAtoms } from "./runner";
 import { standardTokenizer } from "./standard-syntax";
@@ -101,112 +104,6 @@ async function collectSettledGarbage(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
   collectGarbage();
 }
-
-type ScriptedSyncEntry =
-  | SearchEvent<GroundedAnswer, void>
-  | ((options: SearchNextOptions) => SearchEvent<GroundedAnswer, void>)
-  | { readonly raise: unknown };
-
-/** A hand-written cursor that records every pull and close so ownership laws can count them. */
-class ScriptedSyncCursor implements GroundedSyncAnswerCursor {
-  readonly mode = "sync" as const;
-  readonly pullOptions: SearchNextOptions[] = [];
-  readonly closeReasons: CancellationReason[] = [];
-  #index = 0;
-  #closed = false;
-
-  constructor(
-    private readonly script: readonly ScriptedSyncEntry[],
-    private readonly closeError?: Error,
-  ) {}
-
-  get closed(): boolean {
-    return this.#closed;
-  }
-
-  get pulls(): number {
-    return this.pullOptions.length;
-  }
-
-  get closeCalls(): number {
-    return this.closeReasons.length;
-  }
-
-  next(options: SearchNextOptions = {}): SearchEvent<GroundedAnswer, void> {
-    this.pullOptions.push(options);
-    const entry = this.script[Math.min(this.#index, this.script.length - 1)]!;
-    this.#index += 1;
-    if (typeof entry === "function") return entry(options);
-    if ("raise" in entry) throw entry.raise;
-    return entry;
-  }
-
-  close(reason: CancellationReason = { code: "closed" }): void {
-    this.closeReasons.push(reason);
-    this.#closed = true;
-    if (this.closeError !== undefined) throw this.closeError;
-  }
-}
-
-class ScriptedAsyncCursor implements GroundedAsyncAnswerCursor {
-  readonly mode = "async" as const;
-  readonly pullOptions: SearchNextOptions[] = [];
-  readonly closeReasons: CancellationReason[] = [];
-  closeSettled = false;
-  #index = 0;
-  #closed = false;
-
-  constructor(
-    private readonly script: readonly ScriptedSyncEntry[],
-    private readonly closeError?: Error,
-  ) {}
-
-  get closed(): boolean {
-    return this.#closed;
-  }
-
-  get pulls(): number {
-    return this.pullOptions.length;
-  }
-
-  get closeCalls(): number {
-    return this.closeReasons.length;
-  }
-
-  next(options: SearchNextOptions = {}): Promise<SearchEvent<GroundedAnswer, void>> {
-    this.pullOptions.push(options);
-    const entry = this.script[Math.min(this.#index, this.script.length - 1)]!;
-    this.#index += 1;
-    if (typeof entry === "function") return Promise.resolve(entry(options));
-    if ("raise" in entry) return Promise.reject(entry.raise);
-    return Promise.resolve(entry);
-  }
-
-  close(reason: CancellationReason = { code: "closed" }): Promise<void> {
-    this.closeReasons.push(reason);
-    this.#closed = true;
-    const closeError = this.closeError;
-    return new Promise((resolve, reject) => {
-      setImmediate(() => {
-        this.closeSettled = true;
-        if (closeError !== undefined) reject(closeError);
-        else resolve();
-      });
-    });
-  }
-}
-
-const answerEvent = (value: Atom, steps = 1): SearchEvent<GroundedAnswer, void> => ({
-  kind: "answer",
-  value: { atom: value },
-  steps,
-});
-
-const exhaustedEvent: SearchEvent<GroundedAnswer, void> = {
-  kind: "exhausted",
-  terminal: undefined,
-  steps: 1,
-};
 
 describe("Grounded V2 adapter cursor ownership", () => {
   it("closes an async cursor returned by a sync registration", () => {
@@ -1048,10 +945,17 @@ describe("Grounded V2 binding answer cost", () => {
     box: AnswerCountBox,
     callerSize: number,
   ): number {
+    // Minimum of three interleavable repeats: a suite running in parallel workers can deschedule
+    // any single measurement, and a spike only ever adds time, so the minimum keeps the law's
+    // four-orders-of-magnitude discrimination while shrugging off machine load.
     medianDeltaCallMs(env, box, callerSize, FEW_ANSWERS);
-    const few = medianDeltaCallMs(env, box, callerSize, FEW_ANSWERS);
-    const many = medianDeltaCallMs(env, box, callerSize, MANY_ANSWERS);
-    return (many - few) / (MANY_ANSWERS - FEW_ANSWERS);
+    let marginal = Number.POSITIVE_INFINITY;
+    for (let repeat = 0; repeat < 3; repeat += 1) {
+      const few = medianDeltaCallMs(env, box, callerSize, FEW_ANSWERS);
+      const many = medianDeltaCallMs(env, box, callerSize, MANY_ANSWERS);
+      marginal = Math.min(marginal, (many - few) / (MANY_ANSWERS - FEW_ANSWERS));
+    }
+    return marginal;
   }
 
   // pin: wide caller frames stay semantically exact regardless of representation.
