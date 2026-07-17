@@ -16,7 +16,7 @@ import fc from "fast-check";
 import { setFlagsFromString } from "node:v8";
 import { runInNewContext } from "node:vm";
 import { performance } from "node:perf_hooks";
-import { expr, format, gint, gstr, sym } from "./index";
+import { atomEq, expr, format, gint, gstr, sym } from "./index";
 import {
   branchRuntimeSnapshot,
   buildEnv,
@@ -1402,6 +1402,120 @@ describe("Grounded V2 randomized delta equivalence", () => {
         expect(await async([])).toEqual(sync([]));
       }),
       { numRuns: 25 },
+    );
+  });
+
+  // The frame algebra against an independent model: a naive union-find with one ground value per
+  // class (after Conchon and Filliatre's persistent union-find, the U8 prior art). Every step must
+  // agree on success versus conflict, every variable must resolve to the model's class value, and
+  // saved intermediate frames must be reproducible by replaying the same prefix, which fails if a
+  // later derivation mutated shared structure.
+  it("agrees with a naive union-find model over random bind and equate scripts", () => {
+    const VARS = 6;
+    const stepArb = fc.oneof(
+      fc.record({
+        op: fc.constant("bind" as const),
+        variable: fc.nat({ max: VARS - 1 }),
+        value: fc.integer({ min: 0, max: 3 }),
+      }),
+      fc.record({
+        op: fc.constant("equate" as const),
+        left: fc.nat({ max: VARS - 1 }),
+        right: fc.nat({ max: VARS - 1 }),
+      }),
+    );
+    fc.assert(
+      fc.property(
+        fc.array(stepArb, { maxLength: 24 }),
+        fc.nat({ max: 23 }),
+        (script, prefixPick) => {
+          const scope = new VariableScope(new RuntimeIdAllocator("delta-oracle").next("scope"));
+          const vars = Array.from({ length: VARS }, (_, index) => scope.variable(`v${index}`));
+
+          const parent = new Map<number, number>();
+          const classValue = new Map<number, number>();
+          const find = (start: number): number => {
+            let key = start;
+            while (parent.has(key) && parent.get(key) !== key) key = parent.get(key)!;
+            return key;
+          };
+
+          let frame = emptyBindingFrame;
+          const history: (typeof frame)[] = [];
+          const applied: typeof script = [];
+          for (const step of script) {
+            if (step.op === "bind") {
+              const root = find(step.variable);
+              const existing = classValue.get(root);
+              const modelOk = existing === undefined || existing === step.value;
+              const result = frame.bind(vars[step.variable]!, gint(step.value));
+              expect(result.ok).toBe(modelOk);
+              if (!modelOk) continue;
+              classValue.set(root, step.value);
+              if (!result.ok) throw new Error("unreachable");
+              frame = result.value;
+            } else {
+              const leftRoot = find(step.left);
+              const rightRoot = find(step.right);
+              const leftValue = classValue.get(leftRoot);
+              const rightValue = classValue.get(rightRoot);
+              const modelOk =
+                leftRoot === rightRoot ||
+                leftValue === undefined ||
+                rightValue === undefined ||
+                leftValue === rightValue;
+              const result = frame.equate(vars[step.left]!, vars[step.right]!);
+              expect(result.ok).toBe(modelOk);
+              if (!modelOk) continue;
+              if (leftRoot !== rightRoot) {
+                parent.set(leftRoot, rightRoot);
+                if (leftValue !== undefined) classValue.set(rightRoot, leftValue);
+              }
+              if (!result.ok) throw new Error("unreachable");
+              frame = result.value;
+            }
+            applied.push(step);
+            history.push(frame);
+          }
+
+          for (let index = 0; index < VARS; index += 1) {
+            const modelValue = classValue.get(find(index));
+            const resolved = frame.resolve(vars[index]!);
+            if (modelValue === undefined)
+              expect(resolved === undefined || resolved.kind === "var").toBe(true);
+            else expect(format(resolved!)).toBe(String(modelValue));
+          }
+          for (let a = 0; a < VARS; a += 1)
+            for (let b = a + 1; b < VARS; b += 1) {
+              if (find(a) !== find(b)) continue;
+              const left = frame.resolve(vars[a]!);
+              const right = frame.resolve(vars[b]!);
+              expect(left !== undefined && right !== undefined && atomEq(left, right)).toBe(true);
+            }
+
+          if (history.length > 0) {
+            const cut = Math.min(prefixPick, history.length - 1);
+            let replayed = emptyBindingFrame;
+            for (const step of applied.slice(0, cut + 1)) {
+              const result =
+                step.op === "bind"
+                  ? replayed.bind(vars[step.variable]!, gint(step.value))
+                  : replayed.equate(vars[step.left]!, vars[step.right]!);
+              if (!result.ok) throw new Error("replay diverged");
+              replayed = result.value;
+            }
+            const saved = history[cut]!;
+            for (let index = 0; index < VARS; index += 1) {
+              const savedResolved = saved.resolve(vars[index]!);
+              const replayedResolved = replayed.resolve(vars[index]!);
+              expect(savedResolved === undefined).toBe(replayedResolved === undefined);
+              if (savedResolved !== undefined && replayedResolved !== undefined)
+                expect(atomEq(savedResolved, replayedResolved)).toBe(true);
+            }
+          }
+        },
+      ),
+      { numRuns: 120 },
     );
   });
 });
