@@ -21,6 +21,7 @@ export * from "./standard-syntax";
 export * from "./space";
 export * from "./builtins";
 export * from "./eval";
+export * from "./effect-journal";
 export * from "./search-cursor";
 export * from "./runner";
 export * from "./host";

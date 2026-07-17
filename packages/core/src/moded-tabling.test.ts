@@ -46,7 +46,7 @@ describe("moded tabling path", () => {
     }
   });
 
-  it("replays the producer counter delta for a completed moded table", () => {
+  it("does not replay producer allocation history for a completed moded table", () => {
     const query = "!(moded-fib 10 $result)";
     const once = runProgramWithState(`${MODED_FIB}\n${query}`, 1_000_000, new Map(), {
       tabling: true,
@@ -56,8 +56,48 @@ describe("moded tabling path", () => {
     });
 
     expect(once.state.counter).toBeGreaterThan(0);
-    expect(twice.state.counter).toBe(once.state.counter * 2);
+    expect(twice.state.counter).toBe(once.state.counter);
     expect(fmtCanon(twice.results[1]!.results)).toEqual(fmtCanon(twice.results[0]!.results));
+  });
+
+  it("keeps tabling counter growth linear across an overlapping recurrence", () => {
+    const run = (n: number) =>
+      runProgramWithState(`${MODED_FIB}\n!(moded-fib ${n} $result)`, 100_000_000, new Map(), {
+        tabling: true,
+      });
+
+    const small = run(10);
+    const large = run(60);
+
+    expect(fmt(large.results[0]!.results)).toEqual(["1548008755920"]);
+    expect(small.state.counter).toBe(100);
+    expect(large.state.counter).toBe(600);
+  });
+
+  it("standardizes only live answer variables apart on replay", () => {
+    const source = `
+      (= (moded-fresh 0 $out) (pair $fresh $fresh))
+      (= (moded-fresh 1 $out) (pair $fresh $fresh))
+      (= (moded-fresh $n $out)
+         (if (> $n 1)
+             (let* (($a (moded-fresh (- $n 1) $left))
+                     ($b (moded-fresh (- $n 2) $right)))
+                    $a)
+             (empty)))
+    `;
+    const once = runProgramWithState(`${source}\n!(moded-fresh 2 $result)`, 1_000_000, new Map(), {
+      tabling: true,
+    });
+    const twice = runProgramWithState(
+      `${source}\n!(moded-fresh 2 $result)\n!(moded-fresh 2 $again)`,
+      1_000_000,
+      new Map(),
+      { tabling: true },
+    );
+
+    expect(fmtCanon(twice.results[1]!.results)).toEqual(fmtCanon(twice.results[0]!.results));
+    expect(format(twice.results[1]!.results[0]!)).not.toBe(format(twice.results[0]!.results[0]!));
+    expect(twice.state.counter - once.state.counter).toBe(1);
   });
 
   it("does not reuse variable-spelling observations across alpha-renamed calls", () => {

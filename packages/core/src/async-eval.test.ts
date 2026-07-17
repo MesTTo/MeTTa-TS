@@ -706,6 +706,49 @@ describe("async evaluation (generator dual-driver)", () => {
     expect(after.map((pair) => format(pair[0]))).toEqual(["new"]);
   });
 
+  it("pins grounded effect policy while an async query is suspended", async () => {
+    const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
+    let calls = 0;
+    const operation = () => {
+      calls += 1;
+      return { tag: "ok" as const, results: [sym("accepted")] };
+    };
+    registerGroundedOperation(env, "snapshot-effect-policy", operation, {
+      classes: ["pure"],
+      speculative: true,
+    });
+    const gate = deferred();
+    registerAsyncGroundedOperation(env, "pause-effect-policy", async () => {
+      await gate.promise;
+      return { tag: "ok", results: [emptyExpr] };
+    });
+
+    const pending = mettaEvalAsync(
+      env,
+      100_000,
+      initSt(),
+      [],
+      parsedAtom("(transaction (let $ignored (pause-effect-policy) (snapshot-effect-policy)))"),
+    );
+    registerGroundedOperation(env, "snapshot-effect-policy", operation, {
+      classes: ["host-io"],
+      speculative: false,
+    });
+    gate.resolve();
+
+    const [during] = await pending;
+    const [after] = mettaEval(
+      env,
+      100_000,
+      initSt(),
+      [],
+      parsedAtom("(transaction (snapshot-effect-policy))"),
+    );
+    expect(during.map((pair) => format(pair[0]))).toEqual(["accepted"]);
+    expect(format(after[0]![0])).toContain("irreversible effect");
+    expect(calls).toBe(1);
+  });
+
   it("pins context service descriptors before an async grounding resumes", async () => {
     const env = buildEnv([...preludeAtoms(), ...stdlibAtoms()], stdTable());
     env.imports.set("module", [sym("old")]);

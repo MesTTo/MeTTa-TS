@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { emptyBindings } from "./bindings";
 import { stdTable } from "./builtins";
-import { buildEnv, initSt, mettaEval, mettaEvalAsync } from "./eval";
+import { buildEnv, initSt, mettaEval, mettaEvalAsync, WorldConflictError } from "./eval";
 import { format, parseAll } from "./parser";
 import { preludeAtoms, runProgram, runProgramAsync, standardTokenizer } from "./runner";
 import { parseRuntimeId, RuntimeIdAllocator } from "./trace";
@@ -113,16 +113,15 @@ describe("parallel runtime-handle allocation", () => {
     expect(results).toEqual(["(, A B)"]);
   });
 
-  it("keeps source-order conflict resolution for an existing shared state", async () => {
-    const runs = await runProgramAsync(`
-      !(new-state initial)
-      !(par
-        (change-state! (State 0) left)
-        (change-state! (State 0) right))
-      !(get-state (State 0))
-    `);
-
-    expect(runs.at(-1)?.results.map(format)).toEqual(["right"]);
+  it("rejects conflicting writes to an existing shared state", async () => {
+    await expect(
+      runProgramAsync(`
+        !(new-state initial)
+        !(par
+          (change-state! (State 0) left)
+          (change-state! (State 0) right))
+      `),
+    ).rejects.toBeInstanceOf(WorldConflictError);
   });
 
   it("does not collide after a wide fan-out followed by later groups", () => {

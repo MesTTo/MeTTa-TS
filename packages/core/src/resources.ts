@@ -21,7 +21,9 @@ export type ResourceUsage = Readonly<Record<ResourceKind, number>>;
 
 export interface ResourcePolicy {
   readonly limits?: ResourceLimits;
-  /** Millisecond origin used by `checkTime`. Defaults to `Date.now()`. */
+  /** Record usage even when no limit is configured. */
+  readonly track?: boolean;
+  /** Millisecond origin used by `checkTime`. Defaults to `Date.now()` when accounting is enabled. */
   readonly startedAtMs?: number;
 }
 
@@ -39,6 +41,7 @@ export interface ResourceSnapshot {
   readonly limits: ResourceLimits;
   readonly used: ResourceUsage;
   readonly startedAtMs: number;
+  readonly tracked: boolean;
 }
 
 export interface CancellationReason {
@@ -50,6 +53,12 @@ export interface CancellationRecord {
   readonly kind: "cancelled";
   readonly reason: CancellationReason;
   readonly operation?: string;
+}
+
+export interface CancellationScopeSnapshot {
+  readonly label: string;
+  readonly closed: boolean;
+  readonly cancellation?: CancellationRecord;
 }
 
 const emptyUsage = (): Record<ResourceKind, number> => ({
@@ -109,13 +118,22 @@ function limitFault(
 export class ResourceLedger {
   readonly #limits: ResourceLimits;
   readonly #used = emptyUsage();
-  readonly #startedAtMs: number;
+  #startedAtMs: number;
+  #clockStarted: boolean;
+  readonly #tracked: boolean;
 
   constructor(policy: ResourcePolicy = {}) {
     this.#limits = copyLimits(policy.limits ?? {});
-    const startedAtMs = policy.startedAtMs ?? Date.now();
+    this.#tracked = policy.track === true || Object.keys(this.#limits).length > 0;
+    const clockRequested = policy.track === true || policy.limits?.["wall-time-ms"] !== undefined;
+    const startedAtMs = policy.startedAtMs ?? (clockRequested ? Date.now() : 0);
     assertAmount(startedAtMs, "resource clock origin");
     this.#startedAtMs = startedAtMs;
+    this.#clockStarted = policy.startedAtMs !== undefined || clockRequested;
+  }
+
+  get tracked(): boolean {
+    return this.#tracked;
   }
 
   tryConsume(
@@ -127,6 +145,7 @@ export class ResourceLedger {
   }
 
   tryConsumeMany(amounts: ResourceLimits, operation?: string): ResourceLimitFault | undefined {
+    if (!this.#tracked) return undefined;
     const checked: Array<readonly [ResourceKind, number]> = [];
     for (const resource of RESOURCE_KINDS) {
       const requested = amounts[resource];
@@ -142,13 +161,29 @@ export class ResourceLedger {
     return undefined;
   }
 
+  /** Record a high-water mark such as stack depth without summing repeated observations. */
+  tryObserve(
+    resource: ResourceKind,
+    value: number,
+    operation?: string,
+  ): ResourceLimitFault | undefined {
+    assertAmount(value, `${resource} observation`);
+    const current = this.#used[resource];
+    return value <= current ? undefined : this.tryConsume(resource, value - current, operation);
+  }
+
   /** Account elapsed wall time without double-counting prior checks. */
   checkTime(nowMs = Date.now(), operation?: string): ResourceLimitFault | undefined {
     assertAmount(nowMs, "resource clock reading");
+    if (!this.#clockStarted) {
+      this.#startedAtMs = nowMs;
+      this.#clockStarted = true;
+      return undefined;
+    }
     const elapsed = Math.max(0, nowMs - this.#startedAtMs);
     const alreadyObserved = this.#used["wall-time-ms"];
     if (elapsed <= alreadyObserved) return undefined;
-    return this.tryConsume("wall-time-ms", elapsed - alreadyObserved, operation);
+    return this.tryObserve("wall-time-ms", elapsed, operation);
   }
 
   used(resource: ResourceKind): number {
@@ -164,11 +199,25 @@ export class ResourceLedger {
       limits: copyLimits(this.#limits),
       used: { ...this.#used },
       startedAtMs: this.#startedAtMs,
+      tracked: this.#tracked,
     };
   }
 
   lease(label: string): ResourceLease {
     return new ResourceLease(this, label);
+  }
+}
+
+/** A resource limit is a host fault, not logical search exhaustion. */
+export class ResourceLimitError extends Error {
+  readonly kind = "resource-limit" as const;
+
+  constructor(readonly fault: ResourceLimitFault) {
+    super(
+      `${fault.resource} limit ${String(fault.limit)} exceeded after ${String(fault.consumed)} ` +
+        `units by a debit of ${String(fault.requested)}`,
+    );
+    this.name = "ResourceLimitError";
   }
 }
 
@@ -206,6 +255,15 @@ export class ResourceLease {
     return this.ledger.checkTime(nowMs, operation ?? this.label);
   }
 
+  tryObserve(
+    resource: ResourceKind,
+    value: number,
+    operation?: string,
+  ): ResourceLimitFault | undefined {
+    this.#assertOpen();
+    return this.ledger.tryObserve(resource, value, operation ?? this.label);
+  }
+
   fork(label: string): ResourceLease {
     this.#assertOpen();
     if (label.length === 0) throw new RangeError("resource lease label must not be empty");
@@ -218,6 +276,73 @@ export class ResourceLease {
 
   #assertOpen(): void {
     if (this.#closed) throw new Error(`resource lease '${this.label}' is closed`);
+  }
+}
+
+/**
+ * Cancellation ancestry for one evaluator branch.
+ *
+ * A child observes parent cancellation. Releasing a completed child removes
+ * the parent listener, so completed branch trees are not retained by a root.
+ * Task owners still perform the join before calling `close`.
+ */
+export class CancellationScope {
+  readonly #controller = new AbortController();
+  readonly #parentSignal: AbortSignal | undefined;
+  readonly #onParentAbort: (() => void) | undefined;
+  #closed = false;
+
+  constructor(
+    readonly label: string,
+    parentSignal?: AbortSignal,
+  ) {
+    if (label.length === 0) throw new RangeError("cancellation scope label must not be empty");
+    this.#parentSignal = parentSignal;
+    if (parentSignal === undefined) {
+      this.#onParentAbort = undefined;
+    } else {
+      this.#onParentAbort = () => this.cancel(parentSignal.reason);
+      if (parentSignal.aborted) this.#onParentAbort();
+      else parentSignal.addEventListener("abort", this.#onParentAbort, { once: true });
+    }
+  }
+
+  get signal(): AbortSignal {
+    return this.#controller.signal;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
+  }
+
+  get linked(): boolean {
+    return this.#parentSignal !== undefined;
+  }
+
+  fork(label: string): CancellationScope {
+    if (this.#closed) throw new Error(`cancellation scope '${this.label}' is closed`);
+    if (label.length === 0) throw new RangeError("cancellation scope label must not be empty");
+    return new CancellationScope(`${this.label}/${label}`, this.signal);
+  }
+
+  cancel(reason: unknown = { code: "cancelled" }): void {
+    if (!this.signal.aborted) this.#controller.abort(normalizeCancellationReason(reason));
+  }
+
+  close(): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    if (this.#onParentAbort !== undefined)
+      this.#parentSignal?.removeEventListener("abort", this.#onParentAbort);
+  }
+
+  snapshot(operation?: string): CancellationScopeSnapshot {
+    const cancellation = cancellationFromSignal(this.signal, operation);
+    return {
+      label: this.label,
+      closed: this.#closed,
+      ...(cancellation === undefined ? {} : { cancellation }),
+    };
   }
 }
 

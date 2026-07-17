@@ -215,7 +215,7 @@ describe("purity analysis", () => {
 });
 
 describe("tabling end to end", () => {
-  it("replays the uncached counter delta for ground table hits", () => {
+  it("does not replay producer allocation history for ground table hits", () => {
     const fib = "(= (fib $n) (unify $n 0 0 (unify $n 1 1 (+ (fib (- $n 1)) (fib (- $n 2))))))";
     const env = buildEnv([...preludeAtoms(), ...atoms(fib)], stdTable());
     env.tableSpace = new TableSpace();
@@ -233,10 +233,10 @@ describe("tabling end to end", () => {
       coldResults.map((pair) => format(pair[0])),
     );
     expect(coldState.counter).toBeGreaterThan(0);
-    expect(warmState.counter - coldState.counter).toBe(coldState.counter);
+    expect(warmState.counter).toBe(coldState.counter);
   });
 
-  it("replays the uncached counter delta for irreducible ground memo hits", () => {
+  it("does not replay producer allocation history for irreducible ground memo hits", () => {
     const env = buildEnv([...preludeAtoms(), ...atoms("(= (maybe A) yes)")], stdTable());
     const call = atoms("(maybe B)")[0]!;
 
@@ -246,7 +246,7 @@ describe("tabling end to end", () => {
     expect(coldResults.map((pair) => format(pair[0]))).toEqual(["(maybe B)"]);
     expect(warmResults.map((pair) => format(pair[0]))).toEqual(["(maybe B)"]);
     expect(coldState.counter).toBeGreaterThan(0);
-    expect(warmState.counter - coldState.counter).toBe(coldState.counter);
+    expect(warmState.counter).toBe(coldState.counter);
   });
 
   it("tabled fib agrees with untabled (fib 20) and computes fib(30) fast", () => {

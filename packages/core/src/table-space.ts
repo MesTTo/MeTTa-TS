@@ -121,8 +121,6 @@ export class TokenTrie<V> {
 export interface CompletedTableEntry {
   readonly numCallVars: number;
   readonly results: readonly Atom[];
-  /** Fresh-variable counter work consumed by the uncached ground call. */
-  readonly counterDelta: number;
   readonly answerCount: number;
   readonly approxCells: number;
 }
@@ -222,15 +220,8 @@ export class TableSpace {
     return entry;
   }
 
-  rememberCompleted(
-    key: TableKey,
-    numCallVars: number,
-    results: readonly Atom[],
-    counterDelta = 0,
-  ): void {
+  rememberCompleted(key: TableKey, numCallVars: number, results: readonly Atom[]): void {
     if (!this.isCurrentKey(key)) return;
-    if (!Number.isSafeInteger(counterDelta) || counterDelta < 0)
-      throw new RangeError("table counterDelta must be a non-negative safe integer");
     const approxCells = this.entryCost(numCallVars, results);
     if (approxCells > this.budget.maxEntryCells) {
       this.maybeResetInterner();
@@ -242,7 +233,6 @@ export class TableSpace {
       tokens: [...key.tokens],
       numCallVars,
       results: [...results],
-      counterDelta,
       answerCount: results.length,
       approxCells,
       prev: undefined,

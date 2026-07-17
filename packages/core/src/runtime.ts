@@ -12,6 +12,7 @@ export {
   type VariableId,
 } from "./atom";
 export * from "./resources";
+export * from "./effect-journal";
 export * from "./trace";
 export * from "./eval-outcome";
 export * from "./search-cursor";

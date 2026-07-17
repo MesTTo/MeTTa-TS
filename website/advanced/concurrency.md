@@ -21,10 +21,7 @@ const aw: AsyncGroundFn = async (args) => {
   return { tag: "ok", results: [gint(n)] };
 };
 
-const out = await runProgramAsync(
-  "!(collapse (par (aw 3) (aw 4) (aw 2)))",
-  new Map([["aw", aw]]),
-);
+const out = await runProgramAsync("!(collapse (par (aw 3) (aw 4) (aw 2)))", new Map([["aw", aw]]));
 console.log(out.at(-1)!.results.map(format)); // [ '(, 3 4 2)' ]
 ```
 
@@ -43,7 +40,7 @@ await runProgramAsync("!(race (aw 40) (aw 3))", new Map([["aw", aw]]));
 
 ## hyperpose: parallel branches across CPU cores
 
-`par` and `race` overlap *asynchronous* work on a single thread; they cannot speed up pure CPU work, because a branch that compiles to a tight native loop runs to completion without ever yielding. `hyperpose` covers that case. On its own, `(hyperpose (b1 b2 …))` behaves like `superpose` — it yields each branch as a nondeterministic result. But `(once (hyperpose …))` is special: on Node it evaluates the branches in parallel worker threads and returns the first to finish.
+`par` and `race` overlap _asynchronous_ work on a single thread; they cannot speed up pure CPU work, because a branch that compiles to a tight native loop runs to completion without ever yielding. `hyperpose` covers that case. `(hyperpose (b1 b2 …))` treats each listed branch as one nondeterministic alternative. Effect-free branches use fair scheduling. `(once (hyperpose …))` can evaluate eligible branches in parallel Node workers and return the first answer.
 
 That is exactly what you want when the branches are CPU-bound and you only need one answer. Suppose you are checking several large numbers for primality and only one of them is cheap:
 
@@ -57,7 +54,7 @@ That is exactly what you want when the branches are CPU-bound and you only need 
 
 Run sequentially, the engine would grind through the first expensive check before it ever reached the cheap one. With workers the cheap branch settles first, `once` returns immediately, and the rest are cancelled.
 
-Each worker re-evaluates its branch from the program's rules, so the parallel path applies when the branches are pure and ground (they read no atoms added during the run). Otherwise — and in the browser, which has no worker threads — `(once (hyperpose …))` falls back to evaluating the branches in sequence: the same results, just without the parallelism.
+Each worker re-evaluates its branch from the program's rules, so the parallel path applies when the branches are pure and ground. Full Hyperpose normally uses isolated fair scheduling. Independent allocation and commuting writes merge from branch journals. Conflicting state updates fail before commit. If the resolved rule graph contains both state effects and `with-mutex` or `with_mutex`, the branches run in source order so each serialized section observes earlier commits. Non-speculative host effects stay isolated, where the evaluator rejects them before invocation unless an explicit handler permits them.
 
 ## with-mutex: serialize a critical section
 

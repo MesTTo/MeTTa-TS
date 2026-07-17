@@ -581,20 +581,21 @@ describe("race / once", () => {
     {
       name: "a higher-order output effect",
       setup: "(= (invoke-u6 $f $x) ($f $x))",
-      branch: "(invoke-u6 println! leaked)",
+      branch: "(with-mutex output-u7 (invoke-u6 println! leaked))",
     },
     {
       name: "a bare symbol that reduces to an output effect",
-      setup: "(= unsafe-symbol-u6 (println! leaked))",
+      setup: "(= unsafe-symbol-u6 (with-mutex output-u7 (println! leaked)))",
       branch: "unsafe-symbol-u6",
     },
-  ])("rejects worker replay for $name", ({ setup, branch }) => {
+  ])("rejects worker replay for $name", async ({ setup, branch }) => {
     const lines: string[] = [];
     restore = setOutputSink((line) => lines.push(line));
     let calls = 0;
-    const rs = runProgram(
+    const rs = await runProgramAsync(
       `${setup}
-       !(once (hyperpose (${branch} ready)))`,
+       !(once (hyperpose (${branch})))`,
+      new Map(),
       undefined,
       new Map(),
       {

@@ -5,8 +5,10 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import {
+  CancellationScope,
   RESOURCE_KINDS,
   ResourceLedger,
+  ResourceLimitError,
   cancellationFromSignal,
   normalizeCancellationReason,
   resourceUsageDelta,
@@ -61,6 +63,19 @@ describe("evaluation resource ledger", () => {
     });
   });
 
+  it("records stack depth as a high-water mark", () => {
+    const ledger = new ResourceLedger({ limits: { "stack-depth": 4 } });
+    expect(ledger.tryObserve("stack-depth", 3, "frame-push")).toBeUndefined();
+    expect(ledger.tryObserve("stack-depth", 2, "frame-pop")).toBeUndefined();
+    expect(ledger.used("stack-depth")).toBe(3);
+    expect(ledger.tryObserve("stack-depth", 5, "frame-push")).toMatchObject({
+      consumed: 3,
+      requested: 2,
+      limit: 4,
+    });
+    expect(ledger.used("stack-depth")).toBe(3);
+  });
+
   it("normalizes AbortSignal reasons without retaining host objects", () => {
     const controller = new AbortController();
     expect(cancellationFromSignal(controller.signal)).toBeUndefined();
@@ -103,5 +118,40 @@ describe("evaluation resource ledger", () => {
   it("starts every resource counter at zero", () => {
     const snapshot = new ResourceLedger().snapshot();
     for (const kind of RESOURCE_KINDS) expect(snapshot.used[kind]).toBe(0);
+    expect(snapshot.tracked).toBe(false);
+    expect(snapshot.startedAtMs).toBe(0);
+  });
+
+  it("can track an unbounded run without enabling a limit", () => {
+    const ledger = new ResourceLedger({ track: true });
+    expect(ledger.tryConsume("steps", 3)).toBeUndefined();
+    expect(ledger.snapshot()).toMatchObject({ tracked: true, used: { steps: 3 } });
+  });
+
+  it("keeps resource failure typed outside logical outcomes", () => {
+    const ledger = new ResourceLedger({ limits: { branches: 0 } });
+    const fault = ledger.tryConsume("branches", 1, "hyperpose")!;
+    const error = new ResourceLimitError(fault);
+    expect(error).toMatchObject({ kind: "resource-limit", fault });
+    expect(error.message).toContain("branches limit 0 exceeded");
+  });
+
+  it("propagates cancellation down a scope tree and releases parent listeners", () => {
+    const root = new CancellationScope("run");
+    const child = root.fork("branch-0");
+    root.cancel({ code: "winner", message: "another branch answered" });
+
+    expect(child.snapshot("race")).toEqual({
+      label: "run/branch-0",
+      closed: false,
+      cancellation: {
+        kind: "cancelled",
+        reason: { code: "winner", message: "another branch answered" },
+        operation: "race",
+      },
+    });
+    child.close();
+    child.close();
+    expect(child.closed).toBe(true);
   });
 });

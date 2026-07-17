@@ -190,9 +190,14 @@ describe("transaction", () => {
 
   it("restores mutable environment caches when a grounded throws", () => {
     const env = transactionEnv();
-    registerGroundedOperation(env, "explode", () => {
-      throw new Error("boom");
-    });
+    registerGroundedOperation(
+      env,
+      "explode",
+      () => {
+        throw new Error("boom");
+      },
+      { classes: ["pure"], speculative: true },
+    );
     const originalEvaluatedAtoms = env.evaluatedAtoms;
     const query = parsedAtom(
       "(transaction (let $u (add-atom &self (: temporary (-> Atom Atom))) (explode)))",

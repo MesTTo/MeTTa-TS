@@ -19,6 +19,7 @@ import {
   expr,
   gint,
   gstr,
+  hashOf,
   type InternTable,
   internAtom,
   internBuiltExpr,
@@ -29,6 +30,16 @@ import {
   variableIdentity,
 } from "./atom";
 import { dedupAlphaStable, ExactAtomSet } from "./atom-set";
+import {
+  EFFECT_CLASSES,
+  EffectAudit,
+  EffectJournal,
+  defaultEffectCommitment,
+  type EffectClass,
+  type EffectCommitment,
+  type EffectPhase,
+  type EffectRecord,
+} from "./effect-journal";
 import {
   type AtomLog,
   emptyLog,
@@ -103,6 +114,7 @@ import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { applyConsAtom, applyDeconsAtom } from "./minimal-instruction";
 import { addInt, type IntVal, subInt } from "./number";
 import { format } from "./parser";
+import { ForkableMap, ForkableSet, forkMap, forkSet } from "./persistent-collection";
 import { readonlyMapSnapshot, readonlySetSnapshot } from "./readonly-collection";
 import { asRevisionMap, collectionRevision, RevisionMap, RevisionSet } from "./revision-collection";
 import { isWorkerQuiescenceError } from "./worker-protocol";
@@ -124,7 +136,18 @@ import {
   type SyncSearchCursor,
 } from "./search-cursor";
 import { runStructuredTaskGroup } from "./structured-task-group";
-import { normalizeCancellationReason, type CancellationReason } from "./resources";
+import {
+  CancellationScope,
+  ResourceLedger,
+  ResourceLimitError,
+  type CancellationReason,
+  type CancellationScopeSnapshot,
+  type ResourceKind,
+  type ResourceLease,
+  type ResourcePolicy,
+  type ResourceSnapshot,
+  normalizeCancellationReason,
+} from "./resources";
 import {
   containsOpaqueApplication,
   isVariableHeadedPattern,
@@ -507,6 +530,11 @@ const signalledGroundedContexts = new WeakMap<
   CompleteGroundedCallContext,
   SignalledGroundedContext
 >();
+function groundedRuntimeSignal(world: World, driverSignal: AbortSignal): AbortSignal {
+  if (driverSignal !== NEVER_ABORTED_SIGNAL) return driverSignal;
+  const scope = worldRuntimeContext(world).cancellation;
+  return scope.linked ? scope.signal : driverSignal;
+}
 
 function groundedContextIdentity(world: World): GroundedContextIdentity {
   const cached = groundedContextIdentities.get(world);
@@ -767,6 +795,7 @@ function groundedCallContextWithSignal(
   world: World,
   signal: AbortSignal,
 ): SignalledGroundedCallContext {
+  signal = groundedRuntimeSignal(world, signal);
   const base = groundedCallContext(env, world);
   const cached = signalledGroundedContexts.get(base);
   if (cached?.signal === signal) return cached.context;
@@ -806,6 +835,7 @@ function* callGroundedG(
   op: string,
   args: readonly Atom[],
 ): Gen<ReduceResult> {
+  checkWorldDeadline(world, op);
   const af = env.agt.get(op);
   if (af !== undefined) {
     pendingAsyncOp = op;
@@ -814,23 +844,23 @@ function* callGroundedG(
       () => {
         throw new AsyncInSyncError(op);
       },
-      (signal) =>
-        af(
-          args,
-          signal === NEVER_ABORTED_SIGNAL
-            ? groundedCallContext(env, world)
-            : groundedCallContextWithSignal(env, world, signal),
-        ),
+      async (signal) => {
+        const result = await af(args, groundedCallContextWithSignal(env, world, signal));
+        checkWorldDeadline(world, op);
+        return result;
+      },
     )) as ReduceResult;
   }
   const sf = env.gt.get(op);
   if (sf === undefined) return { tag: "noReduce" };
-  return sf(
+  const result = sf(
     args,
     isContextIndependentGroundedOp(sf)
       ? DEFAULT_GROUNDED_CALL_CONTEXT
       : groundedCallContext(env, world),
   );
+  checkWorldDeadline(world, op);
+  return result;
 }
 
 function isPromiseLike<T>(value: T | Promise<T>): value is Promise<T> {
@@ -845,22 +875,25 @@ function* callHostImportG(
 ): Gen<ReduceResult | undefined> {
   const hostImport = env.hostImport;
   if (hostImport === undefined) return undefined;
+  checkWorldDeadline(world, "import!");
   pendingAsyncOp = "import!";
   return (yield driverEffect(
     "import!",
     () => {
       const result = hostImport(space, file, groundedCallContext(env, world));
       if (isPromiseLike(result)) throw new AsyncInSyncError("import!");
+      checkWorldDeadline(world, "import!");
       return result;
     },
-    (signal) =>
-      hostImport(
+    async (signal) => {
+      const result = await hostImport(
         space,
         file,
-        signal === NEVER_ABORTED_SIGNAL
-          ? groundedCallContext(env, world)
-          : groundedCallContextWithSignal(env, world, signal),
-      ),
+        groundedCallContextWithSignal(env, world, signal),
+      );
+      checkWorldDeadline(world, "import!");
+      return result;
+    },
   )) as ReduceResult;
 }
 
@@ -1213,6 +1246,8 @@ export interface MinEnv {
   exprTypes: Array<[Atom, Atom]>;
   /** Async grounded operations, dispatched by the async runner; empty for pure synchronous evaluation. */
   agt: Map<string, AsyncGroundFn>;
+  /** Environment-local effect declarations for sync and async grounded operations. */
+  groundedEffects?: Map<string, GroundedEffectPolicy>;
   /** Local version of the sync and async grounded registries used by context descriptors. */
   groundingVersion?: number;
   /** Optional host-language import hook used by async `import!` for files outside the MeTTa import map. */
@@ -1225,8 +1260,8 @@ export interface MinEnv {
   mutexes: Map<string, Promise<void>>;
   /** Optional per-run hash-cons table for immutable terms. */
   intern?: InternTable;
-  /** Ground expressions proven to reduce only to themselves, with the exact counter delta to replay. */
-  evaluatedAtoms: WeakMap<Atom, number>;
+  /** Ground expressions proven to reduce only to themselves. */
+  evaluatedAtoms: WeakSet<Atom>;
   // Clause indexing over &self atoms, so `match` scales past a linear scan (Prolog-style clause indexing).
   // `factIndex` maps an atom's head key (functor for an expression, name for a symbol) to its atoms;
   // used for variable/expression first-argument queries. `argIndex` is the finer index, keyed by
@@ -1331,10 +1366,12 @@ interface CachedNamedEnvironment {
   readonly groundingVersion: number;
   readonly syncRegistry: GroundingTable;
   readonly asyncRegistry: Map<string, AsyncGroundFn>;
+  readonly groundedEffects: Map<string, GroundedEffectPolicy> | undefined;
   readonly syncSize: number;
   readonly asyncSize: number;
   readonly syncRevision: number | undefined;
   readonly asyncRevision: number | undefined;
+  readonly groundedEffectRevision: number | undefined;
   readonly imports: Map<string, Atom[]>;
   readonly importRevision: number | undefined;
   readonly capabilities: ReadonlySet<string> | undefined;
@@ -1435,6 +1472,7 @@ function detachProgramCollectionsIfShared(env: MinEnv): void {
   env.argIndex = cloneArrayMap(env.argIndex);
   env.nonGroundAtPos = cloneArrayMap(env.nonGroundAtPos);
   env.varHeadedFacts = env.varHeadedFacts.slice();
+  if (env.groundedEffects !== undefined) env.groundedEffects = new RevisionMap(env.groundedEffects);
   if (env.nestedMatchIndex !== undefined) {
     env.nestedMatchIndex = {
       byHead: cloneArrayMap(env.nestedMatchIndex.byHead),
@@ -1547,10 +1585,11 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     imports: new RevisionMap(),
     exprTypes: [],
     agt: new RevisionMap(),
+    groundedEffects: new RevisionMap(),
     groundingVersion: 0,
     capabilities: new RevisionSet(DEFAULT_RUNTIME_CAPABILITIES),
     mutexes: new Map(),
-    evaluatedAtoms: new WeakMap(),
+    evaluatedAtoms: new WeakSet(),
     factIndex: new Map(),
     argIndex: new Map(),
     nonGroundAtPos: new Map(),
@@ -1583,7 +1622,7 @@ function invalidateTabling(env: MinEnv): void {
 }
 
 function invalidateGroundedRegistration(env: MinEnv): void {
-  env.evaluatedAtoms = new WeakMap();
+  env.evaluatedAtoms = new WeakSet();
   invalidateTabling(env);
   // Compiled nodes inline the standard grounded arithmetic and comparison semantics. A host can replace
   // those names, so this environment must stay on dispatch-aware interpretation after registration.
@@ -1592,21 +1631,68 @@ function invalidateGroundedRegistration(env: MinEnv): void {
   env.compiledComplete = undefined;
 }
 
+export interface GroundedEffectPolicy {
+  readonly classes: readonly EffectClass[];
+  /** The operation may run in an isolated branch that can be discarded. */
+  readonly speculative: boolean;
+}
+
+const EFFECT_CLASS_SET: ReadonlySet<string> = new Set(EFFECT_CLASSES);
+
+function normalizedGroundedEffectPolicy(policy: GroundedEffectPolicy): GroundedEffectPolicy {
+  if (!Array.isArray(policy.classes) || policy.classes.length === 0)
+    throw new TypeError("grounded effect policy must declare at least one effect class");
+  if (typeof policy.speculative !== "boolean")
+    throw new TypeError("grounded effect policy speculative flag must be boolean");
+  const classes = [...new Set(policy.classes)];
+  if (classes.some((effectClass) => !EFFECT_CLASS_SET.has(effectClass)))
+    throw new TypeError("grounded effect policy contains an unknown effect class");
+  if (classes.includes("pure") && classes.length !== 1)
+    throw new TypeError("a pure grounded operation cannot declare another effect class");
+  return Object.freeze({
+    classes: Object.freeze(classes),
+    speculative: policy.speculative,
+  });
+}
+
+function installGroundedEffectPolicy(
+  env: MinEnv,
+  name: string,
+  policy: GroundedEffectPolicy,
+): void {
+  const policies = env.groundedEffects ?? (env.groundedEffects = new RevisionMap());
+  policies.set(name, policy);
+}
+
 /** Register a sync grounded operation and invalidate analyses that may have classified its name. */
-export function registerGroundedOperation(env: MinEnv, name: string, op: GroundFn): void {
+export function registerGroundedOperation(
+  env: MinEnv,
+  name: string,
+  op: GroundFn,
+  effects: GroundedEffectPolicy = { classes: ["host-io"], speculative: false },
+): void {
+  const policy = normalizedGroundedEffectPolicy(effects);
   retireCachedProgramSnapshot(env);
   detachProgramCollectionsIfShared(env);
   env.gt.set(name, op);
   env.groundingVersion = (env.groundingVersion ?? 0) + 1;
+  installGroundedEffectPolicy(env, name, policy);
   addGroundedOperationType(env, name, op);
   invalidateGroundedRegistration(env);
 }
 
 /** Register an async grounded operation and invalidate analyses that may have classified its name. */
-export function registerAsyncGroundedOperation(env: MinEnv, name: string, op: AsyncGroundFn): void {
+export function registerAsyncGroundedOperation(
+  env: MinEnv,
+  name: string,
+  op: AsyncGroundFn,
+  effects: GroundedEffectPolicy = { classes: ["suspension"], speculative: true },
+): void {
+  const policy = normalizedGroundedEffectPolicy(effects);
   retireCachedProgramSnapshot(env);
   env.agt.set(name, op);
   env.groundingVersion = (env.groundingVersion ?? 0) + 1;
+  installGroundedEffectPolicy(env, name, policy);
   invalidateGroundedRegistration(env);
 }
 
@@ -1813,7 +1899,7 @@ function ensureCompiled(env: MinEnv, query: Atom): void {
 /** Runtime `add-atom`/`import!` can add equations into `selfRules`, so clear static table state and let the
  *  runtime versioned purity/worth gates decide whether those new rules can be memoised. */
 function disableTabling(env: MinEnv): void {
-  env.evaluatedAtoms = new WeakMap();
+  env.evaluatedAtoms = new WeakSet();
   env.workerReplaySafeFunctors = undefined;
   env.compiled = undefined;
   env.compileDirty = undefined;
@@ -1868,7 +1954,7 @@ export function addAtomToEnv(env: MinEnv, x: Atom, replaceTypeSignature = true):
       }
   }
   if (opOf(atom) === "=" && atom.kind === "expr" && atom.items.length === 3) {
-    env.evaluatedAtoms = new WeakMap();
+    env.evaluatedAtoms = new WeakSet();
     const lhs = atom.items[1]!;
     const rhs = atom.items[2]!;
     const k = headKey(lhs);
@@ -1914,7 +2000,7 @@ interface EnvironmentMutationSnapshot {
   readonly types: Map<string, Atom[]>;
   readonly exprTypes: Array<[Atom, Atom]>;
   readonly typeCache: WeakMap<Atom, Atom[]> | undefined;
-  readonly evaluatedAtoms: WeakMap<Atom, number>;
+  readonly evaluatedAtoms: WeakSet<Atom>;
   readonly compiled: CompiledFns | undefined;
   readonly compileDirty: boolean | undefined;
   readonly compiledComplete: boolean | undefined;
@@ -2085,7 +2171,7 @@ function addStaticRemoval(w: World, a: Atom): void {
   if (k === undefined) {
     w.removedStaticVarRules = true;
   } else {
-    const heads = new Set(w.removedStaticHeads);
+    const heads = forkSet(w.removedStaticHeads);
     heads.add(k);
     w.removedStaticHeads = heads;
   }
@@ -2093,11 +2179,11 @@ function addStaticRemoval(w: World, a: Atom): void {
 
 function staticRemovalState(atoms: readonly Atom[]): {
   readonly removedStatic: AtomLog;
-  readonly removedStaticHeads: ReadonlySet<string>;
+  readonly removedStaticHeads: Set<string>;
   readonly removedStaticVarRules: boolean;
 } {
   let removedStatic = emptyLog;
-  const removedStaticHeads = new Set<string>();
+  const removedStaticHeads = new ForkableSet<string>();
   let removedStaticVarRules = false;
   for (const a of atoms) {
     removedStatic = logAppendAll(removedStatic, [a]);
@@ -2115,7 +2201,7 @@ function mergeStaticRemovals(
   branches: readonly World[],
 ): {
   readonly removedStatic: AtomLog;
-  readonly removedStaticHeads: ReadonlySet<string>;
+  readonly removedStaticHeads: Set<string>;
   readonly removedStaticVarRules: boolean;
 } {
   const atoms = logToArray(base.removedStatic);
@@ -2146,6 +2232,8 @@ function namedSpaceEnv(env: MinEnv, w: World, name: string, expectedType: Atom =
   const groundingVersion = root.groundingVersion ?? 0;
   const syncRevision = collectionRevision(root.gt);
   const asyncRevision = collectionRevision(root.agt);
+  const groundedEffectRevision =
+    root.groundedEffects === undefined ? 0 : collectionRevision(root.groundedEffects);
   const importRevision = collectionRevision(root.imports);
   const capabilityRevision =
     root.capabilities === undefined ? 0 : collectionRevision(root.capabilities);
@@ -2158,10 +2246,12 @@ function namedSpaceEnv(env: MinEnv, w: World, name: string, expectedType: Atom =
       entry.groundingVersion === groundingVersion &&
       entry.syncRegistry === root.gt &&
       entry.asyncRegistry === root.agt &&
+      entry.groundedEffects === root.groundedEffects &&
       entry.syncSize === root.gt.size &&
       entry.asyncSize === root.agt.size &&
       entry.syncRevision === syncRevision &&
       entry.asyncRevision === asyncRevision &&
+      entry.groundedEffectRevision === groundedEffectRevision &&
       entry.imports === root.imports &&
       entry.importRevision === importRevision &&
       entry.capabilities === root.capabilities &&
@@ -2177,6 +2267,7 @@ function namedSpaceEnv(env: MinEnv, w: World, name: string, expectedType: Atom =
   // host import resolution, interning, and mutex ownership therefore stay attached to the root runner.
   view.imports = root.imports;
   view.agt = root.agt;
+  if (root.groundedEffects !== undefined) view.groundedEffects = root.groundedEffects;
   view.mutexes = root.mutexes;
   if (root.capabilities !== undefined) view.capabilities = root.capabilities;
   if (root.hostImport !== undefined) view.hostImport = root.hostImport;
@@ -2199,10 +2290,12 @@ function namedSpaceEnv(env: MinEnv, w: World, name: string, expectedType: Atom =
     groundingVersion,
     syncRegistry: root.gt,
     asyncRegistry: root.agt,
+    groundedEffects: root.groundedEffects,
     syncSize: root.gt.size,
     asyncSize: root.agt.size,
     syncRevision,
     asyncRevision,
+    groundedEffectRevision,
     imports: root.imports,
     importRevision,
     capabilities: root.capabilities,
@@ -2292,7 +2385,7 @@ export interface World {
   // Static atoms removed from `&self` in this world. Static program atoms live in `env`; this tombstone
   // keeps removal branch-local without mutating the shared env.
   removedStatic: AtomLog;
-  removedStaticHeads: ReadonlySet<string>;
+  removedStaticHeads: Set<string>;
   removedStaticVarRules: boolean;
   /** True once a branch adds or removes a type declaration in `&self`. */
   hasTypeMutations: boolean;
@@ -2312,6 +2405,270 @@ export interface World {
   allocation: RuntimeAllocationLane;
 }
 
+type WorldMutation =
+  | { readonly kind: "add-atoms"; readonly space: string; readonly atoms: readonly Atom[] }
+  | { readonly kind: "remove-atom"; readonly space: string; readonly atom: Atom }
+  | {
+      readonly kind: "set-state";
+      readonly key: number | StateId;
+      readonly introduced: boolean;
+      readonly value: Atom;
+    }
+  | {
+      readonly kind: "create-space";
+      readonly name: string;
+      readonly atoms: readonly Atom[];
+    }
+  | { readonly kind: "set-token"; readonly name: string; readonly value: Atom }
+  | { readonly kind: "set-max-stack-depth"; readonly value: number }
+  | {
+      readonly kind: "install-module";
+      readonly installation: GroundedModuleInstallation;
+    };
+
+interface WorldEffectPayload {
+  readonly kind: "world";
+  readonly mutation: WorldMutation;
+}
+
+interface OperationEffectPayload {
+  readonly kind: "operation";
+  readonly results: readonly Atom[];
+}
+
+type BranchEffectPayload = WorldEffectPayload | OperationEffectPayload;
+
+export type WorldCommitPolicy = "sequential-commit" | "isolated-branches";
+export type IrreversibleEffectPolicy = "allow" | "reject";
+
+interface WorldRuntimeContext {
+  readonly branch: string;
+  readonly policy: WorldCommitPolicy;
+  readonly irreversibleEffects: IrreversibleEffectPolicy;
+  readonly audit: EffectAudit;
+  readonly journal: EffectJournal<BranchEffectPayload>;
+  readonly nextSequence: number;
+  readonly resources: ResourceLease;
+  readonly cancellation: CancellationScope;
+}
+
+export interface BranchEffectSnapshot {
+  readonly id: { readonly branch: string; readonly sequence: number };
+  readonly class: EffectClass;
+  readonly phase: EffectPhase;
+  readonly operation: string;
+  readonly commitment: EffectCommitment;
+}
+
+export interface BranchRuntimeSnapshot {
+  readonly branch: string;
+  readonly policy: WorldCommitPolicy;
+  readonly irreversibleEffects: IrreversibleEffectPolicy;
+  readonly effects: readonly BranchEffectSnapshot[];
+  readonly resources: ResourceSnapshot;
+  readonly cancellation: CancellationScopeSnapshot;
+}
+
+export interface BranchRuntimeOptions {
+  readonly resources?: ResourcePolicy;
+  readonly signal?: AbortSignal;
+}
+
+const worldRuntimeContexts = new WeakMap<World, WorldRuntimeContext>();
+let worldRuntimeSequence = 0;
+
+function newWorldRuntimeContext(options: BranchRuntimeOptions = {}): WorldRuntimeContext {
+  const branch = `run-${++worldRuntimeSequence}`;
+  const resources = new ResourceLedger(options.resources).lease(branch);
+  return {
+    branch,
+    policy: "sequential-commit",
+    irreversibleEffects: "allow",
+    audit: EffectAudit.empty(),
+    journal: EffectJournal.root(branch),
+    nextSequence: 0,
+    resources,
+    cancellation: new CancellationScope(branch, options.signal),
+  };
+}
+
+function worldRuntimeContext(world: World): WorldRuntimeContext {
+  let context = worldRuntimeContexts.get(world);
+  if (context === undefined) {
+    context = newWorldRuntimeContext();
+    worldRuntimeContexts.set(world, context);
+  }
+  return context;
+}
+
+/** Inspect stable branch metadata without exposing mutable world-effect payloads. */
+export function branchRuntimeSnapshot(state: St): BranchRuntimeSnapshot {
+  const context = worldRuntimeContext(state.world);
+  const effects = [...context.audit.toArray(), ...context.journal.toArray()];
+  return {
+    branch: context.branch,
+    policy: context.policy,
+    irreversibleEffects: context.irreversibleEffects,
+    effects: Object.freeze(
+      effects.map((effect) =>
+        Object.freeze({
+          id: effect.id,
+          class: effect.class,
+          phase: effect.phase,
+          operation: effect.operation,
+          commitment: effect.commitment,
+        }),
+      ),
+    ) as readonly BranchEffectSnapshot[],
+    resources: context.resources.ledger.snapshot(),
+    cancellation: context.cancellation.snapshot(),
+  };
+}
+
+function consumeWorldResource(
+  world: World,
+  resource: ResourceKind,
+  amount: number,
+  operation: string,
+): void {
+  const lease = worldRuntimeContext(world).resources;
+  if (!lease.ledger.tracked) return;
+  const fault = lease.tryConsume(resource, amount, operation);
+  if (fault !== undefined) throw new ResourceLimitError(fault);
+}
+
+function checkWorldDeadline(world: World, operation: string): void {
+  const lease = worldRuntimeContext(world).resources;
+  if (!lease.ledger.tracked || lease.ledger.limit("wall-time-ms") === undefined) return;
+  const fault = lease.checkTime(Date.now(), operation);
+  if (fault !== undefined) throw new ResourceLimitError(fault);
+}
+
+function checkWorldCancellation(world: World): void {
+  const scope = worldRuntimeContext(world).cancellation;
+  if (scope.linked) scope.signal.throwIfAborted();
+}
+
+function releaseWorldRuntime(world: World, reason?: CancellationReason): void {
+  const context = worldRuntimeContexts.get(world);
+  if (context === undefined) return;
+  if (reason !== undefined) context.cancellation.cancel(reason);
+  context.cancellation.close();
+  context.resources.close();
+}
+
+function cancelWorldRuntime(world: World, reason: CancellationReason): void {
+  worldRuntimeContexts.get(world)?.cancellation.cancel(reason);
+}
+
+function inheritWorldRuntime(source: World, target: World): World {
+  worldRuntimeContexts.set(target, worldRuntimeContext(source));
+  return target;
+}
+
+function forkWorldRuntime(
+  source: World,
+  target: World,
+  branch: string,
+  policy: WorldCommitPolicy = "isolated-branches",
+  irreversibleEffects: IrreversibleEffectPolicy = "reject",
+  debitBranch = true,
+): World {
+  const parent = worldRuntimeContext(source);
+  if (debitBranch) consumeWorldResource(source, "branches", 1, branch);
+  worldRuntimeContexts.set(target, {
+    branch,
+    policy,
+    irreversibleEffects,
+    audit: parent.audit,
+    journal: parent.journal.fork(branch),
+    nextSequence: 0,
+    resources: parent.resources.fork(branch),
+    cancellation: parent.cancellation.fork(branch),
+  });
+  return target;
+}
+
+function nextWorldRuntimeBranch(source: World, label: string): string {
+  return `${worldRuntimeContext(source).branch}/${label}-${++worldRuntimeSequence}`;
+}
+
+function withWorldRuntimePolicy(
+  source: World,
+  target: World,
+  policy: WorldCommitPolicy,
+  irreversibleEffects: IrreversibleEffectPolicy,
+): World {
+  const current = worldRuntimeContext(source);
+  worldRuntimeContexts.set(target, { ...current, policy, irreversibleEffects });
+  return target;
+}
+
+function recordWorldMutation(world: World, operation: string, mutation: WorldMutation): void {
+  const current = worldRuntimeContext(world);
+  if (current.policy === "sequential-commit") {
+    worldRuntimeContexts.set(world, {
+      ...current,
+      audit: current.audit.appendFields(
+        current.branch,
+        current.nextSequence,
+        "atomspace-write",
+        "answer",
+        operation,
+        "reversible",
+      ),
+      nextSequence: current.nextSequence + 1,
+    });
+    return;
+  }
+  worldRuntimeContexts.set(world, {
+    ...current,
+    journal: current.journal.append({
+      class: "atomspace-write",
+      phase: "answer",
+      operation,
+      commitment: "reversible",
+      payload: { kind: "world", mutation },
+    }),
+    nextSequence: current.nextSequence + 1,
+  });
+}
+
+function recordOperationEffect(
+  world: World,
+  operation: string,
+  effectClass: Exclude<EffectClass, "pure">,
+  results: readonly Atom[],
+): void {
+  const current = worldRuntimeContext(world);
+  const commitment = defaultEffectCommitment(effectClass);
+  if (current.policy === "sequential-commit") {
+    worldRuntimeContexts.set(world, {
+      ...current,
+      audit: current.audit.appendFields(
+        current.branch,
+        current.nextSequence,
+        effectClass,
+        "pre",
+        operation,
+        commitment,
+      ),
+      nextSequence: current.nextSequence + 1,
+    });
+    return;
+  }
+  worldRuntimeContexts.set(world, {
+    ...current,
+    journal: current.journal.append({
+      class: effectClass,
+      phase: "pre",
+      operation,
+      payload: { kind: "operation", results: Object.freeze(results.slice()) },
+    }),
+    nextSequence: current.nextSequence + 1,
+  });
+}
+
 interface RuntimeAllocationLane {
   readonly ids: RuntimeIdAllocator;
   readonly branchScoped: boolean;
@@ -2328,34 +2685,38 @@ function nextWorldGeneration(world: World): number {
   return world.generation + 1;
 }
 
-export const initSt = (): St => ({
-  counter: 0,
-  world: {
-    generation: 0,
-    moduleInstallations: [],
-    transactionDepth: 0,
-    spaces: new Map(),
-    store: new Map(),
-    tokens: new Map(),
-    selfExtra: emptyLog,
-    flatSelfExtra: undefined,
-    selfRules: new Map(),
-    selfVarRules: [],
-    selfRuleVersion: 0,
-    removedStatic: emptyLog,
-    removedStaticHeads: new Set(),
-    removedStaticVarRules: false,
-    hasTypeMutations: false,
-    typeView: undefined,
-    typeViewProgramVersion: undefined,
-    typeViewOwner: undefined,
-    maxStackDepth: 0,
-    allocation: {
-      ids: new RuntimeIdAllocator("metta"),
-      branchScoped: false,
+export const initSt = (options: BranchRuntimeOptions = {}): St => {
+  const state: St = {
+    counter: 0,
+    world: {
+      generation: 0,
+      moduleInstallations: [],
+      transactionDepth: 0,
+      spaces: new ForkableMap(),
+      store: new ForkableMap(),
+      tokens: new ForkableMap(),
+      selfExtra: emptyLog,
+      flatSelfExtra: undefined,
+      selfRules: new ForkableMap(),
+      selfVarRules: [],
+      selfRuleVersion: 0,
+      removedStatic: emptyLog,
+      removedStaticHeads: new ForkableSet(),
+      removedStaticVarRules: false,
+      hasTypeMutations: false,
+      typeView: undefined,
+      typeViewProgramVersion: undefined,
+      typeViewOwner: undefined,
+      maxStackDepth: 0,
+      allocation: {
+        ids: new RuntimeIdAllocator("metta"),
+        branchScoped: false,
+      },
     },
-  },
-});
+  };
+  worldRuntimeContexts.set(state.world, newWorldRuntimeContext(options));
+  return state;
+};
 
 function makeWorldView(
   w: World,
@@ -2390,6 +2751,7 @@ function makeWorldView(
     allocation,
   };
   groundedContextIdentities.set(view, contextIdentity);
+  inheritWorldRuntime(w, view);
   return view;
 }
 
@@ -2400,11 +2762,11 @@ function cloneWorld(w: World): World {
       ids: w.allocation.ids.clone(),
       branchScoped: w.allocation.branchScoped,
     },
-    new Map(w.spaces),
-    new Map(w.store),
-    new Map(w.tokens),
-    new Map(w.selfRules),
-    new Set(w.removedStaticHeads),
+    forkMap(w.spaces),
+    forkMap(w.store),
+    forkMap(w.tokens),
+    forkMap(w.selfRules),
+    forkSet(w.removedStaticHeads),
     groundedContextIdentity(w),
   );
 }
@@ -2447,6 +2809,8 @@ interface ProgramSnapshotStamp {
   readonly gtRevision: number | undefined;
   readonly agt: Map<string, AsyncGroundFn>;
   readonly agtRevision: number | undefined;
+  readonly groundedEffects: Map<string, GroundedEffectPolicy> | undefined;
+  readonly groundedEffectRevision: number | undefined;
   readonly imports: Map<string, Atom[]>;
   readonly importRevision: number | undefined;
   readonly capabilities: ReadonlySet<string> | undefined;
@@ -2472,6 +2836,7 @@ interface CachedPinnedProgram {
   readonly snapshots: Set<MinEnv>;
   readonly pinnedGroundings: RevisionMap<string, GroundFn>;
   readonly pinnedAsyncGroundings: RevisionMap<string, AsyncGroundFn>;
+  readonly pinnedGroundedEffects: RevisionMap<string, GroundedEffectPolicy> | undefined;
   readonly pinnedImports: RevisionMap<string, Atom[]>;
   readonly pinnedCapabilities: RevisionSet<string> | undefined;
   leases: number;
@@ -2484,6 +2849,8 @@ const asyncProgramSnapshotCache = new WeakMap<MinEnv, CachedPinnedProgram>();
 function programSnapshotStamp(root: MinEnv): ProgramSnapshotStamp {
   const gtRevision = collectionRevision(root.gt);
   const agtRevision = collectionRevision(root.agt);
+  const groundedEffectRevision =
+    root.groundedEffects === undefined ? 0 : collectionRevision(root.groundedEffects);
   const importRevision = collectionRevision(root.imports);
   const capabilityRevision =
     root.capabilities === undefined ? 0 : collectionRevision(root.capabilities);
@@ -2491,6 +2858,7 @@ function programSnapshotStamp(root: MinEnv): ProgramSnapshotStamp {
     reusable:
       gtRevision !== undefined &&
       agtRevision !== undefined &&
+      groundedEffectRevision !== undefined &&
       importRevision !== undefined &&
       capabilityRevision !== undefined,
     programVersion: root.programVersion ?? 0,
@@ -2504,6 +2872,8 @@ function programSnapshotStamp(root: MinEnv): ProgramSnapshotStamp {
     gtRevision,
     agt: root.agt,
     agtRevision,
+    groundedEffects: root.groundedEffects,
+    groundedEffectRevision,
     imports: root.imports,
     importRevision,
     capabilities: root.capabilities,
@@ -2537,6 +2907,8 @@ function sameProgramSnapshot(left: ProgramSnapshotStamp, right: ProgramSnapshotS
     left.gtRevision === right.gtRevision &&
     left.agt === right.agt &&
     left.agtRevision === right.agtRevision &&
+    left.groundedEffects === right.groundedEffects &&
+    left.groundedEffectRevision === right.groundedEffectRevision &&
     left.imports === right.imports &&
     left.importRevision === right.importRevision &&
     left.capabilities === right.capabilities &&
@@ -2570,6 +2942,9 @@ function programSnapshotStillCurrent(stamp: ProgramSnapshotStamp, root: MinEnv):
     stamp.gtRevision === collectionRevision(root.gt) &&
     stamp.agt === root.agt &&
     stamp.agtRevision === collectionRevision(root.agt) &&
+    stamp.groundedEffects === root.groundedEffects &&
+    stamp.groundedEffectRevision ===
+      (root.groundedEffects === undefined ? 0 : collectionRevision(root.groundedEffects)) &&
     stamp.imports === root.imports &&
     stamp.importRevision === collectionRevision(root.imports) &&
     stamp.capabilities === root.capabilities &&
@@ -2596,6 +2971,7 @@ function disposeCachedPinnedProgram(cached: CachedPinnedProgram): void {
   cached.snapshots.delete(cached.pinned);
   cached.pinnedGroundings.releaseSnapshot();
   cached.pinnedAsyncGroundings.releaseSnapshot();
+  cached.pinnedGroundedEffects?.releaseSnapshot();
   cached.pinnedImports.releaseSnapshot();
   cached.pinnedCapabilities?.releaseSnapshot();
 }
@@ -2614,6 +2990,12 @@ function createCachedPinnedProgram(root: MinEnv, stamp: ProgramSnapshotStamp): C
     root.gt instanceof RevisionMap ? root.gt.snapshot() : new RevisionMap(root.gt);
   const pinnedAsyncGroundings =
     root.agt instanceof RevisionMap ? root.agt.snapshot() : new RevisionMap(root.agt);
+  const pinnedGroundedEffects =
+    root.groundedEffects instanceof RevisionMap
+      ? root.groundedEffects.snapshot()
+      : root.groundedEffects === undefined
+        ? undefined
+        : new RevisionMap(root.groundedEffects);
   const pinnedImports =
     root.imports instanceof RevisionMap
       ? root.imports.snapshot()
@@ -2629,11 +3011,12 @@ function createCachedPinnedProgram(root: MinEnv, stamp: ProgramSnapshotStamp): C
     gt: pinnedGroundings,
     imports: pinnedImports,
     agt: pinnedAsyncGroundings,
+    ...(pinnedGroundedEffects === undefined ? {} : { groundedEffects: pinnedGroundedEffects }),
     ...(pinnedCapabilities === undefined ? {} : { capabilities: pinnedCapabilities }),
     ...(root.evaluationContext === undefined
       ? {}
       : { evaluationContext: copyEvaluationContext(root.evaluationContext) }),
-    evaluatedAtoms: new WeakMap(),
+    evaluatedAtoms: new WeakSet(),
     typeCache: new WeakMap(),
     tableSpace:
       root.tableSpace === undefined ? undefined : new TableSpace(root.tableSpace.resourceBudget()),
@@ -2663,6 +3046,7 @@ function createCachedPinnedProgram(root: MinEnv, stamp: ProgramSnapshotStamp): C
     snapshots,
     pinnedGroundings,
     pinnedAsyncGroundings,
+    pinnedGroundedEffects,
     pinnedImports,
     pinnedCapabilities,
     leases: 0,
@@ -2940,7 +3324,14 @@ interface StoreWrite {
   readonly value: Atom;
 }
 
-interface WorldDelta {
+interface JournalWorldDelta {
+  readonly kind: "journal";
+  readonly generationDelta: number;
+  readonly effects: readonly EffectRecord<BranchEffectPayload>[];
+}
+
+interface ScannedWorldDelta {
+  readonly kind: "scanned";
   readonly generationDelta: number;
   readonly moduleInstallations: readonly GroundedModuleInstallation[];
   readonly selfAdded: readonly Atom[];
@@ -2953,9 +3344,114 @@ interface WorldDelta {
   readonly maxStackDepth: number | undefined;
 }
 
+type WorldDelta = JournalWorldDelta | ScannedWorldDelta;
+
 interface BranchStateDelta {
   readonly counter: number;
   readonly world: WorldDelta;
+}
+
+function atomArraysEqual(left: readonly Atom[], right: readonly Atom[]): boolean {
+  return left.length === right.length && left.every((atom, index) => atomEq(atom, right[index]!));
+}
+
+function importAtomDeltasEqual(
+  left: readonly { readonly space: Atom; readonly atom: Atom }[],
+  right: readonly { readonly space: Atom; readonly atom: Atom }[],
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every(
+      (delta, index) =>
+        atomEq(delta.space, right[index]!.space) && atomEq(delta.atom, right[index]!.atom),
+    )
+  );
+}
+
+function moduleInstallationsEqual(
+  left: GroundedModuleInstallation,
+  right: GroundedModuleInstallation,
+): boolean {
+  return (
+    atomEq(left.request, right.request) &&
+    left.resolvedIdentity === right.resolvedIdentity &&
+    left.source === right.source &&
+    left.contentHash === right.contentHash &&
+    atomEq(left.targetSpace, right.targetSpace) &&
+    importAtomDeltasEqual(left.worldDelta.addedAtoms, right.worldDelta.addedAtoms) &&
+    importAtomDeltasEqual(left.worldDelta.removedAtoms, right.worldDelta.removedAtoms) &&
+    left.worldDelta.boundTokens.length === right.worldDelta.boundTokens.length &&
+    left.worldDelta.boundTokens.every(
+      (delta, index) =>
+        delta.name === right.worldDelta.boundTokens[index]!.name &&
+        atomEq(delta.atom, right.worldDelta.boundTokens[index]!.atom),
+    )
+  );
+}
+
+function worldMutationsEqual(left: WorldMutation, right: WorldMutation): boolean {
+  if (left.kind !== right.kind) return false;
+  switch (left.kind) {
+    case "add-atoms":
+      return (
+        right.kind === "add-atoms" &&
+        left.space === right.space &&
+        atomArraysEqual(left.atoms, right.atoms)
+      );
+    case "remove-atom":
+      return (
+        right.kind === "remove-atom" && left.space === right.space && atomEq(left.atom, right.atom)
+      );
+    case "set-state":
+      return (
+        right.kind === "set-state" &&
+        left.key === right.key &&
+        left.introduced === right.introduced &&
+        atomEq(left.value, right.value)
+      );
+    case "create-space":
+      return (
+        right.kind === "create-space" &&
+        left.name === right.name &&
+        atomArraysEqual(left.atoms, right.atoms)
+      );
+    case "set-token":
+      return (
+        right.kind === "set-token" && left.name === right.name && atomEq(left.value, right.value)
+      );
+    case "set-max-stack-depth":
+      return right.kind === "set-max-stack-depth" && left.value === right.value;
+    case "install-module":
+      return (
+        right.kind === "install-module" &&
+        moduleInstallationsEqual(left.installation, right.installation)
+      );
+  }
+}
+
+function worldDeltasEqual(left: WorldDelta, right: WorldDelta): boolean {
+  if (left.generationDelta !== right.generationDelta || left.kind !== right.kind) return false;
+  if (left.kind !== "journal" || right.kind !== "journal") return false;
+  return (
+    left.effects.length === right.effects.length &&
+    left.effects.every((effect, index) => {
+      const candidate = right.effects[index]!;
+      if (effect.payload.kind !== candidate.payload.kind) return false;
+      const payloadEqual =
+        effect.payload.kind === "world" && candidate.payload.kind === "world"
+          ? worldMutationsEqual(effect.payload.mutation, candidate.payload.mutation)
+          : effect.payload.kind === "operation" && candidate.payload.kind === "operation"
+            ? atomArraysEqual(effect.payload.results, candidate.payload.results)
+            : false;
+      return (
+        effect.class === candidate.class &&
+        effect.phase === candidate.phase &&
+        effect.operation === candidate.operation &&
+        effect.commitment === candidate.commitment &&
+        payloadEqual
+      );
+    })
+  );
 }
 
 /** Capture only the mutations made after `base`; inherited branch-prefix state is not part of the delta. */
@@ -2963,8 +3459,27 @@ function captureWorldDelta(base: World, branch: World): WorldDelta {
   const generationDelta = branch.generation - base.generation;
   if (!Number.isSafeInteger(generationDelta) || generationDelta < 0)
     throw new Error("branch continuation moved its world generation backwards");
+  const baseRuntime = worldRuntimeContexts.get(base);
+  const branchRuntime = worldRuntimeContexts.get(branch);
+  if (
+    baseRuntime !== undefined &&
+    branchRuntime !== undefined &&
+    baseRuntime.audit === branchRuntime.audit
+  ) {
+    try {
+      return {
+        kind: "journal",
+        generationDelta,
+        effects: branchRuntime.journal.since(baseRuntime.journal),
+      };
+    } catch {
+      // Structurally supplied worlds can lack shared journal ancestry. The compatibility diff below
+      // preserves their behavior, while every evaluator-created branch takes the O(delta) journal path.
+    }
+  }
   if (branch === base)
     return {
+      kind: "scanned",
       generationDelta,
       moduleInstallations: [],
       selfAdded: [],
@@ -3010,6 +3525,7 @@ function captureWorldDelta(base: World, branch: World): WorldDelta {
           (atom) => !logToArray(base.removedStatic).some((candidate) => atomEq(candidate, atom)),
         );
   return {
+    kind: "scanned",
     generationDelta,
     moduleInstallations: branch.moduleInstallations.slice(base.moduleInstallations.length),
     selfAdded: self.added,
@@ -3023,8 +3539,82 @@ function captureWorldDelta(base: World, branch: World): WorldDelta {
   };
 }
 
+function replayWorldMutation(env: MinEnv, into: World, mutation: WorldMutation): World {
+  switch (mutation.kind) {
+    case "add-atoms":
+      return appendSpace(env, into, mutation.space, [...mutation.atoms]);
+    case "remove-atom":
+      return eraseSpace(env, into, mutation.space, mutation.atom);
+    case "set-state": {
+      if (mutation.introduced && into.store.has(mutation.key))
+        throw new Error(`branch allocation collision for state '${String(mutation.key)}'`);
+      const world = cloneWorld(into);
+      world.store.set(mutation.key, mutation.value);
+      world.generation = nextWorldGeneration(into);
+      return world;
+    }
+    case "create-space": {
+      if (into.spaces.has(mutation.name))
+        throw new Error(`branch allocation collision for space '${mutation.name}'`);
+      const world = cloneWorld(into);
+      world.spaces.set(mutation.name, logFromArray(mutation.atoms));
+      world.generation = nextWorldGeneration(into);
+      return world;
+    }
+    case "set-token": {
+      const world = cloneWorld(into);
+      world.tokens.set(mutation.name, mutation.value);
+      world.generation = nextWorldGeneration(into);
+      return world;
+    }
+    case "set-max-stack-depth": {
+      const world = cloneWorld(into);
+      world.maxStackDepth = mutation.value;
+      world.generation = nextWorldGeneration(into);
+      return world;
+    }
+    case "install-module":
+      return inheritWorldRuntime(into, {
+        ...into,
+        moduleInstallations: Object.freeze([...into.moduleInstallations, mutation.installation]),
+      });
+  }
+}
+
+function applyJournalWorldDelta(env: MinEnv, into: World, delta: JournalWorldDelta): World {
+  if (delta.effects.length === 0 && delta.generationDelta === 0) return into;
+  let merged = cloneWorld(into);
+  for (const effect of delta.effects)
+    if (effect.payload.kind === "world")
+      merged = replayWorldMutation(env, merged, effect.payload.mutation);
+  merged.generation = checkedGenerationAdvance(into.generation, delta.generationDelta);
+  merged.transactionDepth = into.transactionDepth;
+  merged.allocation = {
+    ids: into.allocation.ids.clone(),
+    branchScoped: into.allocation.branchScoped,
+  };
+  const parent = worldRuntimeContext(into);
+  const committed =
+    parent.policy === "sequential-commit"
+      ? {
+          audit: parent.audit.commit(delta.effects),
+          journal: parent.journal,
+        }
+      : {
+          audit: parent.audit,
+          journal: parent.journal.commit(delta.effects),
+        };
+  worldRuntimeContexts.set(merged, {
+    ...parent,
+    ...committed,
+  });
+  groundedContextIdentities.set(merged, groundedContextIdentity(into));
+  return merged;
+}
+
 /** Apply a captured branch write set to an already merged world in deterministic journal order. */
 function applyWorldDelta(env: MinEnv, into: World, delta: WorldDelta): World {
+  if (delta.kind === "journal") return applyJournalWorldDelta(env, into, delta);
   const selfChanged = delta.selfAdded.length > 0 || delta.selfRemoved.length > 0;
   const staticAtoms = logToArray(into.removedStatic);
   for (const atom of delta.removedStatic)
@@ -3044,7 +3634,7 @@ function applyWorldDelta(env: MinEnv, into: World, delta: WorldDelta): World {
   const selfExtra = selfChanged
     ? applyAtomDelta(runtimeAtoms(into), delta.selfAdded, delta.selfRemoved)
     : runtimeAtoms(into);
-  const spaces = new Map(into.spaces);
+  const spaces = forkMap(into.spaces);
   for (const space of delta.spaces) {
     if (
       space.introduced &&
@@ -3060,7 +3650,7 @@ function applyWorldDelta(env: MinEnv, into: World, delta: WorldDelta): World {
       ),
     );
   }
-  const store = new Map(into.store);
+  const store = forkMap(into.store);
   for (const write of delta.store) {
     if (
       write.introduced &&
@@ -3071,7 +3661,7 @@ function applyWorldDelta(env: MinEnv, into: World, delta: WorldDelta): World {
       throw new Error(`branch allocation collision for state '${write.key}'`);
     store.set(write.key, write.value);
   }
-  const tokens = new Map(into.tokens);
+  const tokens = forkMap(into.tokens);
   for (const [name, value] of delta.tokens) tokens.set(name, value);
   const staticRemovals = staticRemovalState(staticAtoms);
   const flat = selfChanged
@@ -3092,7 +3682,7 @@ function applyWorldDelta(env: MinEnv, into: World, delta: WorldDelta): World {
         : emptyLog
       : into.selfExtra,
     flatSelfExtra: flat,
-    selfRules: selfChanged ? new Map() : into.selfRules,
+    selfRules: selfChanged ? new ForkableMap() : into.selfRules,
     selfVarRules: selfChanged ? [] : into.selfVarRules,
     selfRuleVersion:
       selfChanged || staticChanged ? nextRuntimeRuleSetVersion() : into.selfRuleVersion,
@@ -3134,15 +3724,133 @@ function applyBranchStateDelta(env: MinEnv, into: St, delta: BranchStateDelta): 
   };
 }
 
-function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): World {
-  if (branches.every((branch) => branch.generation === base.generation)) return base;
+export class WorldConflictError extends Error {
+  readonly kind = "world-conflict" as const;
+  readonly retryable = true;
+
+  constructor(
+    readonly target: string,
+    readonly firstBranch: number,
+    readonly secondBranch: number,
+  ) {
+    super(
+      `isolated branches ${firstBranch} and ${secondBranch} conflict on world target '${target}'`,
+    );
+    this.name = "WorldConflictError";
+  }
+}
+
+interface AtomWriteFootprint {
+  readonly branch: number;
+  readonly operation: "add" | "remove";
+  readonly space: string;
+  readonly atom: Atom;
+}
+
+function assertJournalDeltasDoNotConflict(base: World, deltas: readonly JournalWorldDelta[]): void {
+  const scalarWrites = new Map<string, number>();
+  const atomWrites = new Map<string, AtomWriteFootprint[]>();
+  const claimScalar = (target: string, branch: number, collision?: string): void => {
+    const owner = scalarWrites.get(target);
+    if (owner !== undefined && owner !== branch) {
+      if (collision !== undefined) throw new Error(collision);
+      throw new WorldConflictError(target, owner, branch);
+    }
+    scalarWrites.set(target, branch);
+  };
+  const claimAtom = (
+    space: string,
+    atom: Atom,
+    operation: AtomWriteFootprint["operation"],
+    branch: number,
+  ): void => {
+    const bucketKey = `${space}:${String(hashOf(atom))}`;
+    const bucket = atomWrites.get(bucketKey) ?? [];
+    for (const prior of bucket) {
+      if (prior.branch === branch || !atomEq(prior.atom, atom)) continue;
+      if (operation === "add" && prior.operation === "add") continue;
+      throw new WorldConflictError(`space:${space}:atom:${format(atom)}`, prior.branch, branch);
+    }
+    bucket.push({ branch, operation, space, atom });
+    atomWrites.set(bucketKey, bucket);
+  };
+
+  for (let branch = 0; branch < deltas.length; branch += 1) {
+    for (const effect of deltas[branch]!.effects) {
+      if (effect.payload.kind !== "world") continue;
+      const mutation = effect.payload.mutation;
+      switch (mutation.kind) {
+        case "add-atoms":
+          if (
+            !base.spaces.has(mutation.space) &&
+            mutation.space.startsWith("&") &&
+            isRuntimeId(mutation.space.slice(1), "space")
+          )
+            claimScalar(
+              `allocation:space:${mutation.space}`,
+              branch,
+              `branch allocation collision for space '${mutation.space}'`,
+            );
+          for (const atom of mutation.atoms) claimAtom(mutation.space, atom, "add", branch);
+          break;
+        case "remove-atom":
+          claimAtom(mutation.space, mutation.atom, "remove", branch);
+          break;
+        case "set-state":
+          claimScalar(
+            `state:${String(mutation.key)}`,
+            branch,
+            mutation.introduced &&
+              typeof mutation.key === "string" &&
+              isRuntimeId(mutation.key, "state")
+              ? `branch allocation collision for state '${mutation.key}'`
+              : undefined,
+          );
+          break;
+        case "create-space":
+          claimScalar(
+            `space:${mutation.name}`,
+            branch,
+            `branch allocation collision for space '${mutation.name}'`,
+          );
+          break;
+        case "set-token":
+          claimScalar(`token:${mutation.name}`, branch);
+          break;
+        case "set-max-stack-depth":
+          claimScalar("setting:max-stack-depth", branch);
+          break;
+        case "install-module":
+          break;
+      }
+    }
+  }
+}
+
+function mergeWorldsUnchecked(env: MinEnv, base: World, branches: readonly World[]): World {
+  const deltas = branches.map((branch) => captureWorldDelta(base, branch));
+  if (
+    branches.every((branch) => branch.generation === base.generation) &&
+    deltas.every((delta) => delta.kind !== "journal" || delta.effects.length === 0)
+  )
+    return base;
+  if (deltas.every((delta): delta is JournalWorldDelta => delta.kind === "journal")) {
+    assertJournalDeltasDoNotConflict(base, deltas);
+    let merged = base;
+    for (const delta of deltas) merged = applyJournalWorldDelta(env, merged, delta);
+    if (branches.some((branch) => branch.generation !== base.generation))
+      merged.generation =
+        Math.max(base.generation, ...branches.map((branch) => branch.generation)) + 1;
+    groundedContextIdentities.set(merged, groundedContextIdentity(base));
+    return merged;
+  }
   // The concurrent-branch merge works on materialized arrays (par is off the hot path); the result is
   // rebuilt into a log. The atom order is preserved so merged `&self` content matches the array version.
   const baseSelf = runtimeAtoms(base);
   let selfExtra = baseSelf.slice();
-  const spaces = new Map(base.spaces);
-  const store = new Map(base.store);
-  const tokens = new Map(base.tokens);
+  const spaces = forkMap(base.spaces);
+  const store = forkMap(base.store);
+  const tokens = forkMap(base.tokens);
   const moduleInstallations = base.moduleInstallations.slice();
   const staticRemovals = mergeStaticRemovals(base, branches);
   const introducedOpaqueSpaces = new Set<string>();
@@ -3220,7 +3928,7 @@ function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): Worl
         : emptyLog
       : base.selfExtra,
     flatSelfExtra: flat,
-    selfRules: selfChanged ? new Map() : base.selfRules,
+    selfRules: selfChanged ? new ForkableMap() : base.selfRules,
     selfVarRules: selfChanged ? [] : base.selfVarRules,
     selfRuleVersion:
       selfChanged || staticChanged ? nextRuntimeRuleSetVersion() : base.selfRuleVersion,
@@ -3244,7 +3952,31 @@ function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): Worl
     merged.typeViewProgramVersion = owner.typeProgramVersion ?? 0;
     merged.typeViewOwner = owner;
   }
-  return merged;
+  return inheritWorldRuntime(base, merged);
+}
+
+function releaseChildWorldRuntimes(base: World, branches: readonly World[]): void {
+  const baseResources = worldRuntimeContext(base).resources;
+  const released = new Set<ResourceLease>();
+  for (const branch of branches) {
+    const context = worldRuntimeContexts.get(branch);
+    if (
+      context === undefined ||
+      context.resources === baseResources ||
+      released.has(context.resources)
+    )
+      continue;
+    released.add(context.resources);
+    releaseWorldRuntime(branch);
+  }
+}
+
+function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): World {
+  try {
+    return mergeWorldsUnchecked(env, base, branches);
+  } finally {
+    releaseChildWorldRuntimes(base, branches);
+  }
 }
 
 /** A stable string key for a `with-mutex` lock name (a structural serialisation, no `format` dep). */
@@ -3603,6 +4335,65 @@ function hasRuleFor(env: MinEnv, w: World, counter: number, a: Atom): boolean {
   return false;
 }
 
+const HOST_IO_GROUNDED_OPERATIONS = new Set([
+  "catalog-clear!",
+  "catalog-list!",
+  "catalog-update!",
+  "file-close!",
+  "file-get-size!",
+  "file-open!",
+  "file-read-exact!",
+  "file-read-to-string!",
+  "file-seek!",
+  "file-write!",
+  "git-import!",
+  "help!",
+  "print!",
+  "println!",
+  "register-module!",
+  "test",
+]);
+const TIME_GROUNDED_OPERATIONS = new Set(["current-time"]);
+const RANDOM_GROUNDED_OPERATIONS = new Set(["random-float", "random-int", "sealed"]);
+
+function groundedEffectPolicy(env: MinEnv, operation: string): GroundedEffectPolicy {
+  const declared = env.groundedEffects?.get(operation);
+  if (declared !== undefined) return declared;
+  const asyncOperation = env.agt.get(operation);
+  if (asyncOperation !== undefined)
+    return { classes: ["suspension", "host-io"], speculative: false };
+  const syncOperation = env.gt.get(operation);
+  if (syncOperation !== undefined) {
+    if (TIME_GROUNDED_OPERATIONS.has(operation)) return { classes: ["time"], speculative: false };
+    if (RANDOM_GROUNDED_OPERATIONS.has(operation))
+      return { classes: ["randomness"], speculative: false };
+    if (HOST_IO_GROUNDED_OPERATIONS.has(operation))
+      return { classes: ["host-io"], speculative: false };
+    if (isContextIndependentGroundedOp(syncOperation))
+      return { classes: ["pure"], speculative: true };
+    return { classes: ["host-io"], speculative: false };
+  }
+  return { classes: ["pure"], speculative: true };
+}
+
+function groundedEffectRejected(world: World, policy: GroundedEffectPolicy): boolean {
+  return worldRuntimeContext(world).irreversibleEffects === "reject" && !policy.speculative;
+}
+
+function recordGroundedOperationEffects(
+  world: World,
+  operation: string,
+  policy: GroundedEffectPolicy,
+  results: readonly Atom[],
+): void {
+  const recorded = new Set<EffectClass>();
+  for (const effectClass of policy.classes) {
+    if (effectClass === "pure" || recorded.has(effectClass)) continue;
+    recorded.add(effectClass);
+    recordOperationEffect(world, operation, effectClass, results);
+  }
+}
+
 function* evalOpG(env: MinEnv, st: St, prev: Stack, x: Atom, b: Bindings): Gen<[Item[], St]> {
   const x2 = inst(env, b, x);
   const op = opOf(x2);
@@ -3635,8 +4426,21 @@ function* evalOpG(env: MinEnv, st: St, prev: Stack, x: Atom, b: Bindings): Gen<[
       .map((a) => resolveStates(st.world, subTokens(st.world, a, env.intern)));
     if (op === "repr" && args.length === 1)
       args = [partialApplicationView(env, st.world, args[0]!)];
+    const effectPolicy = groundedEffectPolicy(env, op!);
+    if (groundedEffectRejected(st.world, effectPolicy))
+      return [
+        [
+          finItem(
+            prev,
+            errTextAtom(x2, `${op}: irreversible effect is not allowed in an isolated branch`),
+            b,
+          ),
+        ],
+        st,
+      ];
     const r = yield* callGroundedG(env, st.world, op!, args);
     if (r.tag === "ok") {
+      recordGroundedOperationEffects(st.world, op!, effectPolicy, r.results);
       const effects = applyReduceEffects(env, st, b, r.effects);
       if (effects.tag === "error") return [[finItem(prev, errAtom(x2, effects.msg), b)], st];
       return [r.results.map((res) => evalResult(prev, res, b, x2)), effects.state];
@@ -3652,6 +4456,24 @@ function* evalOpG(env: MinEnv, st: St, prev: Stack, x: Atom, b: Bindings): Gen<[
   if (x2.kind === "expr" && x2.items.length > 0) {
     const head = x2.items[0]!;
     if (head.kind === "gnd" && head.exec !== undefined) {
+      const effectPolicy: GroundedEffectPolicy = {
+        classes: ["host-io"],
+        speculative: false,
+      };
+      if (groundedEffectRejected(st.world, effectPolicy))
+        return [
+          [
+            finItem(
+              prev,
+              errTextAtom(
+                x2,
+                "<grounded-exec>: irreversible effect is not allowed in an isolated branch",
+              ),
+              b,
+            ),
+          ],
+          st,
+        ];
       const args = x2.items
         .slice(1)
         .map((a) => resolveStates(st.world, subTokens(st.world, a, env.intern)));
@@ -3696,6 +4518,7 @@ function* evalOpG(env: MinEnv, st: St, prev: Stack, x: Atom, b: Bindings): Gen<[
         },
       )) as GroundedExecResult;
       if (settled.tag === "error") return [[finItem(prev, errAtom(x2, settled.message), b)], st];
+      recordGroundedOperationEffects(st.world, "<grounded-exec>", effectPolicy, settled.results);
       return [settled.results.map((res) => evalResult(prev, res, b, x2)), st];
     }
   }
@@ -4983,28 +5806,64 @@ function* interpretStack1G(
       const mutationEnv = evaluationCacheEnvironment(env);
       const snapshotEnv = snapshotEnvironmentMutations(mutationEnv);
       const entered = cloneWorld(snapshotWorld);
+      forkWorldRuntime(
+        snapshotWorld,
+        entered,
+        nextWorldRuntimeBranch(snapshotWorld, "transaction"),
+      );
       entered.transactionDepth += 1;
       let committed = false;
+      let environmentRestored = false;
+      const answerPaths: Array<{ readonly pair: ContextualPair; readonly state: St }> = [];
       try {
-        const [pairs, st2] = yield* mettaEvalG(
+        const transactionEmitter: MettaAnswerEmitter = {
+          emitted: new WeakSet(),
+          emittedCount: 0,
+          lifecycle: { unwinding: false },
+          accept: function* (pair, answerState): Gen<St> {
+            answerPaths.push({ pair, state: answerState });
+            return answerState;
+          },
+        };
+        const [pairs, evaluated] = yield* mettaEvalG(
           env,
           fuel,
           { counter: st.counter, world: entered },
           it.bnd,
           it2[1]!,
           nestedCursorMode(cursor),
+          transactionEmitter,
         );
-        committed = pairs.length > 0 && pairs.some((p) => !isErrorAtom(p[0]));
-        if (!committed)
+        const st2 = yield* emitReturnedMettaAnswersG(transactionEmitter, pairs, evaluated);
+        const successful = answerPaths.filter(({ pair }) => !isErrorAtom(pair[0]));
+        if (successful.length === 0)
           return [
             pairs.map((p) => finItem(prev, p[0], it.bnd)),
             { counter: st2.counter, world: snapshotWorld },
           ];
-        const world = cloneWorld(st2.world);
+
+        const deltas = successful.map(({ state }) => captureWorldDelta(entered, state.world));
+        const selected = deltas[0]!;
+        if (deltas.some((delta) => !worldDeltasEqual(selected, delta)))
+          return [
+            [finItem(prev, errTextAtom(a, "transaction: answer effects conflict"), it.bnd)],
+            { counter: st2.counter, world: snapshotWorld },
+          ];
+
+        restoreEnvironmentMutations(mutationEnv, snapshotEnv);
+        environmentRestored = true;
+        const world = applyWorldDelta(env, snapshotWorld, selected);
         world.transactionDepth = snapshotWorld.transactionDepth;
+        committed = true;
         return [pairs.map((p) => finItem(prev, p[0], it.bnd)), { counter: st2.counter, world }];
       } finally {
-        if (!committed) restoreEnvironmentMutations(mutationEnv, snapshotEnv);
+        if (!committed && !environmentRestored)
+          restoreEnvironmentMutations(mutationEnv, snapshotEnv);
+        releaseChildWorldRuntimes(
+          entered,
+          answerPaths.map(({ state }) => state.world),
+        );
+        releaseWorldRuntime(entered);
       }
     }
     // TS-native concurrency (async-only; see docs/.../concurrency-primitives.md).
@@ -5107,23 +5966,52 @@ function* interpretStack1G(
       if (it2.length !== 3) break;
       const name = mutexKey(inst(env, it.bnd, it2[1]!));
       const body = it2[2]!;
+      const outerRuntime = worldRuntimeContext(st.world);
+      const enteredWorld = cloneWorld(st.world);
+      withWorldRuntimePolicy(st.world, enteredWorld, outerRuntime.policy, "allow");
       pendingAsyncOp = "with-mutex";
       const result = (yield driverEffect(
         "with-mutex",
         () => {
           throw new AsyncInSyncError("with-mutex");
         },
-        (signal) => runWithMutexAsync(env, fuel, st, it.bnd, name, body, signal),
+        (signal) =>
+          runWithMutexAsync(
+            env,
+            fuel,
+            { counter: st.counter, world: enteredWorld },
+            it.bnd,
+            name,
+            body,
+            signal,
+          ),
       )) as EvalRes;
-      return [result[0].map((p) => finItem(prev, p[0], it.bnd)), result[1]];
+      const restoredWorld = cloneWorld(result[1].world);
+      withWorldRuntimePolicy(
+        result[1].world,
+        restoredWorld,
+        outerRuntime.policy,
+        outerRuntime.irreversibleEffects,
+      );
+      return [
+        result[0].map((p) => finItem(prev, p[0], it.bnd)),
+        { counter: result[1].counter, world: restoredWorld },
+      ];
     }
     case "new-state": {
       if (it2.length !== 2) break;
       const w = cloneWorld(st.world);
       const allocation = allocateStateCell({ counter: st.counter, world: w });
       const id = allocation.value;
-      w.store.set(id, inst(env, it.bnd, it2[1]!));
+      const value = inst(env, it.bnd, it2[1]!);
+      w.store.set(id, value);
       w.generation = nextWorldGeneration(st.world);
+      recordWorldMutation(w, "new-state", {
+        kind: "set-state",
+        key: id,
+        introduced: true,
+        value,
+      });
       return [
         [finItem(prev, stateHandle(id), it.bnd)],
         { counter: allocation.nextCounter, world: w },
@@ -5143,8 +6031,16 @@ function* interpretStack1G(
       const id = stateId(st.world, inst(env, it.bnd, it2[1]!));
       if (id !== undefined) {
         const w = cloneWorld(st.world);
-        w.store.set(id, inst(env, it.bnd, it2[2]!));
+        const value = inst(env, it.bnd, it2[2]!);
+        const introduced = !st.world.store.has(id);
+        w.store.set(id, value);
         w.generation = nextWorldGeneration(st.world);
+        recordWorldMutation(w, "change-state!", {
+          kind: "set-state",
+          key: id,
+          introduced,
+          value,
+        });
         return [[finItem(prev, stateHandle(id), it.bnd)], { counter: st.counter, world: w }];
       }
       return [
@@ -5159,6 +6055,7 @@ function* interpretStack1G(
       const name = allocation.value;
       w.spaces.set(name, emptyLog);
       w.generation = nextWorldGeneration(st.world);
+      recordWorldMutation(w, op!, { kind: "create-space", name, atoms: [] });
       return [[finItem(prev, sym(name), it.bnd)], { counter: allocation.nextCounter, world: w }];
     }
     case "fork-space": {
@@ -5176,6 +6073,7 @@ function* interpretStack1G(
       const name = allocation.value;
       w.spaces.set(name, logFromArray(srcAtoms));
       w.generation = nextWorldGeneration(st.world);
+      recordWorldMutation(w, "fork-space", { kind: "create-space", name, atoms: srcAtoms });
       return [[finItem(prev, sym(name), it.bnd)], { counter: allocation.nextCounter, world: w }];
     }
     case "add-atom":
@@ -5224,6 +6122,10 @@ function* interpretStack1G(
         const w = cloneWorld(st.world);
         w.maxStackDepth = Number(n);
         w.generation = nextWorldGeneration(st.world);
+        recordWorldMutation(w, "pragma!", {
+          kind: "set-max-stack-depth",
+          value: Number(n),
+        });
         return [[finItem(prev, emptyExpr, it.bnd)], { counter: st.counter, world: w }];
       }
       return [[finItem(prev, emptyExpr, it.bnd)], st];
@@ -5233,8 +6135,10 @@ function* interpretStack1G(
       const tok = inst(env, it.bnd, it2[1]!);
       if (tok.kind === "sym") {
         const w = cloneWorld(st.world);
-        w.tokens.set(tok.name, inst(env, it.bnd, it2[2]!));
+        const value = inst(env, it.bnd, it2[2]!);
+        w.tokens.set(tok.name, value);
         w.generation = nextWorldGeneration(st.world);
+        recordWorldMutation(w, "bind!", { kind: "set-token", name: tok.name, value });
         return [[finItem(prev, emptyExpr, it.bnd)], { counter: st.counter, world: w }];
       }
       return [[finItem(prev, errAtom(tok, "bind!: token must be a symbol"), it.bnd)], st];
@@ -5246,23 +6150,29 @@ function* interpretStack1G(
       const fileAtom = inst(env, it.bnd, it2[2]!);
       const moduleName = importModuleName(fileAtom);
       const catalogAtoms = moduleName === undefined ? undefined : env.imports.get(moduleName);
-      if (
-        st.world.transactionDepth > 0 &&
+      const hostImportRejected =
         catalogAtoms === undefined &&
-        env.hostImport !== undefined
-      )
+        env.hostImport !== undefined &&
+        (st.world.transactionDepth > 0 ||
+          worldRuntimeContext(st.world).irreversibleEffects === "reject");
+      if (hostImportRejected)
         return [
           [
             finItem(
               prev,
-              errAtom(inst(env, it.bnd, a), "import!: host imports are not transactional"),
+              errAtom(
+                inst(env, it.bnd, a),
+                st.world.transactionDepth > 0
+                  ? "import!: host imports are not transactional"
+                  : "import!: host imports are not allowed in an isolated branch",
+              ),
               it.bnd,
             ),
           ],
           st,
         ];
       const hostResult =
-        catalogAtoms === undefined && st.world.transactionDepth === 0
+        catalogAtoms === undefined && !hostImportRejected && st.world.transactionDepth === 0
           ? yield* callHostImportG(env, st.world, spaceAtom, fileAtom)
           : undefined;
       if (hostResult !== undefined && hostResult.tag !== "noReduce") {
@@ -5425,11 +6335,13 @@ function recordModuleInstallation(
     generation,
     worldDelta: importWorldDelta(env, before, after),
   });
-  return {
+  const installed = inheritWorldRuntime(after, {
     ...after,
     generation,
     moduleInstallations: Object.freeze([...after.moduleInstallations, record]),
-  };
+  });
+  recordWorldMutation(installed, "import!", { kind: "install-module", installation: record });
+  return installed;
 }
 
 function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World {
@@ -5448,7 +6360,7 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
     for (const x of atoms) {
       if (opOf(x) === "=" && x.kind === "expr" && x.items.length === 3) {
         if (!copiedRules) {
-          selfRules = new Map(w0.selfRules);
+          selfRules = forkMap(w0.selfRules);
           copiedRules = true;
         }
         const lhs = x.items[1]!;
@@ -5476,7 +6388,7 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
     } else {
       selfExtra = logAppendAll(selfExtra, atoms);
     }
-    return {
+    const next = inheritWorldRuntime(w0, {
       generation: atoms.length === 0 ? w0.generation : nextWorldGeneration(w0),
       moduleInstallations: w0.moduleInstallations,
       transactionDepth: w0.transactionDepth,
@@ -5497,18 +6409,24 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
       typeViewOwner: typesChanged ? undefined : w0.typeViewOwner,
       maxStackDepth: w0.maxStackDepth,
       allocation: w0.allocation,
-    };
+    });
+    if (atoms.length > 0)
+      recordWorldMutation(next, "add-atom", { kind: "add-atoms", space: name, atoms });
+    return next;
   }
-  const spaces = new Map(w0.spaces);
+  const spaces = forkMap(w0.spaces);
   spaces.set(name, logAppendAll(spaces.get(name) ?? emptyLog, atoms));
-  return {
+  const next = inheritWorldRuntime(w0, {
     ...w0,
     generation: atoms.length === 0 ? w0.generation : nextWorldGeneration(w0),
     spaces,
-  };
+  });
+  if (atoms.length > 0)
+    recordWorldMutation(next, "add-atom", { kind: "add-atoms", space: name, atoms });
+  return next;
 }
 function reindexRuntimeSelfRules(w: World): void {
-  w.selfRules = new Map();
+  w.selfRules = new ForkableMap();
   w.selfVarRules = [];
   indexSelfRules(w, runtimeAtoms(w));
   w.selfRuleVersion = nextRuntimeRuleSetVersion();
@@ -5533,6 +6451,7 @@ function eraseSpace(env: MinEnv, w0: World, name: string, a: Atom): World {
           disableTabling(evaluationCacheEnvironment(env));
         }
         w.generation = nextWorldGeneration(w0);
+        recordWorldMutation(w, "remove-atom", { kind: "remove-atom", space: name, atom: a });
         return w;
       }
     }
@@ -5546,6 +6465,7 @@ function eraseSpace(env: MinEnv, w0: World, name: string, a: Atom): World {
         disableTabling(evaluationCacheEnvironment(env));
       }
       w.generation = nextWorldGeneration(w0);
+      recordWorldMutation(w, "remove-atom", { kind: "remove-atom", space: name, atom: a });
     } else if (hasStaticAtom(env, a)) {
       addStaticRemoval(w, a);
       if (isTypeDeclaration(a)) {
@@ -5553,11 +6473,15 @@ function eraseSpace(env: MinEnv, w0: World, name: string, a: Atom): World {
         disableTabling(evaluationCacheEnvironment(env));
       }
       w.generation = nextWorldGeneration(w0);
+      recordWorldMutation(w, "remove-atom", { kind: "remove-atom", space: name, atom: a });
     }
   } else {
     const erased = erase1(namedSpaceAtoms(w.spaces.get(name)));
     w.spaces.set(name, logFromArray(erased.atoms));
-    if (erased.removed) w.generation = nextWorldGeneration(w0);
+    if (erased.removed) {
+      w.generation = nextWorldGeneration(w0);
+      recordWorldMutation(w, "remove-atom", { kind: "remove-atom", space: name, atom: a });
+    }
   }
   return w;
 }
@@ -5608,8 +6532,14 @@ function applyReduceEffects(
       }
       case "bindToken": {
         const w = cloneWorld(next.world);
-        w.tokens.set(effect.name, inst(env, b, effect.atom));
+        const value = inst(env, b, effect.atom);
+        w.tokens.set(effect.name, value);
         w.generation = nextWorldGeneration(next.world);
+        recordWorldMutation(w, "grounded-effect", {
+          kind: "set-token",
+          name: effect.name,
+          value,
+        });
         next = { counter: next.counter, world: w };
         break;
       }
@@ -6677,6 +7607,9 @@ function* interpretLoopG(
       return [done, cur];
     }
     let it = stack.pop()!;
+    checkWorldCancellation(cur.world);
+    consumeWorldResource(cur.world, "steps", 1, "minimal-transition");
+    checkWorldDeadline(cur.world, "minimal-transition");
     let evaluationScope = it.evaluationScope;
     // The selected context belongs only to the nested reduction started by evalc. Once its finished value
     // reaches the exact continuation stack that evalc entered from, resume that continuation in its parent
@@ -6705,10 +7638,16 @@ function* interpretLoopG(
     // back to a StackOverflow atom (Hyperon's pragma; bounds memory, not steps). 0 (the default) disables
     // the check, so this costs nothing unless a program opts in. A finished branch is already a result, so
     // it is returned as-is rather than turned into an error.
-    if (cur.world.maxStackDepth > 0) {
+    const resourceStackLimit = worldRuntimeContext(cur.world).resources.ledger.limit("stack-depth");
+    if (cur.world.maxStackDepth > 0 || resourceStackLimit !== undefined) {
       let depth = 0;
       for (let p = it.stack; p !== null; p = p.tail) depth++;
-      if (depth >= cur.world.maxStackDepth) {
+      if (resourceStackLimit !== undefined) {
+        const lease = worldRuntimeContext(cur.world).resources;
+        const fault = lease.tryObserve("stack-depth", depth, "minimal-transition");
+        if (fault !== undefined) throw new ResourceLimitError(fault);
+      }
+      if (cur.world.maxStackDepth > 0 && depth >= cur.world.maxStackDepth) {
         emit(isFinal(it) ? finalPair(activeEnv, it) : exhaustedPair(activeEnv, it));
         if (cursorNeedsFlush(1)) yield* flushCursor();
         continue;
@@ -6900,6 +7839,199 @@ function containsImpureHead(
   return false;
 }
 
+const CHOICE_STATEFUL_HEADS: ReadonlySet<string> = new Set([
+  "add-atom",
+  "remove-atom",
+  "add-reduct",
+  "add-reducts",
+  "add-atoms",
+  "new-state",
+  "get-state",
+  "change-state!",
+  "new-space",
+  "new-mork-space",
+  "fork-space",
+  "get-atoms",
+  "bind!",
+  "context-space",
+  "match",
+  "get-type",
+  "get-type-space",
+  "check-types",
+  "get-doc",
+  "pragma!",
+  "register-module!",
+]);
+
+const CHOICE_SERIALIZED_HEADS: ReadonlySet<string> = new Set(["with-mutex", "with_mutex"]);
+
+interface ChoiceEffectSummary {
+  readonly stateful: boolean;
+  readonly serialized: boolean;
+}
+
+const EMPTY_CHOICE_EFFECTS: ChoiceEffectSummary = Object.freeze({
+  stateful: false,
+  serialized: false,
+});
+
+function combineChoiceEffects(
+  left: ChoiceEffectSummary,
+  right: ChoiceEffectSummary,
+): ChoiceEffectSummary {
+  return {
+    stateful: left.stateful || right.stateful,
+    serialized: left.serialized || right.serialized,
+  };
+}
+
+function groundedChoiceEffects(env: MinEnv, operation: string): ChoiceEffectSummary {
+  if (!env.gt.has(operation) && !env.agt.has(operation)) return EMPTY_CHOICE_EFFECTS;
+  const policy = groundedEffectPolicy(env, operation);
+  const stateful = policy.classes.some(
+    (effectClass) => effectClass === "atomspace-read" || effectClass === "atomspace-write",
+  );
+  return { stateful, serialized: false };
+}
+
+interface DirectChoiceEffectScan {
+  readonly effects: ChoiceEffectSummary;
+  readonly dependencies: ReadonlySet<string>;
+}
+
+function scanChoiceEffects(
+  env: MinEnv,
+  world: World,
+  roots: readonly Atom[],
+): DirectChoiceEffectScan {
+  const hasRule = (name: string): boolean => env.ruleIndex.has(name) || world.selfRules.has(name);
+  const scan = scanReductionDependencies(roots, hasRule);
+  let effects: ChoiceEffectSummary = {
+    stateful: false,
+    serialized: false,
+  };
+  const dependencies = new Set<string>();
+  for (const name of scan.names) {
+    effects = combineChoiceEffects(effects, {
+      stateful: CHOICE_STATEFUL_HEADS.has(name),
+      serialized: CHOICE_SERIALIZED_HEADS.has(name),
+    });
+    effects = combineChoiceEffects(effects, groundedChoiceEffects(env, name));
+    if (hasRule(name)) dependencies.add(name);
+  }
+  return { effects, dependencies };
+}
+
+interface ChoiceEffectAnalysis {
+  readonly programVersion: number;
+  readonly groundingVersion: number;
+  readonly syncRevision: number;
+  readonly asyncRevision: number;
+  readonly effectRevision: number;
+  readonly runtimeRuleVersion: number;
+  readonly summaries: ReadonlyMap<string, ChoiceEffectSummary>;
+  readonly variableEffects: ChoiceEffectSummary;
+}
+
+const choiceEffectAnalyses = new WeakMap<MinEnv, ChoiceEffectAnalysis>();
+
+/** Propagate the two effect bits through the rule graph once per program image. */
+function choiceEffectAnalysis(env: MinEnv, world: World): ChoiceEffectAnalysis {
+  const programVersion = env.programVersion ?? 0;
+  const groundingVersion = env.groundingVersion ?? 0;
+  const syncRevision = collectionRevision(env.gt) ?? 0;
+  const asyncRevision = collectionRevision(env.agt) ?? 0;
+  const effectRevision =
+    env.groundedEffects === undefined ? 0 : (collectionRevision(env.groundedEffects) ?? 0);
+  const runtimeRuleVersion = world.selfRuleVersion;
+  const cached = choiceEffectAnalyses.get(env);
+  if (
+    cached !== undefined &&
+    cached.programVersion === programVersion &&
+    cached.groundingVersion === groundingVersion &&
+    cached.syncRevision === syncRevision &&
+    cached.asyncRevision === asyncRevision &&
+    cached.effectRevision === effectRevision &&
+    cached.runtimeRuleVersion === runtimeRuleVersion
+  )
+    return cached;
+
+  const names = new Set([...env.ruleIndex.keys(), ...world.selfRules.keys()]);
+  const summaries = new Map<string, ChoiceEffectSummary>();
+  const reverseDependencies = new Map<string, Set<string>>();
+  for (const name of names) {
+    const equations = [...(env.ruleIndex.get(name) ?? []), ...(world.selfRules.get(name) ?? [])];
+    const direct = scanChoiceEffects(
+      env,
+      world,
+      equations.map(([, rhs]) => rhs),
+    );
+    summaries.set(name, direct.effects);
+    for (const dependency of direct.dependencies) {
+      const dependents = reverseDependencies.get(dependency);
+      if (dependents === undefined) reverseDependencies.set(dependency, new Set([name]));
+      else dependents.add(name);
+    }
+  }
+
+  const pending = [...names].filter((name) => {
+    const summary = summaries.get(name)!;
+    return summary.stateful || summary.serialized;
+  });
+  const queued = new Set(pending);
+  while (pending.length > 0) {
+    const dependency = pending.pop()!;
+    queued.delete(dependency);
+    const dependencyEffects = summaries.get(dependency)!;
+    for (const dependent of reverseDependencies.get(dependency) ?? []) {
+      const previous = summaries.get(dependent)!;
+      const next = combineChoiceEffects(previous, dependencyEffects);
+      if (next.stateful === previous.stateful && next.serialized === previous.serialized)
+        continue;
+      summaries.set(dependent, next);
+      if (!queued.has(dependent)) {
+        queued.add(dependent);
+        pending.push(dependent);
+      }
+    }
+  }
+
+  const variableRoots = [...env.varRulesVar, ...world.selfVarRules].map(([, rhs]) => rhs);
+  const variableDirect = scanChoiceEffects(env, world, variableRoots);
+  let variableEffects = variableDirect.effects;
+  for (const dependency of variableDirect.dependencies)
+    variableEffects = combineChoiceEffects(
+      variableEffects,
+      summaries.get(dependency) ?? EMPTY_CHOICE_EFFECTS,
+    );
+
+  const analysis: ChoiceEffectAnalysis = {
+    programVersion,
+    groundingVersion,
+    syncRevision,
+    asyncRevision,
+    effectRevision,
+    runtimeRuleVersion,
+    summaries,
+    variableEffects,
+  };
+  choiceEffectAnalyses.set(env, analysis);
+  return analysis;
+}
+
+/** Explicitly serialized stateful Hyperpose branches retain source-ordered state threading. */
+function choiceBranchesParallelSafe(env: MinEnv, world: World, branches: readonly Atom[]): boolean {
+  const analysis = choiceEffectAnalysis(env, world);
+  const direct = scanChoiceEffects(env, world, branches);
+  let effects = combineChoiceEffects(direct.effects, analysis.variableEffects);
+  for (const dependency of direct.dependencies)
+    effects = combineChoiceEffects(
+      effects,
+      analysis.summaries.get(dependency) ?? EMPTY_CHOICE_EFFECTS,
+    );
+  return !(effects.stateful && effects.serialized);
+}
+
 function groundTableVersionIfAdmissible(
   env: MinEnv,
   world: World,
@@ -6946,13 +8078,8 @@ function dedupGroundPairs(pairs: readonly [Atom, Bindings][]): Array<[Atom, Bind
   return out;
 }
 
-function rememberGroundTable(
-  env: MinEnv,
-  key: CompletedTableKey,
-  results: readonly Atom[],
-  counterDelta: number,
-): void {
-  env.tableSpace?.rememberCompleted(key, 0, results, counterDelta);
+function rememberGroundTable(env: MinEnv, key: CompletedTableKey, results: readonly Atom[]): void {
+  env.tableSpace?.rememberCompleted(key, 0, results);
 }
 
 function rememberModedTable(
@@ -6960,23 +8087,8 @@ function rememberModedTable(
   key: CompletedTableKey,
   numCallVars: number,
   results: readonly Atom[],
-  counterDelta: number,
 ): void {
-  env.tableSpace?.rememberCompleted(key, numCallVars, results, counterDelta);
-}
-
-function modedReplayFreshVariableCount(results: readonly Atom[], numCallVars: number): number {
-  let count = 0;
-  for (const result of results) {
-    const variables: string[] = [];
-    collectVars(result, variables, new Set());
-    for (const variableName of variables) {
-      if (!variableName.startsWith("%")) continue;
-      const index = Number(variableName.slice(1));
-      if (Number.isInteger(index) && index >= numCallVars) count += 1;
-    }
-  }
-  return count;
+  env.tableSpace?.rememberCompleted(key, numCallVars, results);
 }
 
 function checkedCounterAdvance(counter: number, delta: number): number {
@@ -7019,7 +8131,7 @@ function freshenModedResult(
           variable(`_tab${legacyFreshVariableSuffix(counter, branchVariableNamespace(st.world))}`),
         ),
       );
-      counter++;
+      counter = checkedCounterAdvance(counter, 1);
     }
   }
   const freshened = instantiate(fromRelations(rels), cachedResult);
@@ -7733,33 +8845,58 @@ function* reduceRulePairsG(
   emitter?: MettaAnswerEmitter,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
   const out: Array<[Atom, Bindings]> = [];
+  const isolate = pairs.length > 1 && worldRuntimeContext(st.world).policy === "isolated-branches";
+  const alternatives = isolate ? isolatedBranchStates(st, pairs.length) : undefined;
+  const terminals: St[] = [];
   let cur = st;
-  for (const p of pairs) {
-    const before = out.length;
-    const selected = refreshEvaluationEnvironment(p[2] ?? env, cur.world);
-    const pb = mergeRestrict(selected, queryVars, partB, p[1]);
-    if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
-      // wApp did not reduce (a constructor application / data term). Cache a ground one so the next visit
-      // short-circuits instead of re-walking it.
-      out.push([wApp, partB]);
-    } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
-      out.push([p[0], pb]);
-    } else if (isErrorAtom(p[0])) {
-      // Error atoms are terminal data in Minimal MeTTa. Re-evaluating one can repeatedly wrap or reproduce
-      // the same host failure instead of publishing it.
-      out.push([p[0], pb]);
-    } else {
-      const [more, st4] = yield* mettaEvalG(selected, fuel - 1, cur, pb, p[0], cursor);
-      cur = st4;
-      for (const m of more) {
-        out.push([m[0], mergeRestrict(selected, queryVars, pb, m[1])]);
+  try {
+    for (let index = 0; index < pairs.length; index += 1) {
+      const p = pairs[index]!;
+      const before = out.length;
+      let branch = alternatives?.branches[index] ?? cur;
+      const selected = refreshEvaluationEnvironment(p[2] ?? env, branch.world);
+      const pb = mergeRestrict(selected, queryVars, partB, p[1]);
+      if (atomEq(p[0], notReducibleA) || atomEq(p[0], wApp)) {
+        // wApp did not reduce (a constructor application / data term). Cache a ground one so the next visit
+        // short-circuits instead of re-walking it.
+        out.push([wApp, partB]);
+      } else if (opReturnsAtom && !isEmbeddedOp(p[0])) {
+        out.push([p[0], pb]);
+      } else if (isErrorAtom(p[0])) {
+        // Error atoms are terminal data in Minimal MeTTa. Re-evaluating one can repeatedly wrap or reproduce
+        // the same host failure instead of publishing it.
+        out.push([p[0], pb]);
+      } else {
+        const [more, st4] = yield* mettaEvalG(selected, fuel - 1, branch, pb, p[0], cursor);
+        branch = st4;
+        for (const m of more) {
+          out.push([m[0], mergeRestrict(selected, queryVars, pb, m[1])]);
+        }
       }
+      enforceDistinctLimit(env, out.length);
+      if (emitter !== undefined && !distinctGroundEnabled(env))
+        branch = yield* emitMettaAnswersG(emitter, out.slice(before), branch);
+      if (isolate) terminals.push(branch);
+      else cur = branch;
     }
-    enforceDistinctLimit(env, out.length);
-    if (emitter !== undefined && !distinctGroundEnabled(env))
-      cur = yield* emitMettaAnswersG(emitter, out.slice(before), cur);
+    if (!isolate) return [out, cur];
+    const parent = alternatives!.parent;
+    if (emitter?.accept !== undefined)
+      return [
+        out,
+        {
+          counter: Math.max(parent.counter, ...terminals.map((terminal) => terminal.counter)),
+          world: parent.world,
+        },
+      ];
+    return [out, mergeScheduledStates(env, parent, terminals)];
+  } finally {
+    if (alternatives !== undefined)
+      releaseChildWorldRuntimes(
+        alternatives.parent.world,
+        alternatives.branches.map((branch) => branch.world),
+      );
   }
-  return [out, cur];
 }
 
 function* reduceDirectAsyncGroundedApplicationG(
@@ -7775,6 +8912,23 @@ function* reduceDirectAsyncGroundedApplicationG(
   cursor?: CursorMode,
   emitter?: MettaAnswerEmitter,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
+  const effectPolicy = groundedEffectPolicy(env, op);
+  if (groundedEffectRejected(st.world, effectPolicy))
+    return yield* finishDirectGroundedApplicationG(
+      env,
+      fuel,
+      st,
+      bnd,
+      wApp,
+      queryVars,
+      opReturnsAtom,
+      {
+        tag: "incorrectArgument",
+        msg: `${op}: irreversible effect is not allowed in an isolated branch`,
+      },
+      cursor,
+      emitter,
+    );
   const groundedArgs = args.map((arg) =>
     resolveStates(st.world, subTokens(st.world, arg, env.intern)),
   );
@@ -7807,11 +8961,20 @@ function* finishDirectGroundedApplicationG(
   result: ReduceResult,
   cursor?: CursorMode,
   emitter?: MettaAnswerEmitter,
+  recordEffects = true,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
   let items: Item[];
   let next = st;
   switch (result.tag) {
     case "ok": {
+      const operation = opOf(wApp);
+      if (recordEffects && operation !== undefined)
+        recordGroundedOperationEffects(
+          st.world,
+          operation,
+          groundedEffectPolicy(env, operation),
+          result.results,
+        );
       const effects = applyReduceEffects(env, st, bnd, result.effects);
       if (effects.tag === "error") {
         items = [finItem(null, errAtom(wApp, effects.msg), bnd)];
@@ -8006,6 +9169,27 @@ function* evaluateChoiceBranchesG(
     argument.items[0]?.kind === "sym" && argument.items[0].name === ","
       ? argument.items.slice(1)
       : argument.items;
+  if (!choiceBranchesParallelSafe(env, state.world, branches)) {
+    const out: Array<[Atom, Bindings]> = [];
+    let current = state;
+    for (const branch of branches) {
+      const [pairs, terminal] = yield* mettaEvalG(
+        env,
+        fuel,
+        current,
+        bindings,
+        branch,
+        cursor,
+        emitter,
+      );
+      out.push(...pairs);
+      current =
+        emitter === undefined
+          ? terminal
+          : yield* emitReturnedMettaAnswersG(emitter, pairs, terminal);
+    }
+    return [out, current];
+  }
   const schedule = fairSchedule(operation, env, fuel, state, bindings, branches);
   const out: Array<[Atom, Bindings]> = [];
   let current = state;
@@ -8169,6 +9353,22 @@ function directAsyncGroundedApplication(
   };
 }
 
+function sameBindingRelations(left: Bindings, right: Bindings): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    const l = left[index]!;
+    const r = right[index]!;
+    if (l.tag !== r.tag || l.x !== r.x) return false;
+    if (l.tag === "val") {
+      if (r.tag !== "val" || !atomEq(l.a, r.a)) return false;
+    } else if (r.tag !== "eq" || l.y !== r.y) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function rememberGroundEvaluation(
   env: MinEnv,
   input: Atom,
@@ -8182,13 +9382,11 @@ function rememberGroundEvaluation(
     !input.ground ||
     pairs.length !== 1 ||
     !atomEq(pairs[0]![0], input) ||
-    pairs[0]![1] !== bindings ||
+    !sameBindingRelations(pairs[0]![1], bindings) ||
     end.world !== start.world
   )
     return;
-  const counterDelta = end.counter - start.counter;
-  if (Number.isSafeInteger(counterDelta) && counterDelta >= 0)
-    env.evaluatedAtoms.set(input, counterDelta);
+  env.evaluatedAtoms.add(input);
 }
 
 function* mettaEvalG(
@@ -8204,19 +9402,13 @@ function* mettaEvalG(
   const selected = refreshEvaluationEnvironment(env, st.world);
   const input = inst(selected, bnd, a);
   if (input.kind === "expr" && input.ground) {
-    const cachedDelta = selected.evaluatedAtoms.get(input);
-    if (cachedDelta !== undefined) {
-      return [
-        [[input, bnd]],
-        { counter: checkedCounterAdvance(st.counter, cachedDelta), world: st.world },
-      ];
-    }
+    if (selected.evaluatedAtoms.has(input)) return [[[input, bnd]], st];
     if (
       selected.varRulesVar.length === 0 &&
       st.world.selfVarRules.length === 0 &&
       isNormalForm(selected, st.world, input)
     ) {
-      selected.evaluatedAtoms.set(input, 0);
+      selected.evaluatedAtoms.add(input);
       return [[[input, bnd]], st];
     }
   }
@@ -8246,6 +9438,9 @@ function* mettaEvalUncachedG(
   emitter?: MettaAnswerEmitter,
   preEvaluatedApplication?: PreEvaluatedApplication,
 ): Gen<[Array<[Atom, Bindings]>, St]> {
+  checkWorldCancellation(st.world);
+  consumeWorldResource(st.world, "steps", 1, "metta-eval");
+  checkWorldDeadline(st.world, "metta-eval");
   const cooperativeSearch = cursor?.kind === "cooperative";
   if (fuel <= 0) return [[[makeExpr(env, [sym("Error"), w, sym("StackOverflow")]), bnd]], st];
   // Constructor / normal-form short-circuit (Curry's constructor/defined partition; Hanus' incremental
@@ -8278,10 +9473,7 @@ function* mettaEvalUncachedG(
     let lst = st;
     let lw = w;
     let preparedApplication = preEvaluatedApplication;
-    const pendingKeys: Array<{
-      readonly key: CompletedTableKey;
-      readonly startCounter: number;
-    }> = [];
+    const pendingKeys: CompletedTableKey[] = [];
     const flushReturn = (res: Array<[Atom, Bindings]>, stR: St): [Array<[Atom, Bindings]>, St] => {
       const finalRes =
         distinctGroundEnabled(env) && res.every((pair) => pair[0].ground)
@@ -8293,8 +9485,7 @@ function* mettaEvalUncachedG(
         finalRes.every((p) => p[0].ground)
       ) {
         const prod = finalRes.map((p) => p[0]);
-        for (const pending of pendingKeys)
-          rememberGroundTable(env, pending.key, prod, stR.counter - pending.startCounter);
+        for (const pending of pendingKeys) rememberGroundTable(env, pending, prod);
       }
       return [finalRes, stR];
     };
@@ -8799,7 +9990,6 @@ function* mettaEvalUncachedG(
         // by unique(collapse ...). Runtime rules are version-keyed; purely static calls use version 0.
         let eligible = false;
         let key: CompletedTableKey | undefined;
-        const groundCallStartCounter = cur2.counter;
         if (tabling && wApp.ground) {
           const runtimeVersion = groundTableVersionIfAdmissible(env, cur2.world, op, wApp);
           if (runtimeVersion !== undefined) {
@@ -8813,10 +10003,6 @@ function* mettaEvalUncachedG(
           if (eligible) {
             const hit = key === undefined ? undefined : env.tableSpace!.getCompleted(key);
             if (hit !== undefined) {
-              cur2 = {
-                counter: checkedCounterAdvance(cur2.counter, hit.counterDelta),
-                world: cur2.world,
-              };
               for (const r of hit.results) out.push([r, partB]);
               continue;
             }
@@ -8841,12 +10027,7 @@ function* mettaEvalUncachedG(
           const tableSpace = env.tableSpace!;
           const encoded = tableSpace.key("moded", wApp, modedRuntimeVersion);
           const modedHit = tableSpace.getCompleted(encoded);
-          if (
-            modedHit !== undefined &&
-            modedHit.counterDelta >=
-              modedReplayFreshVariableCount(modedHit.results, modedHit.numCallVars)
-          ) {
-            const replayStart = cur2.counter;
+          if (modedHit !== undefined) {
             for (const cachedResult of modedHit.results) {
               const [freshened, stF] = freshenModedResult(
                 cur2,
@@ -8857,10 +10038,6 @@ function* mettaEvalUncachedG(
               cur2 = stF;
               out.push([freshened, partB]);
             }
-            cur2 = {
-              counter: checkedCounterAdvance(replayStart, modedHit.counterDelta),
-              world: cur2.world,
-            };
             continue;
           }
           const active = tableSpace.getActive(encoded);
@@ -8933,13 +10110,7 @@ function* mettaEvalUncachedG(
             const firstCanonical = firstPass.map((p) => canonicalize(p[0], map));
             if (!active.cyclic) {
               for (const p of firstPass) out.push(p);
-              rememberModedTable(
-                env,
-                modedKey!,
-                modedNumCallVars,
-                firstCanonical,
-                firstState.counter - start.counter,
-              );
+              rememberModedTable(env, modedKey!, modedNumCallVars, firstCanonical);
             } else {
               let added = env.tableSpace!.addActiveAnswers(active, firstCanonical);
               let maxCounter = Math.max(start.counter, firstState.counter);
@@ -8972,13 +10143,7 @@ function* mettaEvalUncachedG(
                   cur2 = stF;
                   out.push([freshened, partB]);
                 }
-                rememberModedTable(
-                  env,
-                  modedKey!,
-                  modedNumCallVars,
-                  active.results,
-                  cur2.counter - start.counter,
-                );
+                rememberModedTable(env, modedKey!, modedNumCallVars, active.results);
               }
             }
           } else {
@@ -9015,8 +10180,7 @@ function* mettaEvalUncachedG(
               const isData = atomEq(p[0], notReducibleA) || atomEq(p[0], interpretedApplication);
               if (!isData && !(opReturnsAtom && !isEmbeddedOp(p[0])) && opOf(p[0]) !== undefined) {
                 const pb = mergeRestrict(env, queryVars, partB, p[1]);
-                if (eligible && key !== undefined)
-                  pendingKeys.push({ key, startCounter: groundCallStartCounter });
+                if (eligible && key !== undefined) pendingKeys.push(key);
                 la = p[0];
                 lbnd = pb;
                 lst = cur2;
@@ -9049,7 +10213,7 @@ function* mettaEvalUncachedG(
             if (eligible) {
               const produced = producedPairs.map((p) => p[0]);
               if (key !== undefined && produced.every((a) => a.ground))
-                rememberGroundTable(env, key, produced, cur2.counter - groundCallStartCounter);
+                rememberGroundTable(env, key, produced);
             }
           }
         } finally {
@@ -9274,12 +10438,9 @@ function* mettaCursorGenerator(
   const emitter = mettaCursorEmitter(delivery, cursorMode);
   const selected = refreshEvaluationEnvironment(env, state.world);
   const input = inst(selected, bindings, atom);
-  const cachedDelta =
-    input.kind === "expr" && input.ground ? selected.evaluatedAtoms.get(input) : undefined;
+  const cached = input.kind === "expr" && input.ground && selected.evaluatedAtoms.has(input);
   const direct =
-    cachedDelta === undefined && fuel > 0
-      ? directAsyncGroundedApplication(selected, state, input)
-      : undefined;
+    !cached && fuel > 0 ? directAsyncGroundedApplication(selected, state, input) : undefined;
   let result: [Array<[Atom, Bindings]>, St];
   if (direct === undefined) {
     result = yield* mettaEvalG(env, fuel, state, bindings, atom, cursorMode, emitter);
@@ -9576,6 +10737,7 @@ class GeneratorSyncSearchCursor<T extends InternalSearchAnswer> implements SyncS
   readonly #delivery: CursorDeliveryControl;
   readonly #releaseSnapshot: () => void;
   readonly #materializeAnswer: CursorAnswerMaterializer<T>;
+  readonly #runtimeWorld: World | undefined;
   readonly #unwindFailures = new GeneratorUnwindFailures();
   readonly #status = newMinimalCursorStatus();
   #state: St;
@@ -9587,12 +10749,14 @@ class GeneratorSyncSearchCursor<T extends InternalSearchAnswer> implements SyncS
     delivery: CursorDeliveryControl,
     releaseSnapshot: () => void = () => undefined,
     materializeAnswer: CursorAnswerMaterializer<T>,
+    runtimeWorld?: World,
   ) {
     this.#state = state;
     this.#generator = generator;
     this.#delivery = delivery;
     this.#releaseSnapshot = releaseSnapshot;
     this.#materializeAnswer = materializeAnswer;
+    this.#runtimeWorld = runtimeWorld;
   }
 
   get closed(): boolean {
@@ -9727,6 +10891,8 @@ class GeneratorSyncSearchCursor<T extends InternalSearchAnswer> implements SyncS
     if (this.closed) return;
     this.#status.closedReason = stableEvalCancellationReason(reason);
     this.#delivery.lifecycle.unwinding = true;
+    if (this.#runtimeWorld !== undefined)
+      cancelWorldRuntime(this.#runtimeWorld, this.#status.closedReason);
     try {
       closeGeneratorSync(this.#generator, this.#state);
     } catch (cleanupError) {
@@ -9765,7 +10931,11 @@ class GeneratorSyncSearchCursor<T extends InternalSearchAnswer> implements SyncS
   #release(): void {
     if (this.#released) return;
     this.#released = true;
-    this.#releaseSnapshot();
+    try {
+      this.#releaseSnapshot();
+    } finally {
+      if (this.#runtimeWorld !== undefined) releaseWorldRuntime(this.#runtimeWorld);
+    }
   }
 }
 
@@ -9839,6 +11009,7 @@ class GeneratorAsyncSearchCursor<T extends InternalSearchAnswer> implements Asyn
   readonly #releaseSnapshot: () => void;
   readonly #delivery: CursorDeliveryControl;
   readonly #materializeAnswer: CursorAnswerMaterializer<T>;
+  readonly #runtimeWorld: World | undefined;
   readonly #unwindFailures = new GeneratorUnwindFailures();
   readonly #status = newMinimalCursorStatus();
   #state: St;
@@ -9856,6 +11027,7 @@ class GeneratorAsyncSearchCursor<T extends InternalSearchAnswer> implements Asyn
     delivery: CursorDeliveryControl,
     materializeAnswer: CursorAnswerMaterializer<T>,
     driverSignal?: AbortSignal,
+    runtimeWorld?: World,
   ) {
     this.#state = state;
     this.#driverSignal = driverSignal;
@@ -9863,6 +11035,7 @@ class GeneratorAsyncSearchCursor<T extends InternalSearchAnswer> implements Asyn
     this.#generator = generator;
     this.#delivery = delivery;
     this.#materializeAnswer = materializeAnswer;
+    this.#runtimeWorld = runtimeWorld;
   }
 
   get closed(): boolean {
@@ -10170,6 +11343,8 @@ class GeneratorAsyncSearchCursor<T extends InternalSearchAnswer> implements Asyn
     }
     this.#status.closedReason = this.#stableCancellationReason(reason);
     this.#delivery.lifecycle.unwinding = true;
+    if (this.#runtimeWorld !== undefined)
+      cancelWorldRuntime(this.#runtimeWorld, this.#status.closedReason);
     this.#controller.abort(this.#status.closedReason);
     const active = joinActive ? this.#scope.active : undefined;
     if (active === undefined) {
@@ -10273,7 +11448,11 @@ class GeneratorAsyncSearchCursor<T extends InternalSearchAnswer> implements Asyn
   #release(): void {
     if (this.#released) return;
     this.#released = true;
-    this.#releaseSnapshot();
+    try {
+      this.#releaseSnapshot();
+    } finally {
+      if (this.#runtimeWorld !== undefined) releaseWorldRuntime(this.#runtimeWorld);
+    }
   }
 
   #stableCancellationReason(reason: unknown): CancellationReason {
@@ -10305,6 +11484,25 @@ export class MettaAsyncSearchCursor extends GeneratorAsyncSearchCursor<MinimalSe
   }
 }
 
+function ownedSyncSearchCursor(
+  env: MinEnv,
+  atom: Atom,
+  options: Required<Pick<MinimalInterpretOptions, "fuel" | "state" | "bindings">>,
+): GeneratorSyncSearchCursor<MinimalSearchAnswer> {
+  const source = pinnedCursorSource("metta", env, atom, {
+    ...options,
+    cooperative: true,
+  });
+  return new GeneratorSyncSearchCursor(
+    source.generator,
+    source.state,
+    source.delivery,
+    source.release,
+    contextualCursorAnswer,
+    options.state.world,
+  );
+}
+
 function ownedAsyncSearchCursor<T extends InternalSearchAnswer>(
   kind: "minimal" | "metta",
   env: MinEnv,
@@ -10312,6 +11510,7 @@ function ownedAsyncSearchCursor<T extends InternalSearchAnswer>(
   options: Required<Pick<MinimalInterpretOptions, "fuel" | "state" | "bindings">>,
   materializeAnswer: CursorAnswerMaterializer<T>,
   driverSignal?: AbortSignal,
+  ownRuntime = false,
 ): GeneratorAsyncSearchCursor<T> {
   const delivery: CursorDeliveryControl = {
     streaming: true,
@@ -10329,6 +11528,7 @@ function ownedAsyncSearchCursor<T extends InternalSearchAnswer>(
     delivery,
     materializeAnswer,
     driverSignal,
+    ownRuntime ? options.state.world : undefined,
   );
 }
 
@@ -10355,6 +11555,7 @@ function* settledDirectGroundedCursorGenerator(
     settled,
     cursorMode,
     emitter,
+    false,
   );
   if (remember)
     rememberGroundEvaluation(env, direct.application, bindings, state, result[0], result[1]);
@@ -10398,6 +11599,7 @@ function ownedSettledDirectGroundedCursor(
     delivery,
     terminalCursorAnswer,
     driverSignal,
+    state.world,
   );
 }
 
@@ -10932,15 +12134,18 @@ class CompletedAsyncSearchCursor<T, R> implements AsyncSearchCursor<T, R> {
   readonly #scope = new ExclusiveAsyncScope();
   readonly #values: readonly T[];
   readonly #terminalFactory: () => R;
+  readonly #finalize: (() => void) | undefined;
   #index = 0;
   #resultTerminal: R | undefined;
   #hasResultTerminal = false;
   #closedReason: CancellationReason | undefined;
   #terminal: Extract<SearchEvent<T, R>, { kind: "exhausted" | "cancelled" | "fault" }> | undefined;
+  #finalized = false;
 
-  constructor(values: readonly T[], terminalFactory: () => R) {
+  constructor(values: readonly T[], terminalFactory: () => R, finalize?: () => void) {
     this.#values = values.slice();
     this.#terminalFactory = terminalFactory;
+    this.#finalize = finalize;
   }
 
   get closed(): boolean {
@@ -11017,6 +12222,7 @@ class CompletedAsyncSearchCursor<T, R> implements AsyncSearchCursor<T, R> {
     } catch (error) {
       const terminal = { kind: "fault" as const, error, steps: 0 };
       this.#terminal = terminal;
+      this.#finish();
       return terminal;
     }
   }
@@ -11025,6 +12231,7 @@ class CompletedAsyncSearchCursor<T, R> implements AsyncSearchCursor<T, R> {
     this.#closedReason ??= stableEvalCancellationReason(reason);
     const terminal = { kind: "cancelled" as const, reason: this.#closedReason, steps: 0 };
     this.#terminal = terminal;
+    this.#finish();
     return terminal;
   }
 
@@ -11035,7 +12242,14 @@ class CompletedAsyncSearchCursor<T, R> implements AsyncSearchCursor<T, R> {
       steps: 0,
     };
     this.#terminal = terminal;
+    this.#finish();
     return terminal;
+  }
+
+  #finish(): void {
+    if (this.#finalized) return;
+    this.#finalized = true;
+    this.#finalize?.();
   }
 
   #terminalDrain(): SearchDrainResult<T, R> {
@@ -11136,6 +12350,11 @@ function isolateAnswerContinuation(state: St, index: number, counter: number): S
     },
     groundedContextIdentity(state.world),
   );
+  forkWorldRuntime(
+    state.world,
+    world,
+    nextWorldRuntimeBranch(state.world, `continuation-${index}`),
+  );
   return { counter, world };
 }
 
@@ -11166,6 +12385,7 @@ function isolatedBranchStates(state: St, count: number): IsolatedBranchSet {
   const parentWorld = reserved.parent.world;
   const authority = parentWorld.allocation.ids;
   const groupSequence = reserved.sequence!;
+  consumeWorldResource(parentWorld, "branches", count, `fanout-${groupSequence}`);
   const branches = Array.from({ length: count }, (_, index) => {
     const world = forkWorldView(
       parentWorld,
@@ -11174,6 +12394,14 @@ function isolatedBranchStates(state: St, count: number): IsolatedBranchSet {
         branchScoped: true,
       },
       contextIdentity,
+    );
+    forkWorldRuntime(
+      parentWorld,
+      world,
+      nextWorldRuntimeBranch(parentWorld, `fanout-${groupSequence}-${index}`),
+      "isolated-branches",
+      "reject",
+      false,
     );
     return { counter: state.counter, world };
   });
@@ -11198,6 +12426,28 @@ function restoreAllocationAuthority(base: St, branch: St): St {
     ids,
     branchScoped: base.world.allocation.branchScoped,
   });
+  const parentRuntime = worldRuntimeContext(base.world);
+  const branchRuntime = worldRuntimeContext(branch.world);
+  if (branchRuntime.resources !== parentRuntime.resources) {
+    const effects = branchRuntime.journal.since(parentRuntime.journal);
+    const committed =
+      parentRuntime.policy === "sequential-commit"
+        ? {
+            audit: parentRuntime.audit.commit(effects),
+            journal: parentRuntime.journal,
+          }
+        : {
+            audit: parentRuntime.audit,
+            journal: parentRuntime.journal.commit(effects),
+          };
+    worldRuntimeContexts.set(world, {
+      ...parentRuntime,
+      ...committed,
+    });
+    releaseWorldRuntime(branch.world);
+  } else {
+    inheritWorldRuntime(branch.world, world);
+  }
   return { counter: branch.counter, world };
 }
 
@@ -11290,7 +12540,7 @@ function fairSchedule(
   const syncFactory = (): SyncSearchCursor<MinimalSearchAnswer, St> => {
     const source = new FairSyncCursor(
       branches.map((branch, index) =>
-        createMettaSearchCursor(env, branch, {
+        ownedSyncSearchCursor(env, branch, {
           fuel,
           state: branchStates[index]!,
           bindings,
@@ -11340,6 +12590,7 @@ function fairAsyncMettaBranches(
         },
         contextualCursorAnswer,
         controller.signal,
+        true,
       ),
     ),
     DEFAULT_SEARCH_QUANTUM,
@@ -11457,6 +12708,12 @@ async function invokeDirectParBranch(
   signal: AbortSignal,
   context = groundedCallContextWithSignal(branch.env, branch.state.world, signal),
 ): Promise<ReduceResult> {
+  const effectPolicy = groundedEffectPolicy(branch.env, branch.direct.op);
+  if (groundedEffectRejected(branch.state.world, effectPolicy))
+    return {
+      tag: "incorrectArgument",
+      msg: `${branch.direct.op}: irreversible effect is not allowed in an isolated branch`,
+    };
   const grounded = branch.env.agt.get(branch.direct.op);
   if (grounded === undefined)
     throw new Error(`async grounded operation '${branch.direct.op}' disappeared during par`);
@@ -11465,6 +12722,13 @@ async function invokeDirectParBranch(
   );
   const result = await grounded(args, context);
   signal.throwIfAborted();
+  if (result.tag === "ok")
+    recordGroundedOperationEffects(
+      branch.state.world,
+      branch.direct.op,
+      effectPolicy,
+      result.results,
+    );
   return result;
 }
 
@@ -11550,7 +12814,11 @@ function prefetchedDirectParCursor(
 ): AsyncSearchCursor<InternalSearchAnswer, St> {
   if (branch.event.kind === "exhausted") {
     const terminal = branch.event.terminal;
-    return new CompletedAsyncSearchCursor(branch.event.values, () => terminal);
+    return new CompletedAsyncSearchCursor(
+      branch.event.values,
+      () => terminal,
+      () => releaseWorldRuntime(terminal.world),
+    );
   }
   if (branch.cursor === undefined)
     throw new Error("pending direct par branch lost its continuation cursor");
@@ -11631,20 +12899,14 @@ function* tryDirectParG(
     },
     async (signal, maxSteps = DEFAULT_SEARCH_QUANTUM) => {
       const allowances = directParAllowances(directBranches.length, maxSteps);
-      const contexts = new Map<MinEnv, SignalledGroundedCallContext>();
       const group = await runStructuredTaskGroup(
         directBranches,
         async (branch, index, branchSignal): Promise<PrefetchedDirectParBranch> => {
           try {
-            let context = contexts.get(branch.env);
-            if (context === undefined) {
-              context = groundedCallContextWithSignal(branch.env, branch.state.world, branchSignal);
-              contexts.set(branch.env, context);
-            }
             const settled = applySettledDirectParEffects(
               {
                 ...branch,
-                result: await invokeDirectParBranch(branch, branchSignal, context),
+                result: await invokeDirectParBranch(branch, branchSignal),
               },
               bindings,
             );
@@ -11726,8 +12988,14 @@ function* tryDirectParG(
     | { readonly kind: "fault"; readonly error: unknown };
   switch (result.kind) {
     case "cancelled":
+      for (const branch of directBranches) releaseWorldRuntime(branch.state.world, result.reason);
       throw schedulerCancellationError("par", result.reason);
     case "fault":
+      for (const branch of directBranches)
+        releaseWorldRuntime(branch.state.world, {
+          code: "fault",
+          message: "direct par branch failed",
+        });
       throw result.error;
     case "exhausted": {
       for (const prefetched of result.results) {
@@ -11745,21 +13013,16 @@ function* tryDirectParG(
         }
       }
       if (result.results.every((branch) => branch.event.kind === "exhausted")) {
-        const evaluated = result.results.some((branch) => branch.evaluated);
-        const mutated = result.results.some((branch) => branch.branch.effectsApplied === true);
         return {
           kind: "complete",
           answers: result.results.flatMap((branch) => branch.event.values),
-          state:
-            evaluated || mutated
-              ? mergeScheduledStates(
-                  env,
-                  isolated.parent,
-                  result.results.map((branch) =>
-                    branch.event.kind === "exhausted" ? branch.event.terminal : branch.branch.state,
-                  ),
-                )
-              : isolated.parent,
+          state: mergeScheduledStates(
+            env,
+            isolated.parent,
+            result.results.map((branch) =>
+              branch.event.kind === "exhausted" ? branch.event.terminal : branch.branch.state,
+            ),
+          ),
         };
       }
       return {
@@ -11810,6 +13073,7 @@ function parSchedule(
             },
             terminalCursorAnswer,
             controller.signal,
+            true,
           ),
       ),
       controller,
@@ -11850,8 +13114,7 @@ function completedParCandidate(
     answers: completed.map(({ atom }) => terminalCursorAnswer([atom, bindings])),
     commitCaches: () => {
       for (const item of completed)
-        if (item.atom.kind === "expr" && item.atom.ground)
-          item.env.evaluatedAtoms.set(item.atom, 0);
+        if (item.atom.kind === "expr" && item.atom.ground) item.env.evaluatedAtoms.add(item.atom);
     },
   };
 }

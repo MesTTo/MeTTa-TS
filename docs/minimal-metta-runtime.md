@@ -46,9 +46,53 @@ The following values remain distinct:
 
 Nested `ResourceLease` values share the account. They do not copy or replenish spent fuel. A multi-resource debit either updates every requested counter or updates none. A failed debit reports the exact resource, configured limit, prior consumption, attempted debit, and operation.
 
+The U7 evaluator debits interpreter steps, branch fanout, stack-depth high-water marks, and configured wall time. A branch debit happens once for the complete fanout and fails before any child starts, so a limit cannot leave a half-created task group. An unmetered state does not read the host clock. Result, atom-cell, byte, table-cell, and worker-task counters are part of the shared ledger contract. Their producing boundaries must debit them as the grounded stream, codec, table, and worker slices land.
+
+Resource exhaustion throws `ResourceLimitError`. It does not become an empty answer bag or a MeTTa `(Error ...)` atom. The fuel argument remains a separate compatibility ceiling while the shared ledger is introduced across backends. The aggregate store-level model follows Wasmtime's [`ResourceLimiter`](https://docs.rs/wasmtime/latest/wasmtime/trait.ResourceLimiter.html) and [`Store::set_fuel`](https://docs.rs/wasmtime/latest/wasmtime/struct.Store.html#method.set_fuel): nested execution consumes one host-owned account instead of receiving replenished copies.
+
 Worker execution will use grants derived from the same account. Unused grant capacity can return after acknowledged closure. Spent capacity cannot return. A crashed worker conservatively consumes its outstanding grant.
 
 Cancellation uses `AbortSignal` for notification and a serializable `CancellationReason` for the interpreter protocol. Cancellation still needs a task scope that joins child work and runs finalizers. An abort flag alone does not prove cleanup has finished.
+
+`CancellationScope` links each child to its parent and removes the parent listener when the child closes. A branch owner cancels and joins its children before releasing their scopes and leases. The ownership rule matches Trio's [nursery contract](https://trio.readthedocs.io/en/stable/reference-core.html#nurseries-and-spawning): leaving the owning scope waits for its child tasks.
+
+## Branch worlds and effect commitment
+
+Each evaluator world has a branch ID, commit policy, committed-effect audit, immutable branch journal, shared resource lease, and cancellation scope. `branchRuntimeSnapshot` expands the audit and journal into the original per-effect boundaries without exposing mutable world-effect payloads.
+
+Ordinary evaluation uses `sequential-commit`. It preserves the existing traversal rule where a later alternative can observe a mutation made by an earlier alternative. `transaction`, `par`, Hyperpose scheduling, races, and answer-pruning boundaries fork isolated child worlds. A cached rule-graph analysis propagates stateful and serialized-section bits through recursive call components. A stateful Hyperpose whose graph contains `with-mutex` or `with_mutex` uses source-ordered state threading, so the serialized sections observe earlier commits. Other Hyperpose branches remain isolated. A child starts from the same persistent roots as its parent:
+
+- forking a world map is O(1);
+- a map lookup or update copies O(log32 n) hash-trie nodes;
+- insertion-order maintenance copies O(log n) AVL nodes;
+- iteration visits O(live entries), independent of deleted or reinserted history;
+- evaluator-created merges inspect O(branch delta) journal records instead of scanning retained world state.
+
+An isolated branch retains mutation payloads because rollback, conflict detection, and commit need them. A sequentially committed mutation no longer needs its payload for recovery. Its public metadata moves into a persistent run-length audit instead. Adjacent effects with the same branch, class, phase, operation, and commitment allocate one append-only run while retaining their logical IDs and answer boundaries. A repeated sequential write stream therefore retains O(metadata runs) audit storage instead of O(write count). An explicit snapshot still spends O(effect count) to expand that history.
+
+The public `World` fields remain `Map` and `Set` compatible. Structurally supplied foreign worlds take a complete compatibility diff because they have no shared journal ancestry.
+
+Effects use seven classes:
+
+| Class             | Isolated behavior                                                                    |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| `pure`            | May run and needs no journal record                                                  |
+| `atomspace-read`  | May run against the pinned branch view and records one captured observation event    |
+| `atomspace-write` | Records reversible branch mutations                                                  |
+| `host-io`         | Rejected before invocation unless an explicit handler such as `with-mutex` allows it |
+| `time`            | Rejected before observation                                                          |
+| `randomness`      | Rejected before observation                                                          |
+| `suspension`      | May run only when the operation declares speculative execution safe                  |
+
+Effect event IDs contain the branch and a branch-local sequence. Forking shares the exact immutable payload prefix and committed audit position. Rollback retains the parent pointer in O(1). Commit walks only the child suffix, so a shared prefix is never applied twice when one branch has several answers.
+
+World mutation records belong to the answer state that performed them. Legacy `ReduceResult.effects` remain call-wide and are recorded once as pre-effects, including when the grounded result bag is empty. The Grounded V2 adapter will add native per-answer effect records and streamed binding deltas.
+
+Grounded effect declarations belong to the environment and operation name. They do not use process-global function identity. Async program snapshots pin the declaration map beside sync and async dispatch, so re-registering an operation while a call is suspended cannot change the in-flight call's policy. A custom synchronous operation defaults to non-speculative host I/O. The legacy async registration helper defaults to a speculative suspension for compatibility, so a host operation that performs I/O must declare `host-io` and `speculative: false`. Grounded V2 entries require explicit metadata.
+
+`transaction` commits only when it has at least one non-error answer and every successful answer has the same journal delta. It applies that delta once. Zero answers, all-error answers, or different answer deltas roll back. `par` and collect-all Hyperpose merge isolated world deltas after completion. Equal add/add mutations commute and retain multiplicity. Branch-scoped state and space allocation uses disjoint ID lanes. State, token, space, setting, add/remove, and remove/remove collisions throw `WorldConflictError` before any branch delta commits. The error is marked retryable, but the evaluator does not retry an effectful program automatically. An explicitly serialized stateful Hyperpose uses source order instead of speculative merge.
+
+`race` and `once` commit only the selected answer path. Losing branches are cancelled and joined before the winner becomes observable. A losing host effect is therefore either rejected before invocation or contained by an explicit effect handler. A cancelled branch cannot publish a later world mutation.
 
 ## Search cursors and scheduler policies
 
@@ -78,7 +122,7 @@ The scheduler classes share that protocol:
 
 `drainSyncCursor` and `drainAsyncCursor` retain the legacy eager surface. A cursor may provide a bulk `drain` implementation to avoid one promise or adapter call per answer. The bulk path must return the same remaining ordered stream as repeated `next` calls.
 
-Superpose keeps the established MeTTa TS applicative cross-product and source order. Hyperpose evaluates each listed branch as one OR alternative and publishes answers in fair completion order. Both preserve duplicates, but their bags can differ because their argument admission differs. `once` selects the first answer event and closes the tail. `race` ignores empty branch completion and selects the first answer. `par` runs isolated branch worlds concurrently and presents results in source order before applying the deterministic world merge.
+Superpose keeps the established MeTTa TS applicative cross-product and source order. Hyperpose evaluates each listed branch as one OR alternative. Isolated branches publish answers in fair completion order. A stateful set containing `with-mutex` or `with_mutex` uses source order and threads its state. Non-speculative host effects stay isolated and reach the normal pre-invocation rejection boundary unless an explicit handler permits them. Both preserve duplicates, but their bags can differ because their argument admission differs. `once` selects the first answer event and closes the tail. `race` ignores empty branch completion and selects the first answer. `par` runs isolated branch worlds concurrently and presents results in source order before applying the deterministic world merge.
 
 An eager, non-streamed Hyperpose whose branches are compiled functional calls may use the host parallel evaluator. Each eligible branch has one answer position, so the worker result bag has the same source order as the scheduler's first round. Streamed branches and branches that can return several answers stay on the cursor scheduler. A worker answer includes formatted atoms and the branch's state-counter delta. A legacy atom-only bag is a protocol error because it cannot preserve state allocation. A valid legacy stateful bag can supply answers, but it cannot request local replay.
 

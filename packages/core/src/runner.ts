@@ -172,9 +172,10 @@ function buildDefaultEnv(
     staticProgramShared: true,
     imports: new RevisionMap(),
     agt: new RevisionMap(),
+    groundedEffects: new RevisionMap(template.groundedEffects),
     capabilities: new RevisionSet(template.capabilities),
     mutexes: new Map(),
-    evaluatedAtoms: new WeakMap(),
+    evaluatedAtoms: new WeakSet(),
   };
   env.imports = new RevisionMap(withBuiltinModules(imports));
   if (opts.hostImport !== undefined) env.hostImport = opts.hostImport;
