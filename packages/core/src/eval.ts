@@ -77,9 +77,6 @@ import {
   flushCursorProgressG,
   forwardReturnedMettaAnswersG,
   type Gen,
-  groundedCallContext,
-  groundedCallContextWithSignal,
-  isPromiseLike,
   LAZY_ARGS_OPS,
   LEATTA_EVAL_ARGS_OPS,
   makeCursorMode,
@@ -100,7 +97,6 @@ import {
   errTextAtom,
   type EvaluationScope,
   frame,
-  type GroundedEffectPolicy,
   inst,
   type Item,
   type MinEnv,
@@ -138,7 +134,6 @@ import {
   matchSetup,
   mettaReturnsInputForExpectedType,
   mettaTypeTerminal,
-  partialApplicationView,
   planRulePair,
   prepareCollapseRoute,
   rememberGroundEvaluation,
@@ -206,6 +201,27 @@ import {
   startGroundedV2G,
   unifyOp,
 } from "./eval/query";
+import {
+  applySettledDirectParEffects,
+  chargeSchedulerStepsG,
+  closeMinimalGroundedV2G,
+  closeMinimalMettaCallG,
+  closeScheduleG,
+  completedDirectParBranch,
+  directAsyncGroundedApplication,
+  type DirectAsyncGroundedApplication,
+  directParApplications,
+  type DirectParBranch,
+  GeneratorAsyncSearchCursor,
+  invokeDirectParBranch,
+  type PrefetchedDirectParBranch,
+  prefetchedDirectParSchedule,
+  resumeMinimalGroundedV2G,
+  resumeMinimalMettaCallG,
+  runCompiledCooperativelyG,
+  schedulerCancellationError,
+  takeFirstScheduledAnswerG,
+} from "./eval/schedule";
 import {
   disableTabling,
   ensureCompiled,
@@ -310,29 +326,7 @@ import {
 import { runStructuredTaskGroup } from "./structured-task-group";
 import { type ActiveTableEntry } from "./table-space";
 import { keyWellFormed, MODED_IMPURE_OPS } from "./tabling";
-import { isWorkerQuiescenceError } from "./worker-protocol";
-import {
-  type DirectAsyncGroundedApplication,
-  type DirectParBranch,
-  GeneratorAsyncSearchCursor,
-  type PrefetchedDirectParBranch,
-  applySettledDirectParEffects,
-  chargeSchedulerStepsG,
-  closeMinimalGroundedV2G,
-  closeMinimalMettaCallG,
-  closeScheduleG,
-  completedDirectParBranch,
-  directAsyncGroundedApplication,
-  directParApplications,
-  invokeDirectParBranch,
-  prefetchedDirectParSchedule,
-  resumeMinimalGroundedV2G,
-  resumeMinimalMettaCallG,
-  runCompiledCooperativelyG,
-  schedulerCancellationError,
-  startMinimalGroundedV2G,
-  takeFirstScheduledAnswerG,
-} from "./eval/schedule";
+import { evalOpG } from "./eval/evalop";
 export { checkApplication } from "./eval/matchops";
 export {
   registerAsyncGroundedOperation,
@@ -376,18 +370,6 @@ export {
   type StackCons,
   type World,
 } from "./eval/machine";
-
-// ---------- generator-based evaluation (sync core, optional async) ----------
-
-// ---------- machine types ----------
-
-// ---------- atom destructuring helpers ----------
-
-// ---------- control admission ----------
-
-// ---------- env (MinEnv) ----------
-
-// ---------- higher-order specialization (after PeTTa's src/specializer.pl) ----------
 
 // ---------- world + state ----------
 
@@ -662,181 +644,6 @@ function* reduceGroundedV2ApplicationG(
     }
   }
 }
-
-function* evalOpG(
-  env: MinEnv,
-  st: St,
-  prev: Stack,
-  x: Atom,
-  b: Bindings,
-  cursor?: CursorMode,
-): Gen<[Item[], St]> {
-  const x2 = inst(env, b, x);
-  const op = opOf(x2);
-  if (op === "collapse" && x2.kind === "expr" && x2.items.length === 2) {
-    const match = matchInsideOnce(x2.items[1]!);
-    if (match !== undefined) {
-      const namedMatch = tryFastNamedOnceMatch(env, st, match, b);
-      if (namedMatch !== undefined) {
-        const items = namedMatch.value === undefined ? [] : [namedMatch.value];
-        return [[evalResult(prev, expr([sym(","), ...items]), b)], namedMatch.state];
-      }
-    }
-  }
-  if (op === "if" && x2.kind === "expr" && x2.items.length === 4) {
-    const added = tryFastNamedAddIfAbsent(env, st, x2, b);
-    if (added !== undefined) {
-      const out = added.added ? [finItem(prev, emptyExpr, b)] : [];
-      return [out, added.state];
-    }
-  }
-  // A PeTTa-compat grounded op (length, sort, append, …) defers to a user `=` rule of the same head, so the
-  // stdlib never shadows a program's own definition; every other grounded op applies eagerly as before.
-  const useGrounded =
-    op !== undefined &&
-    x2.kind === "expr" &&
-    !(pettaOpNames.has(op) && hasRuleFor(env, st.world, st.counter, x2));
-  if (useGrounded) {
-    let args = x2.items
-      .slice(1)
-      .map((a) => resolveStates(st.world, subTokens(st.world, a, env.intern)));
-    if (op === "repr" && args.length === 1)
-      args = [partialApplicationView(env, st.world, args[0]!)];
-    const effectPolicy = groundedEffectPolicy(env, op!);
-    if (groundedEffectRejected(st.world, effectPolicy))
-      return [
-        [
-          finItem(
-            prev,
-            errTextAtom(x2, `${op}: irreversible effect is not allowed in an isolated branch`),
-            b,
-          ),
-        ],
-        st,
-      ];
-    const groundedV2 = groundedV2For(env, op!);
-    if (groundedV2 !== undefined)
-      return yield* startMinimalGroundedV2G(
-        groundedV2,
-        env,
-        st,
-        prev,
-        x2,
-        op!,
-        x.kind === "expr" ? x.items.slice(1) : x2.items.slice(1),
-        args,
-        b,
-        cursor,
-      );
-    const r = yield* callGroundedG(env, st.world, op!, args);
-    if (r.tag === "ok") {
-      recordGroundedOperationEffects(st.world, op!, effectPolicy, r.results);
-      const effects = applyReduceEffects(env, st, b, r.effects);
-      if (effects.tag === "error") return [[finItem(prev, errAtom(x2, effects.msg), b)], st];
-      return [r.results.map((res) => evalResult(prev, res, b, x2)), effects.state];
-    }
-    if (r.tag === "runtimeError") return [[finItem(prev, errAtom(x2, r.msg), b)], st];
-    if (r.tag === "incorrectArgument") return [[finItem(prev, errTextAtom(x2, r.msg), b)], st];
-    // noReduce
-  }
-  // Executable grounded-atom head: `(<gnd-with-exec> arg...)`. This is what makes a grounded operation
-  // produced at runtime (e.g. `(bind! abs (op-atom ...))` then `(abs -5)`, or the js-* interop) callable
-  // in-language, the TS-native analogue of Python's py-atom/OperationAtom. The interpreter dispatches
-  // built-in ops by symbol; this dispatches by the head atom's own `exec`.
-  if (x2.kind === "expr" && x2.items.length > 0) {
-    const head = x2.items[0]!;
-    if (head.kind === "gnd" && head.exec !== undefined) {
-      const groundedV2 = groundedV2Registration(head.exec);
-      const effectPolicy: GroundedEffectPolicy = groundedV2?.options.effects ?? {
-        classes: ["host-io"],
-        speculative: false,
-      };
-      if (groundedEffectRejected(st.world, effectPolicy))
-        return [
-          [
-            finItem(
-              prev,
-              errTextAtom(
-                x2,
-                "<grounded-exec>: irreversible effect is not allowed in an isolated branch",
-              ),
-              b,
-            ),
-          ],
-          st,
-        ];
-      const args = x2.items
-        .slice(1)
-        .map((a) => resolveStates(st.world, subTokens(st.world, a, env.intern)));
-      if (groundedV2 !== undefined)
-        return yield* startMinimalGroundedV2G(
-          groundedV2,
-          env,
-          st,
-          prev,
-          x2,
-          "<grounded-exec>",
-          x.kind === "expr" ? x.items.slice(1) : x2.items.slice(1),
-          args,
-          b,
-          cursor,
-        );
-      pendingAsyncOpBox.op = "<grounded-exec>";
-      type GroundedExecResult =
-        | { readonly tag: "ok"; readonly results: readonly Atom[] }
-        | { readonly tag: "error"; readonly message: string };
-      const settled = (yield driverEffect(
-        "<grounded-exec>",
-        (): GroundedExecResult => {
-          let results: readonly Atom[] | Promise<readonly Atom[]>;
-          try {
-            results = head.exec!(args, groundedCallContext(env, st.world));
-          } catch (error) {
-            if (isWorkerQuiescenceError(error)) throw error;
-            return {
-              tag: "error",
-              message: error instanceof Error ? error.message : String(error),
-            };
-          }
-          if (isPromiseLike(results)) throw new AsyncInSyncError("<grounded-exec>");
-          return { tag: "ok", results };
-        },
-        async (signal): Promise<GroundedExecResult> => {
-          try {
-            const results = await head.exec!(
-              args,
-              signal === NEVER_ABORTED_SIGNAL
-                ? groundedCallContext(env, st.world)
-                : groundedCallContextWithSignal(env, st.world, signal),
-            );
-            signal.throwIfAborted();
-            return { tag: "ok", results };
-          } catch (error) {
-            if (isWorkerQuiescenceError(error)) throw error;
-            signal.throwIfAborted();
-            return {
-              tag: "error",
-              message: error instanceof Error ? error.message : String(error),
-            };
-          }
-        },
-      )) as GroundedExecResult;
-      if (settled.tag === "error") return [[finItem(prev, errAtom(x2, settled.message), b)], st];
-      recordGroundedOperationEffects(st.world, "<grounded-exec>", effectPolicy, settled.results);
-      return [settled.results.map((res) => evalResult(prev, res, b, x2)), st];
-    }
-  }
-  if (isEmbeddedOp(x2)) return [[{ stack: admitAtom(x2, prev), bnd: b }], st];
-  return queryOp(env, st, prev, x2, b);
-}
-
-// ---------- final-item helpers ----------
-
-// ---------- types ----------
-
-// ---------- conjunctive match ----------
-
-// ---------- get-doc ----------
 
 // ---------- the step function ----------
 function* interpretStack1G(
