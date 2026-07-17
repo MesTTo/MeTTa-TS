@@ -981,9 +981,12 @@ describe("Grounded V2 binding answer cost", () => {
     registerDeltaLaw(env, true, box);
     const narrow = marginalAnswerMs(env, box, 512);
     const wide = marginalAnswerMs(env, box, 2_048);
-    // O(N*B) makes the marginal answer cost track the caller frame (a 4x frame reads ~4x);
-    // O(D log B) keeps the marginal within log-factor noise of the narrow frame.
-    expect(wide).toBeLessThan(Math.max(narrow * 2.5, narrow + 0.005));
+    // O(N*B) makes the marginal answer cost track the caller frame (a 4x frame reads ~4x, and
+    // measured about 283 ms per answer before U8), while O(D log B) measures in single-digit
+    // microseconds. The 0.05 ms absolute slack absorbs sustained parallel-suite CPU contention
+    // (worst observed inflation ~0.016 ms) and still fails any frame-sized implementation by
+    // three orders of magnitude.
+    expect(wide).toBeLessThan(Math.max(narrow * 2.5, narrow + 0.05));
   }, 60_000);
 
   it("scales zero-delta answers with the answer count, not the caller frame", () => {
@@ -992,7 +995,7 @@ describe("Grounded V2 binding answer cost", () => {
     registerDeltaLaw(env, false, box);
     const narrow = marginalAnswerMs(env, box, 512);
     const wide = marginalAnswerMs(env, box, 2_048);
-    expect(wide).toBeLessThan(Math.max(narrow * 2.5, narrow + 0.005));
+    expect(wide).toBeLessThan(Math.max(narrow * 2.5, narrow + 0.05));
   }, 60_000);
 });
 
