@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { emptyPMap, pmGet, pmSet, type PMap } from "./pmap";
+import { readEnv } from "./env";
 import {
   orderTreeDelete,
   orderTreeSet,
@@ -27,14 +28,39 @@ function encodeKey(key: PersistentKey): string {
   return typeof key === "string" ? `s:${key}` : `n:${String(key === 0 ? 0 : key)}`;
 }
 
+interface SmallEntry<K extends PersistentKey, V> {
+  readonly key: K;
+  readonly value: V;
+  readonly encoded: string;
+}
+
+// Below this entry count the map is one immutable array instead of a hash trie plus an order
+// tree: a linear scan over a few encoded keys beats hashing into either structure, and a write
+// copies one small array instead of allocating trie and tree spines (Clojure's
+// PersistentArrayMap pattern). A map that grows past the threshold promotes and never demotes,
+// so large maps always take the O(log n) trie. 32 is measured, not assumed: on the frame-shaped
+// mix (fork + write + reads + iterate) the array leads at every size up to 64, and on the
+// build-only worst case (n fresh inserts, where each array write copies O(n)) the curves cross
+// near n = 200 (array about 1.9*n^2 ns, trie about 392*n ns), so 32 keeps at least a 2x lead on
+// both curves with a wide margin before the quadratic tail. `METTA_SMALL_MAP_MAX` overrides the
+// threshold for A/B measurement (0 disables the array mode entirely).
+const SMALL_MAX = (() => {
+  const raw = readEnv("METTA_SMALL_MAP_MAX");
+  const parsed = raw === undefined ? Number.NaN : Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 32;
+})();
+
 /**
- * A Map-compatible mutable handle over an immutable hash-trie snapshot.
+ * A Map-compatible mutable handle over an immutable snapshot: an array below `SMALL_MAX`
+ * entries, a hash-trie plus order-tree above it.
  *
  * `fork` allocates one handle and shares the complete snapshot. A later write
- * replaces only the writing handle's trie and order-tree roots. Iteration walks
- * only live order entries and retains JavaScript Map insertion order.
+ * replaces only the writing handle's storage root (copy-on-write in the array
+ * representation). Iteration walks only live entries and retains JavaScript Map
+ * insertion order.
  */
 export class ForkableMap<K extends PersistentKey, V> implements Map<K, V> {
+  #small: readonly SmallEntry<K, V>[] | null = [];
   #entries: PMap<StoredEntry<K, V>> = emptyPMap;
   #order: PersistentOrderTree<OrderEntry<K>> | null = null;
   #size = 0;
@@ -56,6 +82,7 @@ export class ForkableMap<K extends PersistentKey, V> implements Map<K, V> {
   /** Return an independently mutable handle sharing this handle's immutable storage. */
   fork(): ForkableMap<K, V> {
     const fork = new ForkableMap<K, V>();
+    fork.#small = this.#small;
     fork.#entries = this.#entries;
     fork.#order = this.#order;
     fork.#size = this.#size;
@@ -64,6 +91,7 @@ export class ForkableMap<K extends PersistentKey, V> implements Map<K, V> {
   }
 
   clear(): void {
+    this.#small = [];
     this.#entries = emptyPMap;
     this.#order = null;
     this.#size = 0;
@@ -71,9 +99,18 @@ export class ForkableMap<K extends PersistentKey, V> implements Map<K, V> {
   }
 
   delete(key: K): boolean {
+    const small = this.#small;
+    if (small !== null) {
+      const encoded = encodeKey(key);
+      const index = small.findIndex((entry) => entry.encoded === encoded);
+      if (index < 0) return false;
+      this.#small = [...small.slice(0, index), ...small.slice(index + 1)];
+      this.#size -= 1;
+      return true;
+    }
     const encoded = encodeKey(key);
-    if (pmGet(this.#entries, encoded) === undefined) return false;
-    const current = pmGet(this.#entries, encoded)!;
+    const current = pmGet(this.#entries, encoded);
+    if (current === undefined) return false;
     this.#entries = pmSet(this.#entries, encoded, undefined);
     this.#order = orderTreeDelete(this.#order, current.order);
     this.#size -= 1;
@@ -81,14 +118,43 @@ export class ForkableMap<K extends PersistentKey, V> implements Map<K, V> {
   }
 
   get(key: K): V | undefined {
+    const small = this.#small;
+    if (small !== null) {
+      const encoded = encodeKey(key);
+      for (const entry of small) if (entry.encoded === encoded) return entry.value;
+      return undefined;
+    }
     return pmGet(this.#entries, encodeKey(key))?.value;
   }
 
   has(key: K): boolean {
+    const small = this.#small;
+    if (small !== null) {
+      const encoded = encodeKey(key);
+      for (const entry of small) if (entry.encoded === encoded) return true;
+      return false;
+    }
     return pmGet(this.#entries, encodeKey(key)) !== undefined;
   }
 
   set(key: K, value: V): this {
+    const small = this.#small;
+    if (small !== null) {
+      const encoded = encodeKey(key);
+      const index = small.findIndex((entry) => entry.encoded === encoded);
+      if (index >= 0) {
+        const next = small.slice();
+        next[index] = { key, value, encoded };
+        this.#small = next;
+        return this;
+      }
+      if (small.length < SMALL_MAX) {
+        this.#small = [...small, { key, value, encoded }];
+        this.#size += 1;
+        return this;
+      }
+      this.#promote(small);
+    }
     const encoded = encodeKey(key);
     const current = pmGet(this.#entries, encoded);
     if (current !== undefined) {
@@ -101,6 +167,19 @@ export class ForkableMap<K extends PersistentKey, V> implements Map<K, V> {
     this.#order = orderTreeSet(this.#order, order, { key, encoded });
     this.#size += 1;
     return this;
+  }
+
+  #promote(small: readonly SmallEntry<K, V>[]): void {
+    this.#small = null;
+    for (const entry of small) {
+      const order = this.#nextOrder++;
+      this.#entries = pmSet(this.#entries, entry.encoded, {
+        key: entry.key,
+        value: entry.value,
+        order,
+      });
+      this.#order = orderTreeSet(this.#order, order, { key: entry.key, encoded: entry.encoded });
+    }
   }
 
   *entries(): MapIterator<[K, V]> {
@@ -123,7 +202,12 @@ export class ForkableMap<K extends PersistentKey, V> implements Map<K, V> {
     for (const [key, value] of this) callbackfn.call(thisArg, value, key, this);
   }
 
-  *#orderedEntries(): Generator<StoredEntry<K, V>> {
+  *#orderedEntries(): Generator<StoredEntry<K, V> | SmallEntry<K, V>> {
+    const small = this.#small;
+    if (small !== null) {
+      yield* small;
+      return;
+    }
     for (const ordered of orderTreeValues(this.#order)) {
       const current = pmGet(this.#entries, ordered.encoded);
       if (current !== undefined) yield current;
