@@ -12,8 +12,6 @@ import {
   expr,
   type ExprAtom,
   gint,
-  type GroundedExec,
-  type GroundedMatch,
   hashOf,
   internAtom,
   internBuiltExpr,
@@ -45,7 +43,6 @@ import {
   emptyBindingFrame,
   frameDeltaView,
 } from "./binding-frame";
-import { BindingPacketRegistry } from "./binding-packet";
 import {
   type BindingRel,
   type Bindings,
@@ -95,7 +92,6 @@ import {
 import { runDistinctIntRelation } from "./distinct-int";
 import {
   defaultEffectCommitment,
-  EFFECT_CLASSES,
   EffectAudit,
   type EffectClass,
   type EffectCommitment,
@@ -104,6 +100,60 @@ import {
 } from "./effect-journal";
 import { readEnv } from "./env";
 import { infrastructureFaultFromUnknown, type InfrastructureFaultOutcome } from "./eval-outcome";
+import {
+  type ActiveGroundedV2Call,
+  type AsyncGroundFn,
+  AsyncInSyncError,
+  type BranchEffectPayload,
+  type CompleteGroundedCallContext,
+  cons,
+  DRIVER_EFFECT,
+  driverEffect,
+  type DriverEffect,
+  DualModeSearchCursor,
+  errTextAtom,
+  type EvaluationContext,
+  type EvaluationScope,
+  frame,
+  type GroundedContextIdentity,
+  type GroundedEffectPolicy,
+  type HostImportFn,
+  inst,
+  type Item,
+  type JournalWorldDelta,
+  type MinEnv,
+  type MinimalGroundedV2Continuation,
+  type MinimalMettaCallContinuation,
+  type MinimalSearchAnswer,
+  type NamedSpace,
+  type RuntimeAllocationLane,
+  type St,
+  type Stack,
+  type StreamingIsolatedBranches,
+  type TypeView,
+  type World,
+  type WorldMutation,
+} from "./eval/machine";
+import {
+  admitAtom,
+  argMask,
+  bindingPacketVisibleVariables,
+  chainLiveVars,
+  collapseBindDiscardsBindings,
+  evalResult,
+  finItem,
+  headKey,
+  isEmbeddedOp,
+  isFinal,
+  legacyHyperposeEffect,
+  lowerFunctionHead,
+  malformedCoreInstructionAtom,
+  opOf,
+  queryVarsOf,
+  scopeVars,
+  skipApplicationCheck,
+  strictArityError,
+} from "./eval/terms";
 import { FlatAtomSpace } from "./flat-atomspace";
 import {
   closeGeneratorAsync as closeDrivenGeneratorAsync,
@@ -124,10 +174,8 @@ import {
   type GroundedOperationV2Registration,
   type GroundedStart,
   groundedV2AsyncAdapter,
-  groundedV2MatcherAdapter,
   groundedV2Registration,
   groundedV2SyncAdapter,
-  markGroundedV2Registration,
 } from "./grounded-v2";
 import { instantiate } from "./instantiate";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
@@ -153,7 +201,7 @@ import {
   type ResourcePolicy,
   type ResourceSnapshot,
 } from "./resources";
-import { asRevisionMap, collectionRevision, RevisionMap, RevisionSet } from "./revision-collection";
+import { collectionRevision, RevisionMap, RevisionSet } from "./revision-collection";
 import {
   type AsyncSearchCursor,
   DEFAULT_SEARCH_QUANTUM,
@@ -172,7 +220,6 @@ import {
   type SyncSearchCursor,
   validateChildEvent,
 } from "./search-cursor";
-import { tryFormatTransportAtom } from "./standard-syntax";
 import { stdlibDocAtoms } from "./stdlib";
 import { runStructuredTaskGroup } from "./structured-task-group";
 import { applySubst, type Subst } from "./substitution";
@@ -200,45 +247,50 @@ import { Trail, unifyTrail } from "./trail";
 import { legacyFreshVariableSuffix, uniqueVariablesInAtoms, VariableScope } from "./variable-scope";
 import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 import { isWorkerQuiescenceError } from "./worker-protocol";
-import { isWorkerReplaySafeAtom } from "./worker-replay";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 import {
-  type ActiveGroundedV2Call,
-  type AsyncGroundFn,
-  AsyncInSyncError,
-  type BranchEffectPayload,
-  type CompleteGroundedCallContext,
-  DRIVER_EFFECT,
-  type DriverEffect,
-  DualModeSearchCursor,
-  type EvaluationContext,
-  type EvaluationScope,
-  type Frame,
-  type GroundedContextIdentity,
-  type GroundedEffectPolicy,
-  type HostImportFn,
-  type Item,
-  type JournalWorldDelta,
-  type MinEnv,
-  type MinimalGroundedV2Continuation,
-  type MinimalMettaCallContinuation,
-  type MinimalSearchAnswer,
-  type NamedSpace,
-  type RuntimeAllocationLane,
-  type St,
-  type Stack,
-  type StaticNestedMatchIndex,
-  type StreamingIsolatedBranches,
-  type TypeView,
-  type World,
-  type WorldMutation,
-  cons,
-  driverEffect,
-  errTextAtom,
-  frame,
-  inst,
-} from "./eval/machine";
+  type CachedNamedEnvironment,
+  DEFAULT_RUNTIME_CAPABILITIES,
+  KEY_SEP,
+  activeProgramSnapshots,
+  activeSpaceAtom,
+  activeSpaceName,
+  addGroundedOperationType,
+  argKey,
+  bindingPacketRegistry,
+  detachProgramCollectionsIfShared,
+  emptyEnv,
+  emptyStaticNestedMatchIndex,
+  evaluationCacheEnvironment,
+  groundedV2RegistrationRecord,
+  installGroundedEffectPolicy,
+  invalidateGroundedRegistration,
+  invalidateTabling,
+  isNamedEvaluationEnvironment,
+  matchesAnyNestedHead,
+  namedEnvironmentCache,
+  namedEvaluationEnvironments,
+  nestedArgHead,
+  normalizedGroundedEffectPolicy,
+  orderedIndexedAtoms,
+  pinnedProgramEnvironments,
+  pinnedProgramOwners,
+  programIdentityEnvironment,
+  pushTo,
+  pushUniqueType,
+  rootContextEnvironments,
+  rootEvaluationEnvironment,
+  runtimeModedPureCache,
+  runtimePureCache,
+  runtimeTableWorthCache,
+} from "./eval/env";
+export {
+  emptyEnv,
+  groundedExecutableV2,
+  groundedHostImportV2,
+  groundedMatcherV2,
+} from "./eval/env";
 export {
   type AsyncGroundFn,
   AsyncInSyncError,
@@ -975,151 +1027,6 @@ const errAtom = (a: Atom, msg: string): Atom => expr([sym("Error"), a, sym(msg)]
 const makeExpr = (_env: MinEnv, items: readonly Atom[]): ExprAtom => expr(items);
 
 // ---------- atom destructuring helpers ----------
-function opOf(a: Atom): string | undefined {
-  return a.kind === "expr" && a.items.length > 0 && a.items[0]!.kind === "sym"
-    ? (a.items[0] as { name: string }).name
-    : undefined;
-}
-
-function isStaticProgramWorld(world: World): boolean {
-  return (
-    world.generation === 0 &&
-    world.moduleInstallations.length === 0 &&
-    world.transactionDepth === 0 &&
-    world.spaces.size === 0 &&
-    world.store.size === 0 &&
-    world.tokens.size === 0 &&
-    world.selfExtra === null &&
-    world.flatSelfExtra === undefined &&
-    world.selfRules.size === 0 &&
-    world.selfVarRules.length === 0 &&
-    world.removedStatic === null &&
-    !world.hasTypeMutations &&
-    world.maxStackDepth === 0
-  );
-}
-
-function legacyHyperposeBranchSources(
-  env: MinEnv,
-  world: World,
-  bindings: Bindings,
-  argument: Atom,
-): string[] | undefined {
-  if (!isStaticProgramWorld(world)) return undefined;
-  const call = inst(env, bindings, argument);
-  if (call.kind !== "expr" || opOf(call) !== "hyperpose" || call.items.length !== 2)
-    return undefined;
-  const tuple = call.items[1]!;
-  if (tuple.kind !== "expr" || tuple.items.length === 0) return undefined;
-  const safeFunctors = env.workerReplaySafeFunctors;
-  if (safeFunctors === undefined) return undefined;
-  const sources: string[] = [];
-  for (const branch of tuple.items) {
-    if (!branch.ground || !isWorkerReplaySafeAtom(env, branch, safeFunctors)) return undefined;
-    const source = tryFormatTransportAtom(branch, "value");
-    if (source === undefined) return undefined;
-    sources.push(source);
-  }
-  return sources;
-}
-
-function legacyHyperposeEffect(
-  env: MinEnv,
-  state: St,
-  fuel: number,
-  bindings: Bindings,
-  argument: Atom,
-): DriverEffect<{ readonly atoms: Atom[]; readonly counterDelta: number } | undefined> | undefined {
-  if (env.parEval === undefined && env.parEvalAsync === undefined) return undefined;
-  const branchSources = legacyHyperposeBranchSources(env, state.world, bindings, argument);
-  if (branchSources === undefined) return undefined;
-  const select = (
-    branches: readonly ({ readonly atoms: Atom[]; readonly counterDelta: number } | null)[],
-  ): { readonly atoms: Atom[]; readonly counterDelta: number } | undefined => {
-    if (branches.some((branch) => branch === null)) return undefined;
-    const completed = branches as readonly {
-      readonly atoms: Atom[];
-      readonly counterDelta: number;
-    }[];
-    const selected = completed.find((branch) => branch.atoms.length > 0) ?? {
-      atoms: [],
-      counterDelta: Math.max(0, ...completed.map((branch) => branch.counterDelta)),
-    };
-    if (
-      selected.atoms.some((atom) => !atom.ground) ||
-      selected.counterDelta > Number.MAX_SAFE_INTEGER - state.counter
-    )
-      return undefined;
-    return selected;
-  };
-  return driverEffect(
-    "legacy-hyperpose",
-    () => {
-      if (env.parEval === undefined) throw new AsyncInSyncError("legacy-hyperpose");
-      return select(env.parEval(branchSources, true, fuel, state.counter));
-    },
-    async (signal) =>
-      select(
-        env.parEvalAsync !== undefined
-          ? await env.parEvalAsync(branchSources, true, signal, fuel, state.counter)
-          : env.parEval!(branchSources, true, fuel, state.counter),
-      ),
-  );
-}
-
-const EMBEDDED = new Set([
-  "eval",
-  "evalc",
-  "chain",
-  "unify",
-  "cons-atom",
-  "decons-atom",
-  "function",
-  "collapse-bind",
-  "superpose-bind",
-  "metta",
-  "metta-thread",
-  "capture",
-  "context-space",
-  "match",
-  "get-type",
-  "get-type-space",
-  "check-types",
-  "get-doc",
-  "new-state",
-  "get-state",
-  "change-state!",
-  "new-space",
-  "new-mork-space",
-  "fork-space",
-  "add-atom",
-  "remove-atom",
-  "get-atoms",
-  "bind!",
-  "import!",
-  // Sets interpreter settings in-language (Hyperon `pragma!`); stateful, so handled here not as a pure op.
-  "pragma!",
-  // TS-native extension (not upstream MeTTa): atomic space mutation with rollback.
-  "transaction",
-  // TS-native concurrency primitives (async-only); see docs/.../concurrency-primitives.md.
-  "par",
-  "race",
-  "once",
-  "with-mutex",
-]);
-function isEmbeddedOp(a: Atom): boolean {
-  const op = opOf(a);
-  return op !== undefined && EMBEDDED.has(op);
-}
-
-const varsCopy = (prev: Stack): readonly string[] => (prev !== null ? prev.head.vars : []);
-
-function headKey(a: Atom): string | undefined {
-  if (a.kind === "sym") return a.name;
-  if (a.kind === "expr" && a.items.length > 0 && a.items[0]!.kind === "sym")
-    return (a.items[0] as { name: string }).name;
-  return undefined;
-}
 
 // A head some reduction can fire on: it carries an equation (static or runtime), a type signature (so
 // type-directed evaluation applies), or a grounded/built-in implementation. Its negation is Curry's
@@ -1180,124 +1087,8 @@ function isNormalFormAssumingVars(env: MinEnv, w: World, t: Atom): boolean {
 }
 
 // ---------- control admission ----------
-function malformedCoreInstruction(a: Atom, operation: string, expected: string): Frame {
-  return frame(errTextAtom(a, `${operation}: expected ${expected}`), "none", [], "deliver");
-}
-
-function malformedCoreInstructionAtom(a: Atom, operation: string): Atom | undefined {
-  switch (operation) {
-    case "eval":
-      return errTextAtom(a, "eval: expected one atom");
-    case "chain":
-      return errTextAtom(a, "chain: expected a source, variable, and template");
-    case "function":
-      return errTextAtom(a, "function: expected one body");
-    case "unify":
-      return errTextAtom(a, "unify: expected an atom, pattern, then branch, and else branch");
-    default:
-      return undefined;
-  }
-}
-
-/** Admit an atom as code. Delivered atoms never pass through this function implicitly. */
-function admitAtom(a: Atom, prev: Stack, callAtom?: Atom): Stack {
-  if (a.kind === "expr") {
-    const op = opOf(a);
-    const it = a.items;
-    if (op === "chain" && it.length === 4 && it[2]!.kind === "var") {
-      return admitAtom(it[1]!, cons(frame(a, "chain", varsCopy(prev)), prev));
-    }
-    if (op === "function" && it.length === 2) {
-      const delimiter = frame(a, "function", varsCopy(prev), "execute", callAtom ?? a);
-      return admitAtom(it[1]!, cons(delimiter, prev));
-    }
-    if (op === "unify" && it.length === 5) {
-      return cons(frame(a, "none"), prev);
-    }
-    if (op === "chain") {
-      return cons(malformedCoreInstruction(a, "chain", "a source, variable, and template"), prev);
-    }
-    if (op === "function") return cons(malformedCoreInstruction(a, "function", "one body"), prev);
-    if (op === "unify")
-      return cons(
-        malformedCoreInstruction(a, "unify", "an atom, pattern, then branch, and else branch"),
-        prev,
-      );
-  }
-  return cons(frame(a, "none", varsCopy(prev)), prev);
-}
-
-function finItem(st: Stack, a: Atom, b: Bindings): Item {
-  return { stack: cons(frame(a, "none", [], "deliver"), st), bnd: b };
-}
-
-function evalResult(prev: Stack, r: Atom, b: Bindings, callAtom?: Atom): Item {
-  if (opOf(r) === "function") return { stack: admitAtom(r, prev, callAtom), bnd: b };
-  return finItem(prev, r, b);
-}
 
 // ---------- env (MinEnv) ----------
-
-const DEFAULT_RUNTIME_CAPABILITIES: readonly string[] = Object.freeze([
-  "atomspace-read",
-  "atomspace-write",
-  "grounded-exec",
-  "import",
-]);
-
-interface NamedEvaluationEnvironment {
-  readonly root: MinEnv;
-  readonly name: string;
-  readonly source: NamedSpace | undefined;
-}
-
-const namedEvaluationEnvironments = new WeakMap<MinEnv, NamedEvaluationEnvironment>();
-const rootContextEnvironments = new WeakMap<MinEnv, MinEnv>();
-
-interface CachedNamedEnvironment {
-  readonly source: NamedSpace | undefined;
-  readonly shared: readonly Atom[] | undefined;
-  readonly expectedType: Atom;
-  readonly typeProgramVersion: number;
-  readonly groundingVersion: number;
-  readonly syncRegistry: GroundingTable;
-  readonly asyncRegistry: Map<string, AsyncGroundFn>;
-  readonly groundedEffects: Map<string, GroundedEffectPolicy> | undefined;
-  readonly syncSize: number;
-  readonly asyncSize: number;
-  readonly syncRevision: number | undefined;
-  readonly asyncRevision: number | undefined;
-  readonly groundedEffectRevision: number | undefined;
-  readonly imports: Map<string, Atom[]>;
-  readonly importRevision: number | undefined;
-  readonly capabilities: ReadonlySet<string> | undefined;
-  readonly capabilityRevision: number | undefined;
-  readonly hostImport: HostImportFn | undefined;
-  readonly environment: MinEnv;
-}
-
-const namedEnvironmentCache = new WeakMap<MinEnv, Map<string, readonly CachedNamedEnvironment[]>>();
-
-function rootEvaluationEnvironment(env: MinEnv): MinEnv {
-  return namedEvaluationEnvironments.get(env)?.root ?? rootContextEnvironments.get(env) ?? env;
-}
-
-function isNamedEvaluationEnvironment(env: MinEnv): boolean {
-  return env.evaluationContext !== undefined && namedEvaluationEnvironments.has(env);
-}
-
-function evaluationCacheEnvironment(env: MinEnv): MinEnv {
-  return isNamedEvaluationEnvironment(env) ? env : rootEvaluationEnvironment(env);
-}
-
-function activeSpaceAtom(env: MinEnv): Atom {
-  return env.evaluationContext?.currentSpace ?? sym("&self");
-}
-
-function activeSpaceName(env: MinEnv): string {
-  const space = activeSpaceAtom(env);
-  return space.kind === "sym" ? space.name : "&self";
-}
 
 function withExpectedEvaluationType(env: MinEnv, expectedType: Atom): MinEnv {
   const currentExpected = env.evaluationContext?.expectedType ?? UNDEF;
@@ -1312,237 +1103,6 @@ function withExpectedEvaluationType(env: MinEnv, expectedType: Atom): MinEnv {
   if (named === undefined) rootContextEnvironments.set(view, rootEvaluationEnvironment(env));
   else namedEvaluationEnvironments.set(view, named);
   return view;
-}
-
-const bindingPacketRegistries = new WeakMap<MinEnv, BindingPacketRegistry>();
-const pinnedProgramOwners = new WeakMap<MinEnv, MinEnv>();
-const pinnedProgramEnvironments = new WeakSet<MinEnv>();
-const activeProgramSnapshots = new WeakMap<MinEnv, Set<MinEnv>>();
-
-function programIdentityEnvironment(env: MinEnv): MinEnv {
-  const root = rootEvaluationEnvironment(env);
-  return pinnedProgramOwners.get(root) ?? root;
-}
-
-function bindingPacketRegistry(env: MinEnv): BindingPacketRegistry {
-  const owner = programIdentityEnvironment(env);
-  let registry = bindingPacketRegistries.get(owner);
-  if (registry === undefined) {
-    registry = new BindingPacketRegistry("binding-packets");
-    bindingPacketRegistries.set(owner, registry);
-  }
-  return registry;
-}
-
-function emptyStaticNestedMatchIndex(): StaticNestedMatchIndex {
-  return { byHead: new Map(), wildcardAtPos: new Map(), nonGroundFactHeads: new Set() };
-}
-
-function cloneArrayMap<T>(source: ReadonlyMap<string, readonly T[]>): Map<string, T[]> {
-  return new Map([...source].map(([key, values]) => [key, values.slice()]));
-}
-
-/** Detach mutable static indexes only when a live async snapshot still shares them. */
-function detachProgramCollectionsIfShared(env: MinEnv): void {
-  const snapshots = activeProgramSnapshots.get(env);
-  const liveSnapshotSharesProgram =
-    snapshots !== undefined && [...snapshots].some((snapshot) => snapshot.atoms === env.atoms);
-  if (env.staticProgramShared !== true && !liveSnapshotSharesProgram) return;
-  env.ruleIndex = cloneArrayMap(env.ruleIndex);
-  env.varRules = env.varRules.slice();
-  env.varRulesVar = env.varRulesVar.slice();
-  env.sigs = cloneArrayMap(env.sigs);
-  env.atoms = env.atoms.slice();
-  env.types = cloneArrayMap(env.types);
-  env.exprTypes = env.exprTypes.slice();
-  env.factIndex = cloneArrayMap(env.factIndex);
-  env.argIndex = cloneArrayMap(env.argIndex);
-  env.nonGroundAtPos = cloneArrayMap(env.nonGroundAtPos);
-  env.varHeadedFacts = env.varHeadedFacts.slice();
-  if (env.groundedEffects !== undefined) env.groundedEffects = new RevisionMap(env.groundedEffects);
-  if (env.nestedMatchIndex !== undefined) {
-    env.nestedMatchIndex = {
-      byHead: cloneArrayMap(env.nestedMatchIndex.byHead),
-      wildcardAtPos: cloneArrayMap(env.nestedMatchIndex.wildcardAtPos),
-      nonGroundFactHeads: new Set(env.nestedMatchIndex.nonGroundFactHeads),
-    };
-  }
-  env.staticProgramShared = false;
-}
-
-const KEY_SEP = "\x01";
-const ARG_SEP = "\x00";
-
-/** Index key for a ground-leaf first argument (symbol or grounded primitive); undefined for a variable,
- *  an expression, or a non-primitive grounded value (which are not first-argument indexable). */
-function argKey(a: Atom): string | undefined {
-  if (a.kind === "sym") return "s" + ARG_SEP + a.name;
-  if (a.kind === "gnd") {
-    if (a.match !== undefined) return undefined;
-    const v = a.value;
-    switch (v.g) {
-      case "int":
-      case "float":
-        // Ground equality compares mixed ints/floats through Number, so both kinds need the same key.
-        // Precision collisions for huge ints are safe because the matcher checks every candidate.
-        return "n" + ARG_SEP + Number(v.n);
-      case "str":
-        return "S" + ARG_SEP + v.s;
-      case "bool":
-        return "b" + ARG_SEP + (v.b ? "1" : "0");
-      default:
-        return undefined;
-    }
-  }
-  return undefined;
-}
-
-/** A fixed nested expression head that can safely prefilter full unification. */
-function nestedArgHead(a: Atom): string | undefined {
-  if (a.kind !== "expr") return undefined;
-  const head = a.items[0];
-  return head?.kind === "sym" ? head.name : undefined;
-}
-
-/** Whether a ground argument without a fixed symbol head may match a symbol-headed expression. */
-function matchesAnyNestedHead(a: Atom): boolean {
-  if (a.kind === "gnd") return a.match !== undefined;
-  if (a.kind !== "expr" || a.items.length === 0) return false;
-  const head = a.items[0]!;
-  return head.kind === "gnd" && head.match !== undefined;
-}
-
-function pushTo<T>(m: Map<string, T[]>, k: string, x: T): void {
-  const cur = m.get(k);
-  if (cur === undefined) m.set(k, [x]);
-  else cur.push(x);
-}
-
-/** Merge disjoint occurrence-id buckets without changing source order or duplicate multiplicity. */
-function orderedIndexedAtoms(
-  env: MinEnv,
-  indexed: readonly number[],
-  wildcards: readonly number[],
-): Atom[] {
-  const out: Atom[] = [];
-  let i = 0;
-  let j = 0;
-  while (i < indexed.length || j < wildcards.length) {
-    const indexedId = indexed[i];
-    const wildcardId = wildcards[j];
-    if (wildcardId === undefined || (indexedId !== undefined && indexedId < wildcardId)) {
-      out.push(env.atoms[indexedId!]!);
-      i += 1;
-    } else {
-      out.push(env.atoms[wildcardId]!);
-      j += 1;
-    }
-  }
-  return out;
-}
-
-function pushUniqueType(m: Map<string, Atom[]>, k: string, x: Atom): void {
-  const cur = m.get(k);
-  if (cur === undefined) m.set(k, [x]);
-  else if (!cur.some((e) => atomEq(e, x))) m.set(k, [...cur, x]);
-}
-
-function addGroundedOperationType(env: MinEnv, name: string, op: GroundFn): void {
-  const type = groundedOperationType(op);
-  if (type === undefined) return;
-  if (type.kind === "expr" && opOf(type) === "->") env.sigs.set(name, type.items.slice(1));
-  pushUniqueType(env.types, name, type);
-  env.typeCache = undefined;
-  env.typeProgramVersion = (env.typeProgramVersion ?? 0) + 1;
-}
-
-/** An empty environment for grounding table `gt`. Grow it with `addAtomToEnv`. */
-export function emptyEnv(gt: GroundingTable): MinEnv {
-  const groundingTable = asRevisionMap(gt);
-  const env: MinEnv = {
-    programVersion: 0,
-    ruleIndex: new Map(),
-    varRules: [],
-    varRulesVar: [],
-    sigs: new Map(),
-    typeProgramVersion: 0,
-    gt: groundingTable,
-    atoms: [],
-    types: new Map(),
-    imports: new RevisionMap(),
-    exprTypes: [],
-    agt: new RevisionMap(),
-    groundedEffects: new RevisionMap(),
-    groundingVersion: 0,
-    capabilities: new RevisionSet(DEFAULT_RUNTIME_CAPABILITIES),
-    mutexes: new Map(),
-    evaluatedAtoms: new WeakSet(),
-    factIndex: new Map(),
-    argIndex: new Map(),
-    nonGroundAtPos: new Map(),
-    nestedMatchIndex: emptyStaticNestedMatchIndex(),
-    varHeadedFacts: [],
-  };
-  for (const [name, op] of groundingTable) addGroundedOperationType(env, name, op);
-  return env;
-}
-
-const runtimePureCache = new Map<string, boolean>();
-const runtimeModedPureCache = new Map<string, boolean>();
-const runtimeTableWorthCache = new Map<string, boolean>();
-
-/** Static load (`addAtomToEnv`) changed rules or grounded-operation registration changed dispatch. */
-function invalidateTabling(env: MinEnv): void {
-  runtimePureCache.clear();
-  runtimeModedPureCache.clear();
-  runtimeTableWorthCache.clear();
-  env.workerReplaySafeFunctors = undefined;
-  if (env.compiled !== undefined) {
-    env.compiled.clear();
-    env.compileDirty = true;
-    env.compiledComplete = false;
-  }
-  if (env.tableSpace !== undefined) {
-    env.tableSpace.clear();
-    env.tablingDirty = true;
-  }
-}
-
-function invalidateGroundedRegistration(env: MinEnv): void {
-  env.evaluatedAtoms = new WeakSet();
-  invalidateTabling(env);
-  // Compiled nodes inline the standard grounded arithmetic and comparison semantics. A host can replace
-  // those names, so this environment must stay on dispatch-aware interpretation after registration.
-  env.compiled = undefined;
-  env.compileDirty = undefined;
-  env.compiledComplete = undefined;
-}
-
-const EFFECT_CLASS_SET: ReadonlySet<string> = new Set(EFFECT_CLASSES);
-
-function normalizedGroundedEffectPolicy(policy: GroundedEffectPolicy): GroundedEffectPolicy {
-  if (!Array.isArray(policy.classes) || policy.classes.length === 0)
-    throw new TypeError("grounded effect policy must declare at least one effect class");
-  if (typeof policy.speculative !== "boolean")
-    throw new TypeError("grounded effect policy speculative flag must be boolean");
-  const classes = [...new Set(policy.classes)];
-  if (classes.some((effectClass) => !EFFECT_CLASS_SET.has(effectClass)))
-    throw new TypeError("grounded effect policy contains an unknown effect class");
-  if (classes.includes("pure") && classes.length !== 1)
-    throw new TypeError("a pure grounded operation cannot declare another effect class");
-  return Object.freeze({
-    classes: Object.freeze(classes),
-    speculative: policy.speculative,
-  });
-}
-
-function installGroundedEffectPolicy(
-  env: MinEnv,
-  name: string,
-  policy: GroundedEffectPolicy,
-): void {
-  const policies = env.groundedEffects ?? (env.groundedEffects = new RevisionMap());
-  policies.set(name, policy);
 }
 
 /** Register a sync grounded operation and invalidate analyses that may have classified its name. */
@@ -1575,95 +1135,6 @@ export function registerAsyncGroundedOperation(
   env.groundingVersion = (env.groundingVersion ?? 0) + 1;
   installGroundedEffectPolicy(env, name, policy);
   invalidateGroundedRegistration(env);
-}
-
-function groundedV2RegistrationRecord(
-  operation: GroundedOperationV2,
-  options: GroundedOperationV2Options,
-): GroundedOperationV2Registration {
-  if (options.mode !== "sync" && options.mode !== "async")
-    throw new TypeError("grounded V2 mode must be 'sync' or 'async'");
-  const effects = normalizedGroundedEffectPolicy(options.effects);
-  const requiredCapabilities = [...new Set(options.requiredCapabilities ?? [])];
-  if (requiredCapabilities.some((capability) => capability.length === 0))
-    throw new TypeError("grounded V2 capabilities must not contain an empty name");
-  return Object.freeze({
-    operation,
-    options: Object.freeze({
-      mode: options.mode,
-      effects,
-      requiredCapabilities: Object.freeze(requiredCapabilities),
-    }),
-  });
-}
-
-function executableResults(result: ReduceResult): readonly Atom[] {
-  switch (result.tag) {
-    case "ok":
-      if (result.effects !== undefined && result.effects.length > 0)
-        throw new Error("direct grounded executable V2 calls cannot apply evaluator effects");
-      return result.results;
-    case "noReduce":
-      throw new Error("grounded executable V2 operation is stuck");
-    case "runtimeError":
-    case "incorrectArgument":
-      throw new Error(result.msg);
-  }
-}
-
-/** Create an executable grounded-atom function backed by the same V2 cursor protocol. */
-export function groundedExecutableV2(
-  operation: GroundedOperationV2,
-  options: GroundedOperationV2Options,
-): GroundedExec {
-  const registration = groundedV2RegistrationRecord(operation, options);
-  if (options.mode === "sync") {
-    const legacy = groundedV2SyncAdapter(registration);
-    return markGroundedV2Registration(
-      (args, context) => executableResults(legacy(args, context)),
-      registration,
-    );
-  }
-  const legacy = groundedV2AsyncAdapter(registration);
-  return markGroundedV2Registration(
-    async (args, context) => executableResults(await legacy(args, context)),
-    registration,
-  );
-}
-
-/** Create an `import!` host callback backed by the V2 cursor and fault protocol. */
-export function groundedHostImportV2(
-  operation: GroundedOperationV2,
-  options: GroundedOperationV2Options,
-): HostImportFn {
-  const registration = groundedV2RegistrationRecord(operation, options);
-  if (options.mode === "sync") {
-    const legacy = groundedV2SyncAdapter(registration);
-    return markGroundedV2Registration(
-      (space, file, context) => legacy([space, file], context),
-      registration,
-    );
-  }
-  const legacy = groundedV2AsyncAdapter(registration);
-  return markGroundedV2Registration(
-    async (space, file, context) => await legacy([space, file], context),
-    registration,
-  );
-}
-
-/** Create a finite custom matcher backed by the V2 termination and binding protocol. */
-export function groundedMatcherV2(
-  operation: GroundedOperationV2,
-  options: GroundedOperationV2Options,
-): GroundedMatch {
-  const registration = groundedV2RegistrationRecord(operation, options);
-  if (
-    registration.options.mode !== "sync" ||
-    registration.options.effects.classes.length !== 1 ||
-    registration.options.effects.classes[0] !== "pure"
-  )
-    throw new TypeError("grounded V2 custom matchers must be synchronous and pure");
-  return groundedV2MatcherAdapter(registration);
 }
 
 /** Register a pull-based grounded operation with an explicit execution and effect contract. */
@@ -5483,8 +4954,6 @@ function bindChainAnswer(
 }
 
 // ---------- final-item helpers ----------
-const isFinal = (it: Item): boolean =>
-  it.stack !== null && it.stack.tail === null && it.stack.head.fin;
 function finalPair(env: MinEnv, it: Item): ContextualPair {
   const f = it.stack;
   const selected = it.evaluationScope?.env;
@@ -5612,104 +5081,12 @@ function mergeRestrict(
   return restrictBnd(env, vars, merged.length > 0 ? merged[0]! : pb);
 }
 
-function queryVarsOf(args: readonly Atom[]): readonly string[] {
-  const out: string[] = [];
-  for (const a of args) if (!a.ground) out.push(...atomVars(a));
-  return out;
-}
-function scopeVars(env: MinEnv, b: Bindings, prev: Stack): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (let p = prev; p !== null; p = p.tail) collectVars(inst(env, b, p.head.atom), out, seen);
-  return out;
-}
-function chainLiveVars(cont: Atom, prev: Stack): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (let p = prev; p !== null; p = p.tail) collectVars(p.head.atom, out, seen);
-  collectVars(cont, out, seen);
-  return out;
-}
-
-function bindingPacketVisibleVariables(source: Atom, result: Atom, prev: Stack) {
-  const atoms: Atom[] = [source, result];
-  for (let frameStack = prev; frameStack !== null; frameStack = frameStack.tail)
-    atoms.push(frameStack.head.atom);
-  return uniqueVariablesInAtoms(atoms);
-}
-
-/** The stdlib `collapse` continuation observes only each pair's first item through `collapse-extract`. */
-function collapseBindDiscardsBindings(prev: Stack): boolean {
-  if (prev === null || prev.head.ret !== "chain") return false;
-  const outer = prev.head.atom;
-  if (outer.kind !== "expr" || opOf(outer) !== "chain" || outer.items.length !== 4) return false;
-  const packetVariable = outer.items[2]!;
-  const continuation = outer.items[3]!;
-  if (
-    packetVariable.kind !== "var" ||
-    continuation.kind !== "expr" ||
-    opOf(continuation) !== "chain" ||
-    continuation.items.length !== 4
-  )
-    return false;
-  const source = continuation.items[1]!;
-  if (source.kind !== "expr" || opOf(source) !== "eval" || source.items.length !== 2) return false;
-  const extract = source.items[1]!;
-  return (
-    extract.kind === "expr" &&
-    opOf(extract) === "collapse-extract" &&
-    extract.items.length === 2 &&
-    atomEq(extract.items[1]!, packetVariable)
-  );
-}
-
-function argMask(ts: Atom[] | undefined, arity: number): boolean[] {
-  const mask = new Array<boolean>(arity);
-  if (ts === undefined) {
-    mask.fill(true);
-    return mask;
-  }
-  // A parameter typed Atom/Variable/Expression accepts its argument unreduced (gradual top plus
-  // meta-types), so that position is not evaluated; every other position is. Checked by name to avoid
-  // allocating throwaway symbols for `atomEq` on this per-reduction hot path.
-  for (let i = 0; i < arity; i++) {
-    const t = ts[i];
-    mask[i] =
-      t === undefined ||
-      !(
-        t.kind === "sym" &&
-        (t.name === "Atom" || t.name === "Variable" || t.name === "Expression")
-      );
-  }
-  return mask;
-}
 function returnsAtom(env: MinEnv, w: World, a: Atom): boolean {
   const op = headKey(a);
   if (op === undefined) return false;
   const ts = typeViewFor(env, w).sigs.get(op);
   const last = ts && ts.length > 0 ? ts[ts.length - 1] : undefined;
   return last !== undefined && atomEq(last, sym("Atom"));
-}
-
-const lowerFunctionHead = /^[a-z_]/;
-const STRICT_HYPERON_ARITY = new Map<string, number>([
-  ["==", 2],
-  ["!=", 2],
-  ["=alpha", 2],
-  ["if-equal", 4],
-  ["unquote", 1],
-  ["cons-atom", 2],
-  ["size-atom", 1],
-]);
-
-function strictArityError(op: string, args: readonly Atom[]): Atom | null {
-  const arity = STRICT_HYPERON_ARITY.get(op);
-  if (arity === undefined || args.length === arity) return null;
-  return expr([sym("Error"), expr([sym(op), ...args]), sym("IncorrectNumberOfArguments")]);
-}
-
-function skipApplicationCheck(op: string, args: readonly Atom[]): boolean {
-  return op === "random-int" && (args.length === 2 || args.length === 3);
 }
 
 /** The arity admitted for PeTTa-style partial application: grounded ops use their `(-> ...)` signature,
