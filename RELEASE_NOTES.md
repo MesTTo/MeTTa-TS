@@ -10,7 +10,8 @@ npm install @metta-ts/core@experimental
 npm install @metta-ts/hyperon@experimental
 ```
 
-`npm install @metta-ts/core` continues to resolve the stable 1.1.6 release.
+`npm install @metta-ts/core` continues to resolve the stable release on the
+`latest` tag.
 
 ## Grounded operation V2 and streaming operations
 
