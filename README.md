@@ -36,6 +36,24 @@ metta-ts path/to/program.metta
 npx -p @metta-ts/node metta-ts path/to/program.metta
 ```
 
+### Experimental channel
+
+A prerelease line ships ahead of stable on the `experimental` npm dist-tag. It
+carries the in-progress Minimal MeTTa runtime and the Grounded V2 operation
+protocol: owned, pull-based answer streams with per-answer binding deltas and
+effects, and `MeTTa.registerStreamingOperation` on the runner. Opt in per package
+with the tag:
+
+```bash
+npm install @metta-ts/core@experimental
+npm install @metta-ts/hyperon@experimental
+```
+
+A plain `npm install @metta-ts/core` stays on the stable `latest` tag. The
+experimental surface may still change before it lands in a stable release; see the
+[`experimental` branch](https://github.com/MesTTo/MeTTa-TS/tree/experimental) and
+the [1.2.0-experimental.0 notes](https://github.com/MesTTo/MeTTa-TS/releases/tag/v1.2.0-experimental.0).
+
 ## Quick start
 
 Run MeTTa source from TypeScript with the core package:
