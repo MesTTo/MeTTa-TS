@@ -7,24 +7,19 @@ import {
   type Atom,
   atomEq,
   atomVars,
-  collectVars,
   emptyExpr,
   expr,
   type ExprAtom,
   gint,
-  hashOf,
-  internBuiltExpr,
-  type InternTable,
   isErrorAtom,
   metaType,
   sym,
   variable,
 } from "./atom";
-import { dedupAlphaStable, ExactAtomSet } from "./atom-set";
+import { dedupAlphaStable } from "./atom-set";
 import {
   emptyLog,
   idxCount,
-  logAppendAll,
   logFromArray,
   logGroundIdx,
   logNonGround,
@@ -37,10 +32,8 @@ import {
   type Bindings,
   emptyBindings,
   eqRelations,
-  fromRelations,
   hasLoop,
   lookupVal,
-  makeValRel,
   size,
   valEntries,
 } from "./bindings";
@@ -88,9 +81,6 @@ import {
   orderedIndexedAtoms,
   pinnedProgramEnvironments,
   rootEvaluationEnvironment,
-  runtimeModedPureCache,
-  runtimePureCache,
-  runtimeTableWorthCache,
 } from "./eval/env";
 import {
   type AnswerEmissionLifecycle,
@@ -157,6 +147,63 @@ import {
   type World,
   type WorldMutation,
 } from "./eval/machine";
+import {
+  allocateSpaceName,
+  allocateStateCell,
+  appendSpace,
+  applyAtomDelta,
+  assertJournalDeltasDoNotConflict,
+  awaitWithSignal,
+  type BranchStateDelta,
+  captureBranchStateDelta,
+  captureWorldDelta,
+  checkedCounterAdvance,
+  checkedGenerationAdvance,
+  freshenRule,
+  indexSelfRules,
+  multisetDelta,
+  mutexKey,
+  releaseChildWorldRuntimes,
+  stateHandle,
+  stateId,
+  subTokens,
+  typePrep,
+  type WorldDelta,
+  worldDeltasEqual,
+} from "./eval/par";
+import {
+  bindChainAnswer,
+  branchVariableNamespace,
+  candidatesW,
+  canMatchShallow,
+  checkedGroundedLanguageError,
+  checkGroundedEffectsScope,
+  closeGroundedV2G,
+  collectGroundedV2LegacyG,
+  consumeGroundedPayloadResources,
+  createGroundedV2Call,
+  groundedEffectPolicy,
+  groundedEffectRejected,
+  groundedV2Fault,
+  groundedV2For,
+  instantiateReduceEffects,
+  makeExpr,
+  mergeRestrict,
+  notReducibleA,
+  prepareGroundedAnswer,
+  pullGroundedV2G,
+  queryOp,
+  recordGroundedOperationEffects,
+  reduceEffectAtoms,
+  resolveAll,
+  resolveStates,
+  restrictBnd,
+  runtimeCandidates,
+  type SchedulerUnwindFailure,
+  startGroundedV2G,
+  unifyOp,
+  worldFreshVariableSuffix,
+} from "./eval/query";
 import {
   addStaticRemoval,
   disableTabling,
@@ -234,7 +281,6 @@ import {
   type PinnedAsyncEvaluation,
   recordWorldMutation,
   releaseWorldRuntime,
-  resolveTok,
   retireCachedProgramSnapshot,
   UNDEF,
   withWorldRuntimePolicy,
@@ -257,24 +303,16 @@ import {
   groundedV2Registration,
   groundedV2SyncAdapter,
 } from "./grounded-v2";
-import { instantiate } from "./instantiate";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { applyConsAtom, applyDeconsAtom } from "./minimal-instruction";
 import { addInt, type IntVal, subInt } from "./number";
 import { format } from "./parser";
 import { ForkableMap, forkMap } from "./persistent-collection";
 import {
-  containsOpaqueApplication,
-  isVariableHeadedPattern,
-  scanReductionDependencies,
-} from "./reduction-dependency";
-import {
   type CancellationReason,
   normalizeCancellationReason,
-  type ResourceLease,
   ResourceLimitError,
 } from "./resources";
-import { collectionRevision } from "./revision-collection";
 import {
   type AsyncSearchCursor,
   DEFAULT_SEARCH_QUANTUM,
@@ -294,58 +332,45 @@ import {
 } from "./search-cursor";
 import { stdlibDocAtoms } from "./stdlib";
 import { runStructuredTaskGroup } from "./structured-task-group";
-import { applySubst, type Subst } from "./substitution";
-import { type ActiveTableEntry, type TableKey } from "./table-space";
-import {
-  functorCallCount,
-  IMPURE_OPS,
-  isModedTablingImpureHead,
-  isTablingImpureHead,
-  keyWellFormed,
-  MODED_IMPURE_OPS,
-} from "./tabling";
+import { type ActiveTableEntry } from "./table-space";
+import { keyWellFormed, MODED_IMPURE_OPS } from "./tabling";
 import { isRuntimeId, type StateId } from "./trace";
 import { Trail, unifyTrail } from "./trail";
-import { legacyFreshVariableSuffix } from "./variable-scope";
 import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 import { isWorkerQuiescenceError } from "./worker-protocol";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 import {
-  type SchedulerUnwindFailure,
-  type StateCellId,
-  bindChainAnswer,
-  branchVariableNamespace,
-  canMatchShallow,
-  candidatesW,
-  checkGroundedEffectsScope,
-  checkedGroundedLanguageError,
-  closeGroundedV2G,
-  collectGroundedV2LegacyG,
-  consumeGroundedPayloadResources,
-  createGroundedV2Call,
-  groundedEffectPolicy,
-  groundedEffectRejected,
-  groundedV2Fault,
-  groundedV2For,
-  instantiateReduceEffects,
-  makeExpr,
-  mergeRestrict,
-  notReducibleA,
-  parsedStateId,
-  prepareGroundedAnswer,
-  pullGroundedV2G,
-  queryOp,
-  recordGroundedOperationEffects,
-  reduceEffectAtoms,
-  resolveAll,
-  resolveStates,
-  restrictBnd,
-  runtimeCandidates,
-  startGroundedV2G,
-  unifyOp,
-  worldFreshVariableSuffix,
-} from "./eval/query";
+  type CollapseRoute,
+  type CompletedTableKey,
+  DISTINCT_RESOURCE_LIMIT,
+  DONE_UNIT,
+  canRunChoicePlan,
+  choiceBranchesParallelSafe,
+  choicePlanConstructor,
+  choicePlanDataExpression,
+  collapseRouteEnabled,
+  conjCountEnabled,
+  containsImpureHead,
+  countAggregateEnabled,
+  countOnlyMatch,
+  dedupGroundPairs,
+  distinctGroundEnabled,
+  enforceDistinctLimit,
+  freshenModedResult,
+  groundTableVersionIfAdmissible,
+  hasAnyAtomVar,
+  isClosedChoiceValue,
+  rememberGroundTable,
+  rememberModedTable,
+  runtimeFunctorPureModed,
+  runtimeFunctorTableWorth,
+  splitVoidBuild,
+  staticCustomMatcherCache,
+  tailMatchBuild,
+  voidBuildEnabled,
+} from "./eval/tabling";
+export { WorldConflictError, freshenRule } from "./eval/par";
 export { getTypes } from "./eval/typeops";
 export { addAtomToEnv, buildEnv } from "./eval/specializer";
 export {
@@ -607,257 +632,6 @@ export function createAsyncEvaluationSession(env: MinEnv): AsyncEvaluationSessio
 }
 
 // ---------- concurrent world merge (for `par`) ----------
-// Each concurrent branch evaluates in isolation on the SAME immutable starting world, so they cannot
-// see each other's mutations mid-flight. Their effects are merged afterwards as multiset deltas against
-// the base: atoms a branch added are added, atoms it removed are removed, state/token writes that
-// differ from the base are applied. Add-only effects (the common case) commute and the merge is
-// order-independent; a genuine conflict (two branches mutating the same cell) resolves by branch order.
-// That is why `with-mutex` exists: to serialise such a section.
-function multisetDelta(
-  base: readonly Atom[],
-  branch: readonly Atom[],
-): { added: Atom[]; removed: Atom[] } {
-  const remaining = base.slice();
-  const added: Atom[] = [];
-  for (const a of branch) {
-    const i = remaining.findIndex((x) => atomEq(x, a));
-    if (i >= 0) remaining.splice(i, 1);
-    else added.push(a);
-  }
-  return { added, removed: remaining };
-}
-
-function applyAtomDelta(into: Atom[], added: readonly Atom[], removed: readonly Atom[]): Atom[] {
-  const out = into.slice();
-  for (const r of removed) {
-    const i = out.findIndex((x) => atomEq(x, r));
-    if (i >= 0) out.splice(i, 1);
-  }
-  out.push(...added);
-  return out;
-}
-
-interface NamedSpaceDelta {
-  readonly name: string;
-  readonly introduced: boolean;
-  readonly added: readonly Atom[];
-  readonly removed: readonly Atom[];
-}
-
-interface StoreWrite {
-  readonly key: number | StateId;
-  readonly introduced: boolean;
-  readonly value: Atom;
-}
-
-interface ScannedWorldDelta {
-  readonly kind: "scanned";
-  readonly generationDelta: number;
-  readonly moduleInstallations: readonly GroundedModuleInstallation[];
-  readonly selfAdded: readonly Atom[];
-  readonly selfRemoved: readonly Atom[];
-  readonly spaces: readonly NamedSpaceDelta[];
-  readonly store: readonly StoreWrite[];
-  readonly tokens: readonly (readonly [string, Atom])[];
-  readonly removedStatic: readonly Atom[];
-  readonly hasTypeMutations: boolean;
-  readonly maxStackDepth: number | undefined;
-}
-
-type WorldDelta = JournalWorldDelta | ScannedWorldDelta;
-
-interface BranchStateDelta {
-  readonly counter: number;
-  readonly world: WorldDelta;
-}
-
-function atomArraysEqual(left: readonly Atom[], right: readonly Atom[]): boolean {
-  return left.length === right.length && left.every((atom, index) => atomEq(atom, right[index]!));
-}
-
-function importAtomDeltasEqual(
-  left: readonly { readonly space: Atom; readonly atom: Atom }[],
-  right: readonly { readonly space: Atom; readonly atom: Atom }[],
-): boolean {
-  return (
-    left.length === right.length &&
-    left.every(
-      (delta, index) =>
-        atomEq(delta.space, right[index]!.space) && atomEq(delta.atom, right[index]!.atom),
-    )
-  );
-}
-
-function moduleInstallationsEqual(
-  left: GroundedModuleInstallation,
-  right: GroundedModuleInstallation,
-): boolean {
-  return (
-    atomEq(left.request, right.request) &&
-    left.resolvedIdentity === right.resolvedIdentity &&
-    left.source === right.source &&
-    left.contentHash === right.contentHash &&
-    atomEq(left.targetSpace, right.targetSpace) &&
-    importAtomDeltasEqual(left.worldDelta.addedAtoms, right.worldDelta.addedAtoms) &&
-    importAtomDeltasEqual(left.worldDelta.removedAtoms, right.worldDelta.removedAtoms) &&
-    left.worldDelta.boundTokens.length === right.worldDelta.boundTokens.length &&
-    left.worldDelta.boundTokens.every(
-      (delta, index) =>
-        delta.name === right.worldDelta.boundTokens[index]!.name &&
-        atomEq(delta.atom, right.worldDelta.boundTokens[index]!.atom),
-    )
-  );
-}
-
-function worldMutationsEqual(left: WorldMutation, right: WorldMutation): boolean {
-  if (left.kind !== right.kind) return false;
-  switch (left.kind) {
-    case "add-atoms":
-      return (
-        right.kind === "add-atoms" &&
-        left.space === right.space &&
-        atomArraysEqual(left.atoms, right.atoms)
-      );
-    case "remove-atom":
-      return (
-        right.kind === "remove-atom" && left.space === right.space && atomEq(left.atom, right.atom)
-      );
-    case "set-state":
-      return (
-        right.kind === "set-state" &&
-        left.key === right.key &&
-        left.introduced === right.introduced &&
-        atomEq(left.value, right.value)
-      );
-    case "create-space":
-      return (
-        right.kind === "create-space" &&
-        left.name === right.name &&
-        atomArraysEqual(left.atoms, right.atoms)
-      );
-    case "set-token":
-      return (
-        right.kind === "set-token" && left.name === right.name && atomEq(left.value, right.value)
-      );
-    case "set-max-stack-depth":
-      return right.kind === "set-max-stack-depth" && left.value === right.value;
-    case "install-module":
-      return (
-        right.kind === "install-module" &&
-        moduleInstallationsEqual(left.installation, right.installation)
-      );
-  }
-}
-
-function worldDeltasEqual(left: WorldDelta, right: WorldDelta): boolean {
-  if (left.generationDelta !== right.generationDelta || left.kind !== right.kind) return false;
-  if (left.kind !== "journal" || right.kind !== "journal") return false;
-  return (
-    left.effects.length === right.effects.length &&
-    left.effects.every((effect, index) => {
-      const candidate = right.effects[index]!;
-      if (effect.payload.kind !== candidate.payload.kind) return false;
-      const payloadEqual =
-        effect.payload.kind === "world" && candidate.payload.kind === "world"
-          ? worldMutationsEqual(effect.payload.mutation, candidate.payload.mutation)
-          : effect.payload.kind === "operation" && candidate.payload.kind === "operation"
-            ? atomArraysEqual(effect.payload.results, candidate.payload.results)
-            : false;
-      return (
-        effect.class === candidate.class &&
-        effect.phase === candidate.phase &&
-        effect.operation === candidate.operation &&
-        effect.commitment === candidate.commitment &&
-        payloadEqual
-      );
-    })
-  );
-}
-
-/** Capture only the mutations made after `base`; inherited branch-prefix state is not part of the delta. */
-function captureWorldDelta(base: World, branch: World): WorldDelta {
-  const generationDelta = branch.generation - base.generation;
-  if (!Number.isSafeInteger(generationDelta) || generationDelta < 0)
-    throw new Error("branch continuation moved its world generation backwards");
-  const baseRuntime = worldRuntimeContexts.get(base);
-  const branchRuntime = worldRuntimeContexts.get(branch);
-  if (
-    baseRuntime !== undefined &&
-    branchRuntime !== undefined &&
-    baseRuntime.audit === branchRuntime.audit
-  ) {
-    try {
-      return {
-        kind: "journal",
-        generationDelta,
-        effects: branchRuntime.journal.since(baseRuntime.journal),
-      };
-    } catch {
-      // Structurally supplied worlds can lack shared journal ancestry. The compatibility diff below
-      // preserves their behavior, while every evaluator-created branch takes the O(delta) journal path.
-    }
-  }
-  if (branch === base)
-    return {
-      kind: "scanned",
-      generationDelta,
-      moduleInstallations: [],
-      selfAdded: [],
-      selfRemoved: [],
-      spaces: [],
-      store: [],
-      tokens: [],
-      removedStatic: [],
-      hasTypeMutations: false,
-      maxStackDepth: undefined,
-    };
-  if (branch.moduleInstallations.length < base.moduleInstallations.length)
-    throw new Error("branch removed an installed module from its inherited world");
-  const self =
-    base.selfExtra === branch.selfExtra && base.flatSelfExtra === branch.flatSelfExtra
-      ? { added: [], removed: [] }
-      : multisetDelta(runtimeAtoms(base), runtimeAtoms(branch));
-  const spaces: NamedSpaceDelta[] = [];
-  if (base.spaces !== branch.spaces)
-    for (const [name, value] of branch.spaces) {
-      const introduced = !base.spaces.has(name);
-      const baseValue = base.spaces.get(name);
-      const delta =
-        baseValue === value
-          ? { added: [], removed: [] }
-          : multisetDelta(namedSpaceAtoms(baseValue), namedSpaceAtoms(value));
-      if (introduced || delta.added.length > 0 || delta.removed.length > 0)
-        spaces.push({ name, introduced, added: delta.added, removed: delta.removed });
-    }
-  const store: StoreWrite[] = [];
-  if (base.store !== branch.store)
-    for (const [key, value] of branch.store)
-      if (!Object.is(base.store.get(key), value))
-        store.push({ key, introduced: !base.store.has(key), value });
-  const tokens: Array<readonly [string, Atom]> = [];
-  if (base.tokens !== branch.tokens)
-    for (const [name, value] of branch.tokens)
-      if (!Object.is(base.tokens.get(name), value)) tokens.push([name, value]);
-  const removedStatic =
-    base.removedStatic === branch.removedStatic
-      ? []
-      : logToArray(branch.removedStatic).filter(
-          (atom) => !logToArray(base.removedStatic).some((candidate) => atomEq(candidate, atom)),
-        );
-  return {
-    kind: "scanned",
-    generationDelta,
-    moduleInstallations: branch.moduleInstallations.slice(base.moduleInstallations.length),
-    selfAdded: self.added,
-    selfRemoved: self.removed,
-    spaces,
-    store,
-    tokens,
-    removedStatic,
-    hasTypeMutations: branch.hasTypeMutations,
-    maxStackDepth: branch.maxStackDepth === base.maxStackDepth ? undefined : branch.maxStackDepth,
-  };
-}
 
 function replayWorldMutation(env: MinEnv, into: World, mutation: WorldMutation): World {
   switch (mutation.kind) {
@@ -1030,121 +804,11 @@ function applyWorldDelta(env: MinEnv, into: World, delta: WorldDelta): World {
   return merged;
 }
 
-function captureBranchStateDelta(base: St, branch: St): BranchStateDelta {
-  const counter = branch.counter - base.counter;
-  if (!Number.isSafeInteger(counter) || counter < 0)
-    throw new Error("branch continuation moved its fresh-variable counter backwards");
-  return { counter, world: captureWorldDelta(base.world, branch.world) };
-}
-
 function applyBranchStateDelta(env: MinEnv, into: St, delta: BranchStateDelta): St {
   return {
     counter: checkedCounterAdvance(into.counter, delta.counter),
     world: applyWorldDelta(env, into.world, delta.world),
   };
-}
-
-export class WorldConflictError extends Error {
-  readonly kind = "world-conflict" as const;
-  readonly retryable = true;
-
-  constructor(
-    readonly target: string,
-    readonly firstBranch: number,
-    readonly secondBranch: number,
-  ) {
-    super(
-      `isolated branches ${firstBranch} and ${secondBranch} conflict on world target '${target}'`,
-    );
-    this.name = "WorldConflictError";
-  }
-}
-
-interface AtomWriteFootprint {
-  readonly branch: number;
-  readonly operation: "add" | "remove";
-  readonly space: string;
-  readonly atom: Atom;
-}
-
-function assertJournalDeltasDoNotConflict(base: World, deltas: readonly JournalWorldDelta[]): void {
-  const scalarWrites = new Map<string, number>();
-  const atomWrites = new Map<string, AtomWriteFootprint[]>();
-  const claimScalar = (target: string, branch: number, collision?: string): void => {
-    const owner = scalarWrites.get(target);
-    if (owner !== undefined && owner !== branch) {
-      if (collision !== undefined) throw new Error(collision);
-      throw new WorldConflictError(target, owner, branch);
-    }
-    scalarWrites.set(target, branch);
-  };
-  const claimAtom = (
-    space: string,
-    atom: Atom,
-    operation: AtomWriteFootprint["operation"],
-    branch: number,
-  ): void => {
-    const bucketKey = `${space}:${String(hashOf(atom))}`;
-    const bucket = atomWrites.get(bucketKey) ?? [];
-    for (const prior of bucket) {
-      if (prior.branch === branch || !atomEq(prior.atom, atom)) continue;
-      if (operation === "add" && prior.operation === "add") continue;
-      throw new WorldConflictError(`space:${space}:atom:${format(atom)}`, prior.branch, branch);
-    }
-    bucket.push({ branch, operation, space, atom });
-    atomWrites.set(bucketKey, bucket);
-  };
-
-  for (let branch = 0; branch < deltas.length; branch += 1) {
-    for (const effect of deltas[branch]!.effects) {
-      if (effect.payload.kind !== "world") continue;
-      const mutation = effect.payload.mutation;
-      switch (mutation.kind) {
-        case "add-atoms":
-          if (
-            !base.spaces.has(mutation.space) &&
-            mutation.space.startsWith("&") &&
-            isRuntimeId(mutation.space.slice(1), "space")
-          )
-            claimScalar(
-              `allocation:space:${mutation.space}`,
-              branch,
-              `branch allocation collision for space '${mutation.space}'`,
-            );
-          for (const atom of mutation.atoms) claimAtom(mutation.space, atom, "add", branch);
-          break;
-        case "remove-atom":
-          claimAtom(mutation.space, mutation.atom, "remove", branch);
-          break;
-        case "set-state":
-          claimScalar(
-            `state:${String(mutation.key)}`,
-            branch,
-            mutation.introduced &&
-              typeof mutation.key === "string" &&
-              isRuntimeId(mutation.key, "state")
-              ? `branch allocation collision for state '${mutation.key}'`
-              : undefined,
-          );
-          break;
-        case "create-space":
-          claimScalar(
-            `space:${mutation.name}`,
-            branch,
-            `branch allocation collision for space '${mutation.name}'`,
-          );
-          break;
-        case "set-token":
-          claimScalar(`token:${mutation.name}`, branch);
-          break;
-        case "set-max-stack-depth":
-          claimScalar("setting:max-stack-depth", branch);
-          break;
-        case "install-module":
-          break;
-      }
-    }
-  }
 }
 
 /** Merge sibling journal deltas exactly like the one-shot world merge: conflict-check the whole
@@ -1287,68 +951,12 @@ function mergeWorldsUnchecked(env: MinEnv, base: World, branches: readonly World
   return inheritWorldRuntime(base, merged);
 }
 
-function releaseChildWorldRuntimes(base: World, branches: readonly World[]): void {
-  const baseResources = worldRuntimeContext(base).resources;
-  const released = new Set<ResourceLease>();
-  for (const branch of branches) {
-    const context = worldRuntimeContexts.get(branch);
-    if (
-      context === undefined ||
-      context.resources === baseResources ||
-      released.has(context.resources)
-    )
-      continue;
-    released.add(context.resources);
-    releaseWorldRuntime(branch);
-  }
-}
-
 function mergeWorlds(env: MinEnv, base: World, branches: readonly World[]): World {
   try {
     return mergeWorldsUnchecked(env, base, branches);
   } finally {
     releaseChildWorldRuntimes(base, branches);
   }
-}
-
-/** A stable string key for a `with-mutex` lock name (a structural serialisation, no `format` dep). */
-function mutexKey(a: Atom): string {
-  switch (a.kind) {
-    case "sym":
-      return "s:" + a.name;
-    case "var":
-      return "v:" + a.name;
-    case "gnd": {
-      const g = a.value;
-      return g.g === "str"
-        ? "S:" + g.s
-        : g.g === "int" || g.g === "float"
-          ? "n:" + g.n
-          : "g:" + g.g;
-    }
-    case "expr":
-      return "e:[" + a.items.map(mutexKey).join(",") + "]";
-  }
-}
-
-function awaitWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  signal.throwIfAborted();
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const finish = (complete: () => void): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener("abort", onAbort);
-      complete();
-    };
-    const onAbort = (): void => finish(() => reject(signal.reason));
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => finish(() => resolve(value)),
-      (error: unknown) => finish(() => reject(error)),
-    );
-    if (signal.aborted) onAbort();
-  });
 }
 
 async function runWithMutexAsync(
@@ -1382,171 +990,6 @@ async function runWithMutexAsync(
       if (env.mutexes.get(name) === chained) env.mutexes.delete(name);
     });
   }
-}
-
-const stateHandle = (id: StateCellId): Atom =>
-  expr([sym("State"), typeof id === "number" ? gint(id) : sym(id)]);
-
-function stateId(w: World, a: Atom): StateCellId | undefined {
-  const r = resolveTok(w, a);
-  return parsedStateId(r);
-}
-
-interface RuntimeAllocation<T> {
-  readonly value: T;
-  readonly nextCounter: number;
-}
-
-function allocateStateCell(state: St): RuntimeAllocation<StateCellId> {
-  if (state.world.allocation.branchScoped) {
-    let id: StateId;
-    do id = state.world.allocation.ids.next("state");
-    while (state.world.store.has(id));
-    return { value: id, nextCounter: state.counter + 1 };
-  }
-  let id = state.counter;
-  while (state.world.store.has(id)) id += 1;
-  return { value: id, nextCounter: id + 1 };
-}
-
-function allocateSpaceName(state: St): RuntimeAllocation<string> {
-  if (state.world.allocation.branchScoped) {
-    let name: string;
-    do name = `&${state.world.allocation.ids.next("space")}`;
-    while (state.world.spaces.has(name) || state.world.tokens.has(name));
-    return { value: name, nextCounter: state.counter + 1 };
-  }
-  let counter = state.counter;
-  let name = `&space-${counter}`;
-  while (state.world.spaces.has(name) || state.world.tokens.has(name)) {
-    counter += 1;
-    name = `&space-${counter}`;
-  }
-  return { value: name, nextCounter: counter + 1 };
-}
-
-function subTokensExpr(
-  w: World,
-  a: ExprAtom,
-  intern: InternTable | undefined,
-  memo: Map<Atom, Atom>,
-): Atom {
-  const cached = memo.get(a);
-  if (cached !== undefined) return cached;
-  const its = a.items;
-  let items: Atom[] | null = null;
-  for (let i = 0; i < its.length; i++) {
-    const it = its[i]!;
-    const r =
-      it.kind === "sym"
-        ? (w.tokens.get(it.name) ?? it)
-        : it.kind === "expr"
-          ? subTokensExpr(w, it, intern, memo)
-          : it;
-    if (items !== null) items.push(r);
-    else if (r !== it) {
-      items = its.slice(0, i);
-      items.push(r);
-    }
-  }
-  const result =
-    items === null ? a : intern === undefined ? expr(items) : internBuiltExpr(intern, expr(items));
-  memo.set(a, result);
-  return result;
-}
-// A rewrite-heavy program (backward chaining over recursive rules) makes `instantiate` return the same
-// subterm object at many embedding positions (structural sharing, not a copy), so this walks a DAG, not a
-// tree. Rebuilding unconditionally via `.map()` on every visit (as before) both allocated a fresh copy of
-// every unchanged subtree AND re-walked a shared node once per incoming path — the same
-// exponential-paths-vs-linear-nodes blowup as the (fixed) unmemoized `occursThrough`/`instantiate`/
-// `collectVars`. `memo` (fresh per top-level call, since it's fixed given the same `w`/`intern`) plus
-// returning `a` unchanged when no child substituted restores both the sharing and the single-visit cost.
-function subTokens(w: World, a: Atom, intern?: InternTable): Atom {
-  if (w.tokens.size === 0) return a; // no bind! tokens: identity, skip the tree clone (hot path)
-  if (a.kind === "sym") return w.tokens.get(a.name) ?? a;
-  if (a.kind !== "expr") return a;
-  return subTokensExpr(w, a, intern, new Map());
-}
-function wrapStatesExpr(w: World, a: ExprAtom, memo: Map<Atom, Atom>): Atom {
-  const cached = memo.get(a);
-  if (cached !== undefined) return cached;
-  const state = parsedStateId(a);
-  if (state !== undefined) {
-    const value = w.store.get(state);
-    const result = value !== undefined ? expr([sym("StateValue"), value]) : a;
-    memo.set(a, result);
-    return result;
-  }
-  const its = a.items;
-  let items: Atom[] | null = null;
-  for (let i = 0; i < its.length; i++) {
-    const it = its[i]!;
-    const r = it.kind === "expr" ? wrapStatesExpr(w, it, memo) : it;
-    if (items !== null) items.push(r);
-    else if (r !== it) {
-      items = its.slice(0, i);
-      items.push(r);
-    }
-  }
-  const result = items === null ? a : expr(items);
-  memo.set(a, result);
-  return result;
-}
-// Same DAG-sharing fix as `subTokens` above, for the same reason (both walk atoms coming out of
-// `instantiate`, which shares unchanged subtrees by reference).
-function wrapStates(w: World, a: Atom): Atom {
-  if (w.store.size === 0) return a; // no state cells: identity, skip the tree clone (hot path)
-  if (a.kind !== "expr") return a;
-  return wrapStatesExpr(w, a, new Map());
-}
-const typePrep = (env: MinEnv, w: World, a: Atom): Atom =>
-  wrapStates(w, subTokens(w, a, env.intern));
-
-// Variable list of a rule (lhs vars first, then rhs-only vars), cached on the rule pair. Rules are static,
-// so their variable set never changes; queryOp freshens the same rules on every reduction, so caching skips
-// re-walking the rule each time (atomVars showed up hot in profiling otherwise). The RHS is part of the key
-// because hash-consing can make distinct rules share an identical LHS.
-const ruleVarsCache = new WeakMap<Atom, WeakMap<Atom, string[]>>();
-function ruleVars(lhs: Atom, rhs: Atom): string[] {
-  let rhsCache = ruleVarsCache.get(lhs);
-  if (rhsCache === undefined) {
-    rhsCache = new WeakMap();
-    ruleVarsCache.set(lhs, rhsCache);
-  }
-  let vs = rhsCache.get(rhs);
-  if (vs === undefined) {
-    vs = atomVars(lhs);
-    const seen = new Set(vs);
-    for (const v of atomVars(rhs))
-      if (!seen.has(v)) {
-        seen.add(v);
-        vs.push(v);
-      }
-    rhsCache.set(rhs, vs);
-  }
-  return vs;
-}
-
-// The fresh-rename substitution for one rule application: each rule variable receives one shared suffix.
-function freshenSub(suffix: string, lhs: Atom, rhs: Atom): Subst {
-  // A ground lhs and rhs have no variables, so the substitution is empty. Short-circuit before `ruleVars`
-  // walks the whole term: a `match` over N ground facts freshens each candidate `freshenRule(fact, fact)`,
-  // and the facts are distinct (no ruleVarsCache hit), so this turns the count's per-candidate cost from
-  // O(term size) to O(1) — the difference between O(N·depth) and O(N) on a deep-term space like matespace.
-  if (lhs.ground && rhs.ground) return [];
-  const vs = ruleVars(lhs, rhs);
-  return vs.length === 0 ? [] : vs.map((v) => [v, variable(v + suffix)]);
-}
-
-export function freshenRule(
-  counter: number,
-  lhs: Atom,
-  rhs: Atom,
-  branchNamespace?: string,
-): [Atom, Atom] {
-  const sub = freshenSub(legacyFreshVariableSuffix(counter, branchNamespace), lhs, rhs);
-  if (sub.length === 0) return [lhs, rhs];
-  return [applySubst(sub, lhs), applySubst(sub, rhs)];
 }
 
 // ---------- query + eval ops ----------
@@ -3538,21 +2981,6 @@ function* interpretStack1G(
   ];
 }
 
-// space-mutation helpers used by add/remove/import
-/** Index any `(= lhs rhs)` rules among `atoms` into a (freshly cloned) world's rule index. Facts are
- *  left to the log; only equality rules are indexed, so function reduction never scans the fact log. */
-function indexSelfRules(w: World, atoms: readonly Atom[]): void {
-  for (const x of atoms) {
-    if (opOf(x) === "=" && x.kind === "expr" && x.items.length === 3) {
-      const lhs = x.items[1]!;
-      const rhs = x.items[2]!;
-      const k = headKey(lhs);
-      if (k === undefined) w.selfVarRules = [...w.selfVarRules, [lhs, rhs]];
-      else w.selfRules.set(k, [...(w.selfRules.get(k) ?? []), [lhs, rhs]]);
-    }
-  }
-}
-
 function invalidateWorldTypeView(world: World): void {
   world.hasTypeMutations = true;
   world.typeView = undefined;
@@ -3638,87 +3066,6 @@ function recordModuleInstallation(
   return installed;
 }
 
-function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World {
-  // `&self` add-atom only touches `selfExtra` (and the rule index iff an equality is added), so SHARE the
-  // unchanged spaces/store/tokens by reference rather than `cloneWorld`'s four fresh Maps. That copy was
-  // the per-add allocation that kept the add-heavy benchmarks (matespace family) quadratic-in-GC even
-  // after the log made append itself O(1).
-  if (name === "&self") {
-    let selfRules = w0.selfRules;
-    let selfVarRules = w0.selfVarRules;
-    let selfExtra = w0.selfExtra;
-    let flatSelfExtra = w0.flatSelfExtra;
-    let copiedRules = false;
-    const typesChanged = atoms.some(isTypeDeclaration);
-    if (typesChanged) disableTabling(evaluationCacheEnvironment(env));
-    for (const x of atoms) {
-      if (opOf(x) === "=" && x.kind === "expr" && x.items.length === 3) {
-        if (!copiedRules) {
-          selfRules = forkMap(w0.selfRules);
-          copiedRules = true;
-        }
-        const lhs = x.items[1]!;
-        const rhs = x.items[2]!;
-        const k = headKey(lhs);
-        if (k === undefined) selfVarRules = [...selfVarRules, [lhs, rhs]];
-        else selfRules.set(k, [...(selfRules.get(k) ?? []), [lhs, rhs]]);
-      }
-    }
-    if (env.useFlatAtomspace === true) {
-      if (flatSelfExtra !== undefined || logSize(selfExtra) === 0) {
-        const base = flatSelfExtra ?? FlatAtomSpace.empty();
-        const appended = base.appendAll(atoms);
-        if (appended !== undefined) {
-          flatSelfExtra = appended;
-        } else {
-          // The batch is not flat-storable: move everything to the plain log, permanently, so the
-          // candidate order stays the insertion order (flat facts first would interleave otherwise).
-          selfExtra = logFromArray([...base.toArray(), ...logToArray(selfExtra), ...atoms]);
-          flatSelfExtra = undefined;
-        }
-      } else {
-        selfExtra = logAppendAll(selfExtra, atoms);
-      }
-    } else {
-      selfExtra = logAppendAll(selfExtra, atoms);
-    }
-    const next = inheritWorldRuntime(w0, {
-      generation: atoms.length === 0 ? w0.generation : nextWorldGeneration(w0),
-      moduleInstallations: w0.moduleInstallations,
-      transactionDepth: w0.transactionDepth,
-      spaces: w0.spaces,
-      store: w0.store,
-      tokens: w0.tokens,
-      selfExtra,
-      flatSelfExtra,
-      selfRules,
-      selfVarRules,
-      selfRuleVersion: copiedRules ? nextRuntimeRuleSetVersion() : w0.selfRuleVersion,
-      removedStatic: w0.removedStatic,
-      removedStaticHeads: w0.removedStaticHeads,
-      removedStaticVarRules: w0.removedStaticVarRules,
-      hasTypeMutations: w0.hasTypeMutations || typesChanged,
-      typeView: typesChanged ? undefined : w0.typeView,
-      typeViewProgramVersion: typesChanged ? undefined : w0.typeViewProgramVersion,
-      typeViewOwner: typesChanged ? undefined : w0.typeViewOwner,
-      maxStackDepth: w0.maxStackDepth,
-      allocation: w0.allocation,
-    });
-    if (atoms.length > 0)
-      recordWorldMutation(next, "add-atom", { kind: "add-atoms", space: name, atoms });
-    return next;
-  }
-  const spaces = forkMap(w0.spaces);
-  spaces.set(name, logAppendAll(spaces.get(name) ?? emptyLog, atoms));
-  const next = inheritWorldRuntime(w0, {
-    ...w0,
-    generation: atoms.length === 0 ? w0.generation : nextWorldGeneration(w0),
-    spaces,
-  });
-  if (atoms.length > 0)
-    recordWorldMutation(next, "add-atom", { kind: "add-atoms", space: name, atoms });
-  return next;
-}
 function reindexRuntimeSelfRules(w: World): void {
   w.selfRules = new ForkableMap();
   w.selfVarRules = [];
@@ -5105,568 +4452,6 @@ function* reduceChildrenG(
 }
 
 // ---------- runtime-rule tabling (fibadd: a `(= (fib $N) ...)` added at runtime via add-atom) ----------
-// TableSpace keys pure calls structurally, not by formatting them. Runtime rules live in the per-world
-// copy-on-write `selfRules`, and a static function may call a runtime-defined helper. Runtime table keys
-// therefore use the whole world's `selfRuleVersion`, not just the queried functor's own rule array. A stale
-// entry simply has a different key and is never hit; the bounded table store evicts it later.
-// A functor with runtime rules is tabling-safe iff its rules (static + this world's runtime) reference only
-// pure ops, transitively. Mirrors analyzePurity but over the combined rule set; cached by functor + version
-// so it is computed once per rule-set, not per call. A self/mutual-recursion cycle is treated as pure (the
-// fixpoint), since a cycle adds no impure op. `impureOps`/`cache` are passed so ground tabling (`IMPURE_OPS`)
-// and moded tabling (`MODED_IMPURE_OPS`, which treats `empty` as pure) each classify against their own set
-// with their OWN cache — the two must not share a map, since a call to one must never read a cached answer
-// the other computed for the same functor/version.
-function runtimeFunctorPureWith(
-  env: MinEnv,
-  w: World,
-  op: string,
-  impureOps: ReadonlySet<string>,
-  isImpureHead: typeof isTablingImpureHead,
-  cache: Map<string, boolean>,
-): boolean {
-  // A variable-headed rule (e.g. the `|->` lambda applicator) can rewrite ANY call, so its mere presence
-  // makes tabling unsound. Static rule removals are branch-local, so the static graph no longer matches the
-  // shared table's assumptions. In both cases, decline to table rather than versioning partial rule views.
-  if (
-    staticRuleSetChanged(w) ||
-    env.varRules.some(([lhs]) => isVariableHeadedPattern(lhs)) ||
-    w.selfVarRules.length > 0
-  )
-    return false;
-  if (staticRulesChangedFor(w, op)) return false;
-  const ck = op + "@" + w.selfRuleVersion;
-  const cached = cache.get(ck);
-  if (cached !== undefined) return cached;
-  const visit = (f: string, seen: Set<string>): boolean => {
-    if (seen.has(f)) return true;
-    seen.add(f);
-    const rules = [...(env.ruleIndex.get(f) ?? []), ...(w.selfRules.get(f) ?? [])];
-    const hasRule = (name: string): boolean => env.ruleIndex.has(name) || w.selfRules.has(name);
-    for (const [, rhs] of rules) {
-      const dependencies = scanReductionDependencies([rhs], hasRule);
-      if (containsOpaqueApplication(rhs)) return false;
-      for (const h of dependencies.names) {
-        if (isImpureHead(env, h, impureOps)) return false;
-        if ((env.ruleIndex.has(h) || w.selfRules.has(h)) && !visit(h, seen)) return false;
-      }
-    }
-    return true;
-  };
-  const pure = visit(op, new Set());
-  cache.set(ck, pure);
-  return pure;
-}
-const runtimeFunctorPure = (env: MinEnv, w: World, op: string): boolean =>
-  runtimeFunctorPureWith(env, w, op, IMPURE_OPS, isTablingImpureHead, runtimePureCache);
-const runtimeFunctorPureModed = (env: MinEnv, w: World, op: string): boolean =>
-  runtimeFunctorPureWith(
-    env,
-    w,
-    op,
-    MODED_IMPURE_OPS,
-    isModedTablingImpureHead,
-    runtimeModedPureCache,
-  );
-
-function runtimeFunctorTableWorth(env: MinEnv, w: World, op: string, moded: boolean): boolean {
-  const staticWorth = (moded ? env.modedTableWorth : env.tableWorth)?.has(op) ?? false;
-  if (w.selfRules.size === 0) return staticWorth;
-  const ck = (moded ? "m:" : "g:") + op + "@" + w.selfRuleVersion;
-  const cached = runtimeTableWorthCache.get(ck);
-  if (cached !== undefined) return cached;
-  const targets = new Set([op]);
-  const directBranching = [...(env.ruleIndex.get(op) ?? []), ...(w.selfRules.get(op) ?? [])].some(
-    ([, rhs]) => functorCallCount(rhs, targets) >= 2,
-  );
-  const worth = staticWorth || directBranching;
-  runtimeTableWorthCache.set(ck, worth);
-  return worth;
-}
-
-type CompletedTableKey = TableKey;
-
-function containsImpureHead(
-  env: MinEnv,
-  world: World,
-  atom: Atom,
-  impureOps: ReadonlySet<string>,
-  moded: boolean,
-): boolean {
-  const hasRule = (name: string): boolean => env.ruleIndex.has(name) || world.selfRules.has(name);
-  const scan = scanReductionDependencies([atom], hasRule);
-  if (containsOpaqueApplication(atom)) return true;
-  const runtimeRulesVisible = world.selfRules.size > 0 || world.selfVarRules.length > 0;
-  const staticPure = moded ? env.modedPureFunctors : env.pureFunctors;
-  for (const name of scan.names) {
-    const isImpureHead = moded ? isModedTablingImpureHead : isTablingImpureHead;
-    if (isImpureHead(env, name, impureOps)) return true;
-    if (!hasRule(name)) continue;
-    const pure = runtimeRulesVisible
-      ? moded
-        ? runtimeFunctorPureModed(env, world, name)
-        : runtimeFunctorPure(env, world, name)
-      : (staticPure?.has(name) ?? false);
-    if (!pure) return true;
-  }
-  return false;
-}
-
-const CHOICE_STATEFUL_HEADS: ReadonlySet<string> = new Set([
-  "add-atom",
-  "remove-atom",
-  "add-reduct",
-  "add-reducts",
-  "add-atoms",
-  "new-state",
-  "get-state",
-  "change-state!",
-  "new-space",
-  "new-mork-space",
-  "fork-space",
-  "get-atoms",
-  "bind!",
-  "context-space",
-  "match",
-  "get-type",
-  "get-type-space",
-  "check-types",
-  "get-doc",
-  "pragma!",
-  "register-module!",
-]);
-
-const CHOICE_SERIALIZED_HEADS: ReadonlySet<string> = new Set(["with-mutex", "with_mutex"]);
-
-interface ChoiceEffectSummary {
-  readonly stateful: boolean;
-  readonly serialized: boolean;
-}
-
-const EMPTY_CHOICE_EFFECTS: ChoiceEffectSummary = Object.freeze({
-  stateful: false,
-  serialized: false,
-});
-
-function combineChoiceEffects(
-  left: ChoiceEffectSummary,
-  right: ChoiceEffectSummary,
-): ChoiceEffectSummary {
-  return {
-    stateful: left.stateful || right.stateful,
-    serialized: left.serialized || right.serialized,
-  };
-}
-
-function groundedChoiceEffects(env: MinEnv, operation: string): ChoiceEffectSummary {
-  if (!env.gt.has(operation) && !env.agt.has(operation)) return EMPTY_CHOICE_EFFECTS;
-  const policy = groundedEffectPolicy(env, operation);
-  const stateful = policy.classes.some(
-    (effectClass) => effectClass === "atomspace-read" || effectClass === "atomspace-write",
-  );
-  return { stateful, serialized: false };
-}
-
-interface DirectChoiceEffectScan {
-  readonly effects: ChoiceEffectSummary;
-  readonly dependencies: ReadonlySet<string>;
-}
-
-function scanChoiceEffects(
-  env: MinEnv,
-  world: World,
-  roots: readonly Atom[],
-): DirectChoiceEffectScan {
-  const hasRule = (name: string): boolean => env.ruleIndex.has(name) || world.selfRules.has(name);
-  const scan = scanReductionDependencies(roots, hasRule);
-  let effects: ChoiceEffectSummary = {
-    stateful: false,
-    serialized: false,
-  };
-  const dependencies = new Set<string>();
-  for (const name of scan.names) {
-    effects = combineChoiceEffects(effects, {
-      stateful: CHOICE_STATEFUL_HEADS.has(name),
-      serialized: CHOICE_SERIALIZED_HEADS.has(name),
-    });
-    effects = combineChoiceEffects(effects, groundedChoiceEffects(env, name));
-    if (hasRule(name)) dependencies.add(name);
-  }
-  return { effects, dependencies };
-}
-
-interface ChoiceEffectAnalysis {
-  readonly programVersion: number;
-  readonly groundingVersion: number;
-  readonly syncRevision: number;
-  readonly asyncRevision: number;
-  readonly effectRevision: number;
-  readonly runtimeRuleVersion: number;
-  readonly summaries: ReadonlyMap<string, ChoiceEffectSummary>;
-  readonly variableEffects: ChoiceEffectSummary;
-}
-
-const choiceEffectAnalyses = new WeakMap<MinEnv, ChoiceEffectAnalysis>();
-
-/** Propagate the two effect bits through the rule graph once per program image. */
-function choiceEffectAnalysis(env: MinEnv, world: World): ChoiceEffectAnalysis {
-  const programVersion = env.programVersion ?? 0;
-  const groundingVersion = env.groundingVersion ?? 0;
-  const syncRevision = collectionRevision(env.gt) ?? 0;
-  const asyncRevision = collectionRevision(env.agt) ?? 0;
-  const effectRevision =
-    env.groundedEffects === undefined ? 0 : (collectionRevision(env.groundedEffects) ?? 0);
-  const runtimeRuleVersion = world.selfRuleVersion;
-  const cached = choiceEffectAnalyses.get(env);
-  if (
-    cached !== undefined &&
-    cached.programVersion === programVersion &&
-    cached.groundingVersion === groundingVersion &&
-    cached.syncRevision === syncRevision &&
-    cached.asyncRevision === asyncRevision &&
-    cached.effectRevision === effectRevision &&
-    cached.runtimeRuleVersion === runtimeRuleVersion
-  )
-    return cached;
-
-  const names = new Set([...env.ruleIndex.keys(), ...world.selfRules.keys()]);
-  const summaries = new Map<string, ChoiceEffectSummary>();
-  const reverseDependencies = new Map<string, Set<string>>();
-  for (const name of names) {
-    const equations = [...(env.ruleIndex.get(name) ?? []), ...(world.selfRules.get(name) ?? [])];
-    const direct = scanChoiceEffects(
-      env,
-      world,
-      equations.map(([, rhs]) => rhs),
-    );
-    summaries.set(name, direct.effects);
-    for (const dependency of direct.dependencies) {
-      const dependents = reverseDependencies.get(dependency);
-      if (dependents === undefined) reverseDependencies.set(dependency, new Set([name]));
-      else dependents.add(name);
-    }
-  }
-
-  const pending = [...names].filter((name) => {
-    const summary = summaries.get(name)!;
-    return summary.stateful || summary.serialized;
-  });
-  const queued = new Set(pending);
-  while (pending.length > 0) {
-    const dependency = pending.pop()!;
-    queued.delete(dependency);
-    const dependencyEffects = summaries.get(dependency)!;
-    for (const dependent of reverseDependencies.get(dependency) ?? []) {
-      const previous = summaries.get(dependent)!;
-      const next = combineChoiceEffects(previous, dependencyEffects);
-      if (next.stateful === previous.stateful && next.serialized === previous.serialized) continue;
-      summaries.set(dependent, next);
-      if (!queued.has(dependent)) {
-        queued.add(dependent);
-        pending.push(dependent);
-      }
-    }
-  }
-
-  const variableRoots = [...env.varRulesVar, ...world.selfVarRules].map(([, rhs]) => rhs);
-  const variableDirect = scanChoiceEffects(env, world, variableRoots);
-  let variableEffects = variableDirect.effects;
-  for (const dependency of variableDirect.dependencies)
-    variableEffects = combineChoiceEffects(
-      variableEffects,
-      summaries.get(dependency) ?? EMPTY_CHOICE_EFFECTS,
-    );
-
-  const analysis: ChoiceEffectAnalysis = {
-    programVersion,
-    groundingVersion,
-    syncRevision,
-    asyncRevision,
-    effectRevision,
-    runtimeRuleVersion,
-    summaries,
-    variableEffects,
-  };
-  choiceEffectAnalyses.set(env, analysis);
-  return analysis;
-}
-
-/** Explicitly serialized stateful Hyperpose branches retain source-ordered state threading. */
-function choiceBranchesParallelSafe(env: MinEnv, world: World, branches: readonly Atom[]): boolean {
-  const analysis = choiceEffectAnalysis(env, world);
-  const direct = scanChoiceEffects(env, world, branches);
-  let effects = combineChoiceEffects(direct.effects, analysis.variableEffects);
-  for (const dependency of direct.dependencies)
-    effects = combineChoiceEffects(
-      effects,
-      analysis.summaries.get(dependency) ?? EMPTY_CHOICE_EFFECTS,
-    );
-  return !(effects.stateful && effects.serialized);
-}
-
-function groundTableVersionIfAdmissible(
-  env: MinEnv,
-  world: World,
-  op: string,
-  call: Atom,
-): number | undefined {
-  if (env.tableSpace === undefined || !call.ground || !keyWellFormed(call)) return undefined;
-  const runtimeRulesVisible = world.selfRules.size > 0 || world.selfVarRules.length > 0;
-  const runtimeVersion = runtimeRulesVisible ? world.selfRuleVersion : 0;
-  if (runtimeRulesVisible) {
-    return runtimeFunctorPure(env, world, op) &&
-      runtimeFunctorTableWorth(env, world, op, false) &&
-      !containsImpureHead(env, world, call, IMPURE_OPS, false)
-      ? runtimeVersion
-      : undefined;
-  }
-  return (env.pureFunctors?.has(op) ?? false) &&
-    (env.tableWorth?.has(op) ?? false) &&
-    !staticRuleSetChanged(world) &&
-    !containsImpureHead(env, world, call, IMPURE_OPS, false)
-    ? runtimeVersion
-    : undefined;
-}
-
-const DISTINCT_RESOURCE_LIMIT = Symbol("distinct-resource-limit");
-
-function distinctGroundEnabled(env: MinEnv): boolean {
-  return (env.distinctGroundDepth ?? 0) > 0;
-}
-
-function enforceDistinctLimit(env: MinEnv, count: number): void {
-  if (
-    distinctGroundEnabled(env) &&
-    env.tableSpace !== undefined &&
-    count > env.tableSpace.entryCellLimit()
-  )
-    throw DISTINCT_RESOURCE_LIMIT;
-}
-
-function dedupGroundPairs(pairs: readonly [Atom, Bindings][]): Array<[Atom, Bindings]> {
-  const seen = new ExactAtomSet();
-  const out: Array<[Atom, Bindings]> = [];
-  for (const pair of pairs) if (seen.add(pair[0])) out.push(pair);
-  return out;
-}
-
-function rememberGroundTable(env: MinEnv, key: CompletedTableKey, results: readonly Atom[]): void {
-  env.tableSpace?.rememberCompleted(key, 0, results);
-}
-
-function rememberModedTable(
-  env: MinEnv,
-  key: CompletedTableKey,
-  numCallVars: number,
-  results: readonly Atom[],
-): void {
-  env.tableSpace?.rememberCompleted(key, numCallVars, results);
-}
-
-function checkedCounterAdvance(counter: number, delta: number): number {
-  if (!Number.isSafeInteger(delta) || delta < 0 || delta > Number.MAX_SAFE_INTEGER - counter)
-    throw new RangeError("evaluation counter is exhausted");
-  return counter + delta;
-}
-
-function checkedGenerationAdvance(generation: number, delta: number): number {
-  if (!Number.isSafeInteger(delta) || delta < 0 || delta > Number.MAX_SAFE_INTEGER - generation)
-    throw new RangeError("world generation is exhausted");
-  return generation + delta;
-}
-
-/** Freshen one cached moded-tabling answer for this call instance: substitute the
- *  call's own canonical placeholders (`%0`..`%(numCallVars-1)`) with `callVarNames` (this call's actual
- *  variable names, found the same way the cache key was — by canonicalizing it), and substitute every
- *  other placeholder (one the cached computation introduced itself, never part of the call) with a
- *  brand-new, globally-fresh variable, via the same counter every other fresh-variable path in this file
- *  uses (`freshenSub`'s `name + "#" + counter` pattern). Reuses `instantiate` (already DAG-sharing-safe)
- *  to do the substitution, so a cached answer with heavy internal sharing stays cheap to replay. */
-function freshenModedResult(
-  st: St,
-  cachedResult: Atom,
-  callVarNames: readonly string[],
-  numCallVars: number,
-): [Atom, St] {
-  const rels: BindingRel[] = [];
-  for (let i = 0; i < numCallVars; i++) rels.push(makeValRel("%" + i, variable(callVarNames[i]!)));
-  const extraVars: string[] = [];
-  collectVars(cachedResult, extraVars, new Set());
-  let counter = st.counter;
-  for (const v of extraVars) {
-    if (!v.startsWith("%")) continue;
-    const n = Number(v.slice(1));
-    if (Number.isInteger(n) && n >= numCallVars) {
-      rels.push(
-        makeValRel(
-          v,
-          variable(`_tab${legacyFreshVariableSuffix(counter, branchVariableNamespace(st.world))}`),
-        ),
-      );
-      counter = checkedCounterAdvance(counter, 1);
-    }
-  }
-  const freshened = instantiate(fromRelations(rels), cachedResult);
-  return [freshened, { counter, world: st.world }];
-}
-
-// Counting `(length (collapse (match $space $pat $template)))` cares only about how many solutions the
-// match has, not their values: matchOp emits exactly one final item per solution (instantiate(m, template))
-// and the count fusion never inspects it. So for counting, swap the template for a ground unit. Then
-// instantiate(m, unit) returns the unit directly (ground short-circuit) instead of building a result tree
-// per solution, which is pure garbage in the emit-bound profile.
-const COUNT_UNIT = sym("u");
-function countOnlyMatch(z: Atom): Atom {
-  return z.kind === "expr" && z.items.length === 4 && opOf(z) === "match"
-    ? expr([z.items[0]!, z.items[1]!, z.items[2]!, COUNT_UNIT])
-    : z;
-}
-
-const COLLAPSE_ROUTE_ENV = "METTA_COLLAPSE_ROUTE";
-const DONE_UNIT = sym("done");
-
-const collapseRouteEnabled = (): boolean => readEnv(COLLAPSE_ROUTE_ENV) !== "0";
-// Disables the all-distinct-variable count-aggregate (the head/arity tally), falling back to the streaming
-// count. Off switch for A/B differentials only; the tally is byte-identical, so this stays on by default.
-const countAggregateEnabled = (): boolean => readEnv("METTA_COUNT_AGGREGATE") !== "0";
-// Void-context build: when a routed `(length (collapse (FN a)))` build ends in a dead binding to a compiled
-// impure function (matespace's `($g (rewriteK Z K))`, whose tree result is never read), run that call in
-// discard mode so its add-atom side effects happen without allocating the result tree (matespace K=19 drops
-// ~25%). The binding is kept and only its value is the sentinel, so the gensym counter is byte-identical, not
-// just alpha. Off switch (METTA_VOID_BUILD=0) for the differential.
-const voidBuildEnabled = (): boolean => readEnv("METTA_VOID_BUILD") !== "0";
-// Conjunctive collapse-count via the worst-case-optimal join fold (matchConjCount). A multi-goal
-// `(length/size-atom (collapse (match &self (, ...) tmpl)))` folds the same wcoJoin the default result path
-// (matchConjJoin) already runs, counting each solution instead of allocating its answer atom. The count is
-// order- and name-independent, so the fold is byte-identical to materializing-then-counting and needs no
-// experimental gate; it skips ~360k atom allocations on permutations (2.8s -> 0.48s). Off switch
-// (METTA_CONJ_COUNT=0) drops back to the materializing count for the differential.
-const conjCountEnabled = (): boolean => readEnv("METTA_CONJ_COUNT") !== "0";
-
-interface TailMatchBuild {
-  readonly buildExpr: Atom;
-  readonly tailMatch: ExprAtom;
-  readonly boundVars: ReadonlySet<string>;
-}
-
-interface CollapseRoute {
-  readonly buildExpr: Atom;
-  readonly tailMatch: ExprAtom;
-  readonly st: St;
-  readonly bnd: Bindings;
-  /** Dead build bindings to compiled impure functions, split off to run in discard/count mode. */
-  readonly voidCalls?:
-    | ReadonlyArray<{ readonly op: string; readonly args: readonly Atom[] }>
-    | undefined;
-}
-
-// If `buildExpr` is `(let (...) ... done)` / `(let* (pairs) done)` whose final binding suffix calls compiled
-// impure functions with ground arguments, return the build with that suffix replaced by `done` plus the
-// calls to run in discard/count mode. The bindings are dead (their values are never read: the route already
-// checked the tail match uses no let-bound variable, and the split only takes a suffix), so running them for
-// effects and multiplicity is equivalent. Any other shape returns undefined and the normal build runs.
-function splitVoidBuild(
-  buildExpr: Atom,
-  env: MinEnv,
-):
-  | {
-      readonly prefix: Atom;
-      readonly calls: ReadonlyArray<{ readonly op: string; readonly args: readonly Atom[] }>;
-    }
-  | undefined {
-  if (buildExpr.kind !== "expr") return undefined;
-  const voidable = (rhs: Atom): { op: string; args: readonly Atom[] } | undefined => {
-    if (rhs.kind !== "expr" || rhs.items.length === 0 || rhs.items[0]!.kind !== "sym")
-      return undefined;
-    const op = rhs.items[0]!.name;
-    const args = rhs.items.slice(1);
-    if (env.compiled?.get(op)?.kind !== "imperative" || args.some((a) => !a.ground))
-      return undefined;
-    return { op, args };
-  };
-  // Keep the binding in the prefix but replace its evaluated value with the sentinel, rather than dropping it:
-  // the `let` machinery (and its gensym) then runs exactly as before, the discarded result value is the only
-  // thing not built, and the call's own gensym is restored by running it separately in discard mode. So the
-  // build's fresh-variable counter is byte-identical, not just alpha-equivalent.
-  const head = opOf(buildExpr);
-  if (head === "let" && buildExpr.items.length === 4 && atomEq(buildExpr.items[3]!, DONE_UNIT)) {
-    const v = voidable(buildExpr.items[2]!);
-    if (v === undefined) return undefined;
-    return {
-      prefix: expr([buildExpr.items[0]!, buildExpr.items[1]!, DONE_UNIT, DONE_UNIT]),
-      calls: [v],
-    };
-  }
-  if (
-    head === "let*" &&
-    buildExpr.items.length === 3 &&
-    buildExpr.items[1]!.kind === "expr" &&
-    atomEq(buildExpr.items[2]!, DONE_UNIT)
-  ) {
-    const pairs = buildExpr.items[1]!.items;
-    let splitAt = pairs.length;
-    const calls: Array<{ readonly op: string; readonly args: readonly Atom[] }> = [];
-    while (splitAt > 0) {
-      const pair = pairs[splitAt - 1]!;
-      if (pair.kind !== "expr" || pair.items.length !== 2) return undefined;
-      const v = voidable(pair.items[1]!);
-      if (v === undefined) break;
-      calls.unshift(v);
-      splitAt -= 1;
-    }
-    if (calls.length === 0) return undefined;
-    const newPairs = [
-      ...pairs.slice(0, splitAt),
-      ...pairs.slice(splitAt).map((pair) => expr([(pair as ExprAtom).items[0]!, DONE_UNIT])),
-    ];
-    return {
-      prefix: expr([buildExpr.items[0]!, expr(newPairs), DONE_UNIT]),
-      calls,
-    };
-  }
-  return undefined;
-}
-
-function addAtomVars(into: Set<string>, atom: Atom): void {
-  for (const name of atomVars(atom)) into.add(name);
-}
-
-function hasAnyAtomVar(vars: ReadonlySet<string>, atoms: readonly Atom[]): boolean {
-  for (const atom of atoms) for (const name of atomVars(atom)) if (vars.has(name)) return true;
-  return false;
-}
-
-function tailMatchBuild(body: Atom): TailMatchBuild | undefined {
-  if (body.kind !== "expr") return undefined;
-  const op = opOf(body);
-  if (op === "match" && body.items.length === 4)
-    return { buildExpr: DONE_UNIT, tailMatch: body, boundVars: new Set() };
-  if (op === "let" && body.items.length === 4) {
-    const inner = tailMatchBuild(body.items[3]!);
-    if (inner === undefined) return undefined;
-    const boundVars = new Set(inner.boundVars);
-    addAtomVars(boundVars, body.items[1]!);
-    return {
-      buildExpr: expr([body.items[0]!, body.items[1]!, body.items[2]!, inner.buildExpr]),
-      tailMatch: inner.tailMatch,
-      boundVars,
-    };
-  }
-  if (op === "let*" && body.items.length === 3 && body.items[1]!.kind === "expr") {
-    const inner = tailMatchBuild(body.items[2]!);
-    if (inner === undefined) return undefined;
-    const boundVars = new Set(inner.boundVars);
-    for (const pair of body.items[1]!.items) {
-      if (pair.kind !== "expr" || pair.items.length !== 2) return undefined;
-      addAtomVars(boundVars, pair.items[0]!);
-    }
-    return {
-      buildExpr: expr([body.items[0]!, body.items[1]!, inner.buildExpr]),
-      tailMatch: inner.tailMatch,
-      boundVars,
-    };
-  }
-  return undefined;
-}
 
 function prepareCollapseRoute(
   env: MinEnv,
@@ -5941,109 +4726,10 @@ function canStreamStdlibCase(env: MinEnv, w: World): boolean {
   );
 }
 
-const CHOICE_PLAN_RULE_COUNTS: ReadonlyArray<readonly [string, number]> = [
-  ["collapse", 1],
-  ["let", 1],
-  ["let*", 1],
-  ["if", 2],
-  ["superpose", 0],
-  ["+", 0],
-  ["-", 0],
-  ["*", 0],
-  ["<", 0],
-  ["<=", 0],
-  [">", 0],
-  [">=", 0],
-  ["==", 0],
-  ["!=", 0],
-  ["unique-atom", 0],
-];
-
-const CHOICE_PLAN_SIGNATURES: ReadonlyArray<readonly [string, readonly Atom[]]> = [
-  ["collapse", [sym("Atom"), sym("Atom")]],
-  ["let", [sym("Atom"), UNDEF, sym("Atom"), UNDEF]],
-  ["let*", [sym("Expression"), sym("Atom"), UNDEF]],
-  ["superpose", [sym("Expression"), UNDEF]],
-  ["+", [sym("Number"), sym("Number"), sym("Number")]],
-  ["-", [sym("Number"), sym("Number"), sym("Number")]],
-  ["*", [sym("Number"), sym("Number"), sym("Number")]],
-  ["if", [sym("Bool"), sym("Atom"), sym("Atom"), variable("t")]],
-  ["==", [variable("t"), variable("t"), sym("Bool")]],
-  ["!=", [variable("t"), variable("t"), sym("Bool")]],
-  ["<", [sym("Number"), sym("Number"), sym("Bool")]],
-  ["<=", [sym("Number"), sym("Number"), sym("Bool")]],
-  [">", [sym("Number"), sym("Number"), sym("Bool")]],
-  [">=", [sym("Number"), sym("Number"), sym("Bool")]],
-];
-
-const CHOICE_PLAN_GROUNDED_OPS = [
-  "+",
-  "-",
-  "*",
-  "<",
-  "<=",
-  ">",
-  ">=",
-  "==",
-  "!=",
-  "superpose",
-  "unique-atom",
-];
-
-function canRunChoicePlan(env: MinEnv, w: World): boolean {
-  const view = typeViewFor(env, w);
-  if (env.varRulesVar.length > 0 || w.selfVarRules.length > 0) return false;
-  for (const name of CHOICE_PLAN_GROUNDED_OPS) {
-    const grounded = env.gt.get(name);
-    if (grounded === undefined || env.agt.has(name) || !isTableSafeGroundedOp(name, grounded))
-      return false;
-  }
-  for (const [name, expectedRules] of CHOICE_PLAN_RULE_COUNTS) {
-    if ((env.ruleIndex.get(name)?.length ?? 0) !== expectedRules) return false;
-    if (w.selfRules.has(name) || staticRulesChangedFor(w, name)) return false;
-  }
-  if (view.sigs.has("unique-atom")) return false;
-  for (const [name, expected] of CHOICE_PLAN_SIGNATURES) {
-    const actual = view.sigs.get(name);
-    if (
-      actual === undefined ||
-      actual.length !== expected.length ||
-      actual.some((type, index) => !atomEq(type, expected[index]!))
-    )
-      return false;
-  }
-  return true;
-}
-
-const choicePlanConstructor =
-  (env: MinEnv, world: World) =>
-  (name: string): boolean =>
-    !isDefinedHead(env, world, name);
-
-const choicePlanDataExpression =
-  (env: MinEnv, world: World) =>
-  (atom: ExprAtom): boolean =>
-    candidatesW(env, world, atom).every(([lhs]) => !canMatchShallow(lhs, atom));
-
 const choicePlanApplication =
   (env: MinEnv, world: World) =>
   (name: string, args: readonly Atom[]): boolean =>
     checkApplication(env, world, name, args) === null;
-
-function isClosedChoiceValue(env: MinEnv, world: World, atom: Atom): boolean {
-  if (!atom.ground) return false;
-  if (atom.kind !== "expr") return atom.kind !== "sym" || !isDefinedHead(env, world, atom.name);
-  if (atom.items.length === 0) return true;
-  const head = atom.items[0]!;
-  if (head.kind === "expr") return false;
-  if (head.kind === "sym" && isDefinedHead(env, world, head.name)) return false;
-  return atom.items.every((item) => isClosedChoiceValue(env, world, item));
-}
-
-const staticCustomMatcherCache = new WeakMap<
-  MinEnv,
-  { readonly atomCount: number; readonly hasCustomMatcher: boolean }
->();
 
 function staticSpaceHasCustomMatcher(env: MinEnv): boolean {
   const cached = staticCustomMatcherCache.get(env);
