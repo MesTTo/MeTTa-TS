@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-// Tests for the ported PeTTa standard libraries (libraries.ts). Each is imported with
+// Tests for the ported PeTTa standard libraries. Each is imported with
 // `(import! &self <name>)` and exercised through its public surface, the same way the built-in
 // extension modules are tested (see json-module.test.ts).
 
+import "./index.js";
 import { describe, expect, it } from "vitest";
-import { format } from "./parser";
-import { runProgram } from "./runner";
+import { format, runProgram } from "@metta-ts/core";
 
 const printed = (src: string): string[][] => runProgram(src).map((q) => q.results.map(format));
 

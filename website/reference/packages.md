@@ -13,20 +13,22 @@ detailed reference: [core](/reference/core), [hyperon](/reference/hyperon),
 
 | Package                                                                                      | What it is                                                                                                                    |
 | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core)               | The interpreter, parser, type system, and standard library. Zero platform dependencies, runs in any JavaScript runtime.       |
+| [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core)               | The interpreter, parser, type system, and prelude. Zero platform dependencies, runs in any JavaScript runtime.                |
 | [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon)         | A TypeScript class API over the core (atoms, spaces, grounded operations).                                                    |
 | [`@metta-ts/edsl`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/edsl)               | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template.                                     |
 | [`@metta-ts/node`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/node)               | The `metta-ts` runner CLI, the `metta-debug` trace CLI, file `import!`, and the `SharedArrayBuffer` worker-thread parallel matcher. |
 | [`@metta-ts/browser`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/browser)         | Browser entry point with an in-memory virtual file system for `import!` and optional host-runtime composition.                |
+| [`@metta-ts/libraries`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/libraries)     | The PeTTa standard libraries as importable modules (`vector`, `roman`, `nars`, `pln`, and more), loaded automatically by node, hyperon, and browser. |
 | [`@metta-ts/py`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/py)                   | Python interop: PeTTa's `py-call` and Hyperon's `py-atom`, over pythonia in Node or Pyodide in the browser. Opt-in and async. |
 | [`@metta-ts/prolog`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/prolog)           | Prolog interop: PeTTa-compatible predicate calls, `prolog-call`, and `import_prolog_function` over SWI-Prolog or SWI-WASM.    |
 | [`@metta-ts/grapher`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/grapher)         | MeTTaGrapher: a visual editor plus browser and headless Node reduction-GIF rendering over the same core trace.                |
+| [`@metta-ts/debug`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/debug)             | The debugger engine behind `metta-debug`: the execution-trace bus, `explainCall`/`why`, and trace summaries. Depends only on the core. |
 | [`@metta-ts/das-client`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-client)   | Client for SingularityNET's Distributed AtomSpace.                                                                            |
 | [`@metta-ts/das-gateway`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-gateway) | A transport-agnostic gateway bridging the browser to a Distributed AtomSpace.                                                 |
 
 ## How they fit together
 
-`@metta-ts/core` is the whole language: parse, evaluate, match, type-check, and the standard library. If you only want to run MeTTa, this is all you need.
+`@metta-ts/core` is the language engine: parse, evaluate, match, type-check, and the prelude. The standard libraries live in `@metta-ts/libraries`, which the node, hyperon, and browser packages load for you, so running MeTTa through any of those resolves `(import! &self pln)` and the rest. If you use bare core, register the libraries first with `registerLibraries()` from `@metta-ts/libraries`.
 
 `@metta-ts/hyperon` and `@metta-ts/edsl` are two TypeScript-facing layers over the core. The hyperon package mirrors the Python API (a `MeTTa` runner, `S`/`V`/`E`/`G` atom constructors, grounded operations). The eDSL is the more idiomatic, typed way to build and run MeTTa from TypeScript.
 
@@ -47,6 +49,8 @@ Prolog reaches SWI-Prolog through a local `swipl` executable in Node or
 interpreter path free of host runtimes. See [Python
 interop](/typescript/python-interop) and [Prolog
 interop](/typescript/prolog-interop).
+
+`@metta-ts/debug` is the engine behind the `metta-debug` CLI: it records the evaluator's trace bus and explains why a call reduced the way it did. It depends only on the core and uses no Node APIs, so an editor or tool can drive it directly.
 
 `@metta-ts/das-client` and `@metta-ts/das-gateway` are optional, for querying a remote Distributed AtomSpace.
 

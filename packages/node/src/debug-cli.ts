@@ -4,19 +4,15 @@
 //
 // SPDX-License-Identifier: MIT
 
-// `metta-debug`: a headless debugger for the MeTTa engine, built on the same core runner (`runSource`) the
-// `metta-ts` CLI uses, so it reproduces the exact evaluation path — including the inline-load behaviour
-// that differs from `import!`. Its `why` command runs a call with the engine's opt-in trace bus attached
-// and reports the internal decisions that are otherwise invisible: which grounded reducer fired, whether a
-// higher-order function was specialized (e.g. `BestCandidate -> BestCandidate$PriorityRankNeg`), where a
-// native stack overflow was cut, and how many reduction steps ran. An evaluation surprise becomes a
-// one-command diagnosis instead of a dist patch. `run` and `eval` are the plain runners; `--llm` prints
-// structured JSON for agents.
+// `metta-debug`: the Node CLI shell around the host-free `@metta-ts/debug` engine. File loading and import
+// resolution stay here; trace collection and summaries run through the injected `runSource` path so `why`
+// reproduces the same evaluation behaviour as the `metta-ts` CLI.
 
 import { parseArgs } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { format, setOutputSink, setRawSink, type TraceEvent } from "@metta-ts/core";
+import { format, setOutputSink, setRawSink } from "@metta-ts/core";
+import { assembleQuery, explainCall } from "@metta-ts/debug";
 import { readImports } from "./file-imports";
 import { runSource } from "./source";
 
@@ -35,47 +31,18 @@ function loadProgram(source: string | undefined, file: string | undefined): Load
   throw new Error("provide --source '<metta>' or --file <path>");
 }
 
-interface TraceSummary {
-  readonly grounded: Record<string, number>;
-  readonly specialized: string[];
-  readonly overflow: string[];
-  readonly reductions: number;
-}
-
-function summarize(events: readonly TraceEvent[]): TraceSummary {
-  const grounded: Record<string, number> = {};
-  const specialized = new Set<string>();
-  const overflow: string[] = [];
-  let reductions = 0;
-  for (const e of events) {
-    if (e.kind === "grounded") grounded[e.op] = (grounded[e.op] ?? 0) + 1;
-    else if (e.kind === "specialize") specialized.add(`${e.from} -> ${e.to}`);
-    else if (e.kind === "overflow") overflow.push(e.atom);
-    else reductions++;
-  }
-  return { grounded, specialized: [...specialized], overflow, reductions };
-}
-
 function runQuery(
   loaded: Loaded,
   call: string,
   fuel: number | undefined,
-  trace?: TraceEvent[],
-): string[] {
+): ReturnType<typeof explainCall> {
   // The point of `why`/`eval` is the trace summary and the result, not the program's own
   // `println!`/`trace!` chatter — discard it so `--llm` JSON and the human summary stay clean.
   setOutputSink(() => {});
   setRawSink(() => {});
-  const q = call.trim().startsWith("!") ? call.trim() : `!${call.trim()}`;
-  const program = `${loaded.src}\n${q}`;
+  const program = assembleQuery(loaded.src, call);
   const imports = readImports(program, loaded.baseDir, dirname(loaded.baseDir));
-  const groups = runSource(
-    program,
-    fuel,
-    imports,
-    trace ? { trace: (e) => trace.push(e) } : undefined,
-  );
-  return groups.at(-1)?.results.map(format) ?? [];
+  return explainCall(runSource, loaded.src, call, { fuel, imports });
 }
 
 function printHuman(obj: Record<string, unknown>): void {
@@ -136,9 +103,7 @@ function main(): void {
   if (cmd === "why") {
     const call = positionals[1];
     if (call === undefined) throw new Error("usage: metta-debug why '(<call>)'");
-    const events: TraceEvent[] = [];
-    const result = runQuery(loaded, call, fuel, events);
-    const s = summarize(events);
+    const { result, summary: s } = runQuery(loaded, call, fuel);
     emit(llm, {
       call,
       result,
@@ -152,7 +117,7 @@ function main(): void {
   if (cmd === "eval") {
     const expr = positionals[1];
     if (expr === undefined) throw new Error("usage: metta-debug eval '(<expr>)'");
-    emit(llm, { result: runQuery(loaded, expr, fuel) });
+    emit(llm, { result: runQuery(loaded, expr, fuel).result });
     return;
   }
   if (cmd === "run") {

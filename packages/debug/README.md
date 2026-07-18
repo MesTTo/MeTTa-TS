@@ -1,0 +1,25 @@
+<!--
+SPDX-FileCopyrightText: 2026 MesTTo
+SPDX-License-Identifier: MIT
+-->
+
+# @metta-ts/debug
+
+`@metta-ts/debug` contains the host-free debugger engine used by `metta-debug`
+and embedders such as language servers.
+
+The package does not read files, register global output sinks, or import Node
+APIs. Callers provide the exact runner they already use.
+
+```ts
+import { explainCall } from "@metta-ts/debug";
+import { runProgram } from "@metta-ts/core";
+
+const report = explainCall(runProgram, "(= (double $x) (* $x 2))", "(double 21)");
+
+console.log(report.result); // ["42"]
+```
+
+Use `collectTrace` when the caller already has an assembled program and only
+needs the raw trace event stream. Use `summarize` when the caller already
+collected events and needs the grouped `metta-debug why` counters.

@@ -1,3 +1,67 @@
+# MeTTa TS 1.3.0
+
+MeTTa TS 1.3.0 moves the standard libraries and the debugger engine out of the
+core into their own packages. The interpreter behaves exactly as in 1.2.0: the
+conformance oracle is byte-identical and every library returns the same results.
+This is a structural release, so there are no new language features.
+
+## `@metta-ts/libraries`
+
+The eight standard libraries (`vector`, `roman`, `combinatorics`, `patrick`,
+`datastructures`, `spaces`, `nars`, `pln`) moved out of `@metta-ts/core` into a
+new `@metta-ts/libraries` package, one folder and one `.metta` file per library,
+so the engine no longer ships library source it does not run.
+
+`@metta-ts/node`, `@metta-ts/hyperon`, and `@metta-ts/browser` depend on the new
+package and register it when they load, so `(import! &self pln)` and the other
+library imports keep working with no change. The one behavior change is that bare
+`@metta-ts/core` no longer resolves the libraries on its own. A program run
+through `runProgram` from core alone registers them first:
+
+```ts
+import { registerLibraries } from "@metta-ts/libraries";
+registerLibraries();
+```
+
+The libraries are ports of Patrick Hammer's PeTTa `lib/lib_*.metta` set, with
+`roman` from Roman Treutlein's PeTTa prelude; the extraction now credits them.
+
+## `@metta-ts/debug`
+
+The `metta-debug` engine moved into a new `@metta-ts/debug` package. It holds the
+execution-trace summary behind `why` and the `explainCall`, `collectTrace`, and
+`summarize` helpers, depends only on `@metta-ts/core`, and uses no Node APIs, so
+an editor or tool can drive it directly. The `metta-debug` command still ships in
+`@metta-ts/node` and works exactly as before, now a thin wrapper over the shared
+engine.
+
+## Verification
+
+Checked on Linux with Node and pnpm.
+
+- Build, type check, lint, and format checks pass across all twelve packages.
+- `pnpm test` passes: 1,218 tests across 126 files, with 38 optional live
+  integration tests (7 files) skipped.
+- The oracle passes all 23 corpus files, byte-identical to 1.2.0: the extraction
+  moves the library source without changing it.
+- The repository is REUSE 3.3 compliant.
+
+## Packages
+
+All public packages use version `1.3.0`:
+
+```bash
+npm install @metta-ts/core@1.3.0
+npm install -g @metta-ts/node@1.3.0
+```
+
+The standard libraries and the debugger engine are available on their own:
+
+```bash
+npm install @metta-ts/libraries@1.3.0
+npm install @metta-ts/debug@1.3.0
+```
+
 # MeTTa TS 1.2.0
 
 MeTTa TS 1.2.0 adds eight importable standard libraries and makes the core list

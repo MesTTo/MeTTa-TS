@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2026 MesTTo
+;
+; SPDX-License-Identifier: MIT
+
 (= (TupleConcat $Ev1 $Ev2)
    (unique-atom (collapse (superpose ((superpose $Ev1) (superpose $Ev2))))))
 

@@ -1,3 +1,8 @@
+; SPDX-FileCopyrightText: 2025 Patrick Hammer — PeTTa (https://github.com/trueagi-io/PeTTa)
+; SPDX-FileCopyrightText: 2026 MesTTo — MeTTa-TS adaptation
+;
+; SPDX-License-Identifier: MIT
+
 ;;; EFFICIENT AMORTIZED O(1) OP FUNCTIONAL QUEUE ;;;
 
 ;Enqueue adds 1 to N

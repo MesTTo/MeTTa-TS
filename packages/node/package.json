@@ -1,6 +1,6 @@
 {
   "name": "@metta-ts/node",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -28,6 +28,8 @@
   },
   "dependencies": {
     "@metta-ts/core": "workspace:*",
+    "@metta-ts/debug": "workspace:*",
+    "@metta-ts/libraries": "workspace:*",
     "@metta-ts/prolog": "workspace:*",
     "@metta-ts/py": "workspace:*"
   },

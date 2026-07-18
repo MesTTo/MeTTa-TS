@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2026 MesTTo
+//
+// SPDX-License-Identifier: MIT
+
 // Generate a node-graph reduction GIF from the command line, no browser.
 //
 //   node scripts/gen-graph-gif.mjs <program.metta> "<query>" <out.gif> [width]

@@ -1,7 +1,8 @@
 ; SPDX-FileCopyrightText: 2025 Patrick Hammer — PeTTa (https://github.com/trueagi-io/PeTTa)
+; SPDX-FileCopyrightText: 2026 Nil Geisweiller — chaining (https://github.com/ngeiswei/chaining)
 ; SPDX-FileCopyrightText: 2026 MesTTo — MeTTa-TS adaptation
 ;
-; SPDX-License-Identifier: MIT
+; SPDX-License-Identifier: GPL-3.0-only
 ;
 ; Adapted from PeTTa examples/nilbc.metta for MeTTa-TS (Hyperon) conventions.
 

@@ -108,6 +108,9 @@ importers:
       '@metta-ts/core':
         specifier: workspace:*
         version: link:../core
+      '@metta-ts/libraries':
+        specifier: workspace:*
+        version: link:../libraries
 
   packages/core:
     dependencies:
@@ -137,6 +140,12 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/debug:
+    dependencies:
+      '@metta-ts/core':
+        specifier: workspace:*
+        version: link:../core
+
   packages/edsl:
     dependencies:
       '@metta-ts/hyperon':
@@ -161,12 +170,27 @@ importers:
       '@metta-ts/core':
         specifier: workspace:*
         version: link:../core
+      '@metta-ts/libraries':
+        specifier: workspace:*
+        version: link:../libraries
+
+  packages/libraries:
+    dependencies:
+      '@metta-ts/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/node:
     dependencies:
       '@metta-ts/core':
         specifier: workspace:*
         version: link:../core
+      '@metta-ts/debug':
+        specifier: workspace:*
+        version: link:../debug
+      '@metta-ts/libraries':
+        specifier: workspace:*
+        version: link:../libraries
       '@metta-ts/prolog':
         specifier: workspace:*
         version: link:../prolog

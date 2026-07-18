@@ -11,7 +11,6 @@
 import type { Atom } from "./atom";
 import { parseAll } from "./parser";
 import { standardTokenizer } from "./runner";
-import { LIBRARY_MODULE_SRCS } from "./libraries";
 
 /** The `concurrency` module: timing/concurrency extensions (transaction, and later par/race/mutex). */
 export const CONCURRENCY_MODULE_SRC = `
@@ -62,7 +61,16 @@ export const JSON_MODULE_SRC = `
     (@return "Metta object"))
 `;
 
+const NATIVE_MODULE_NAMES = new Set(["concurrency", "json", "catalog", "fileio", "git"]);
 const moduleCache = new Map<string, Atom[]>();
+const registry = new Map<string, string>();
+
+/** Register a built-in module source resolvable via `(import! &self <name>)`. Reserved native names cannot be shadowed. */
+export function registerBuiltinModule(name: string, src: string): void {
+  if (NATIVE_MODULE_NAMES.has(name)) throw new Error(`built-in module name is reserved: ${name}`);
+  registry.set(name, src);
+  moduleCache.clear();
+}
 
 /** The `catalog` module: module-catalog management (list/update/clear), mirroring hyperon-experimental.
  *  The operations are grounded (in builtins.ts) over a minimal in-memory catalog; this source supplies
@@ -171,8 +179,7 @@ export function builtinModules(): Map<string, Atom[]> {
     moduleCache.set("catalog", parseModule(CATALOG_MODULE_SRC));
     moduleCache.set("fileio", parseModule(FILEIO_MODULE_SRC));
     moduleCache.set("git", parseModule(GIT_MODULE_SRC));
-    // Ported PeTTa standard libraries (see libraries.ts), each importable by its own name.
-    for (const [name, src] of Object.entries(LIBRARY_MODULE_SRCS)) {
+    for (const [name, src] of registry) {
       moduleCache.set(name, parseModule(src));
     }
   }

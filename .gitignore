@@ -13,3 +13,17 @@ website/.vitepress/dist/
 website/.vitepress/cache/
 # Local hyperon venv for the @metta-ts/py differential oracle (HYPERON_LIVE=1)
 .venv-hyperon/
+
+# Test coverage and V8 profiler output
+coverage/
+isolate-*.log
+
+# Local scratch, notes, and screenshots (never committed)
+/ai-notes/
+/ai-tmp/
+/ai-*.md
+/metta-interlingua/
+/scratch-review/
+/billboard-25d.png
+/browser-ide-mobile.png
+/readme-full.png

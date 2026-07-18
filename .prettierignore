@@ -3,6 +3,7 @@
 packages/core/src/prelude.ts
 corpus/**
 pnpm-lock.yaml
+ai-*.md
 
 packages/das-client/src/gen/
 packages/das-client/proto/

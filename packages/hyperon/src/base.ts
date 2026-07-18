@@ -6,6 +6,7 @@
  * Runtime API: spaces, tokenizer, parser, and MeTTa runner, modeled on Hyperon's `hyperon.base` and
  * `hyperon.runner`. TypeScript surface over `@metta-ts/core`.
  */
+import "@metta-ts/libraries";
 import * as core from "@metta-ts/core";
 import { Atom } from "./atoms";
 import { Bindings, BindingsSet } from "./bindings";

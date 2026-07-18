@@ -1,6 +1,7 @@
-// SPDX-FileCopyrightText: 2026 MesTTo
+// SPDX-FileCopyrightText: 2026 Nil Geisweiller — chaining (https://github.com/trueagi-io/chaining)
+// SPDX-FileCopyrightText: 2026 MesTTo — MeTTa-TS adaptation
 //
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 
 // The proof-size-bounded backward chainer from Nil Geisweiller's bfc-xp.metta (obc/obc-gtz plus the three
 // Łukasiewicz propositional axioms and modus ponens), a rule-based (not space-based), Number-size-bounded

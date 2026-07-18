@@ -4,6 +4,7 @@
 
 // In-memory Node source runners. Unlike the package root, this file never imports node:fs; embedders that
 // already resolved imports can use it without adding file-backed capabilities to the process.
+import "@metta-ts/libraries";
 import {
   DEFAULT_FUEL,
   evalSequential,

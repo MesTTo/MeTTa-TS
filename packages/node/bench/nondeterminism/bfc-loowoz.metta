@@ -1,3 +1,8 @@
+; SPDX-FileCopyrightText: 2026 Nil Geisweiller — chaining (https://github.com/trueagi-io/chaining)
+; SPDX-FileCopyrightText: 2026 MesTTo — MeTTa-TS adaptation
+;
+; SPDX-License-Identifier: GPL-3.0-only
+
 ;; Proof-size-bounded backward chaining workload from:
 ;; https://github.com/trueagi-io/chaining/blob/bc9beb2672953e07971b3abecc1fe67651ecddc4/experimental/backward-via-forward/bfc-xp.metta
 

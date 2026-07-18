@@ -22,9 +22,11 @@ npm install @metta-ts/hyperon     # a Python-hyperon-style class API
 npm install @metta-ts/edsl        # a typed TypeScript eDSL for building MeTTa
 npm install @metta-ts/node        # CLI + file import! + a parallel matcher
 npm install @metta-ts/browser     # web entry + in-memory virtual file system
+npm install @metta-ts/libraries   # PeTTa standard libraries (auto-loaded by node/hyperon/browser)
 npm install @metta-ts/py          # optional Python interop: pythonia or Pyodide
 npm install @metta-ts/prolog      # optional Prolog interop: SWI native or SWI-WASM
 npm install @metta-ts/grapher     # visual editor + browser or Node reduction GIFs
+npm install @metta-ts/debug       # debugger engine (trace + why); the metta-debug CLI ships in @metta-ts/node
 ```
 
 For the command-line runner, install `@metta-ts/node` globally (or use `npx`):

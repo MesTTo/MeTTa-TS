@@ -5,6 +5,7 @@
 // Browser source runners. They mirror the Node source runners without file-system capability: imports come
 // from an in-memory VFS, async forms run through the core async driver, and browser hyperpose uses Web Workers
 // when the host exposes them.
+import "@metta-ts/libraries";
 import {
   DEFAULT_FUEL,
   evalSequential,

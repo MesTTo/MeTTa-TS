@@ -1,3 +1,7 @@
+; SPDX-FileCopyrightText: 2026 MesTTo
+;
+; SPDX-License-Identifier: MIT
+
 !(import! &self (library lib_tabling))
 
 !(tabled (fib $N))

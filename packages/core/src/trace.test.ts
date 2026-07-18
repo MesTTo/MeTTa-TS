@@ -12,9 +12,18 @@ import { runProgram } from "./runner";
 import { format } from "./parser";
 import type { TraceEvent } from "./trace";
 
-const NARS_QUERY = `!(import! &self nars)
-  (= (kb) ((Sentence ((--> a b) (stv 1.0 0.9)) (1)) (Sentence ((--> b c) (stv 1.0 0.9)) (2))))
-  !(NARS.Query (kb) (--> a c) 5 5 10)`;
+const QUEUE_TRACE_PROGRAM = `
+  (: Score (-> Expression Number))
+  (= (Score (item $name $score)) $score)
+  (= (Score ()) -99999.0)
+  (: BestCandidate (-> Atom %Undefined% Expression %Undefined%))
+  (= (BestCandidate $evaluateCandidateFunction $bestCandidate $tuple)
+     (max-by-atom $evaluateCandidateFunction $bestCandidate $tuple))
+  (: LimitSize (-> Expression Number Expression))
+  (= (LimitSize $L $size)
+     (top-k-by-atom Score $size $L))
+  !(BestCandidate Score () ((item a 1) (item b 3) (item c 2)))
+  !(LimitSize ((item a 1) (item b 3) (item c 2)) 2)`;
 
 const collect = (src: string): TraceEvent[] => {
   const events: TraceEvent[] = [];
@@ -23,8 +32,8 @@ const collect = (src: string): TraceEvent[] => {
 };
 
 describe("execution trace bus", () => {
-  it("emits grounded and reduce events, and does not specialize the library reducers", () => {
-    const events = collect(NARS_QUERY);
+  it("emits grounded and reduce events, and does not specialize the queue reducers", () => {
+    const events = collect(QUEUE_TRACE_PROGRAM);
     const groundedOps = new Set(events.flatMap((e) => (e.kind === "grounded" ? [e.op] : [])));
     // The reasoner's queue helpers now run through the general grounded reducers, not a recursive fold.
     expect(groundedOps.has("max-by-atom")).toBe(true);
@@ -55,8 +64,8 @@ describe("execution trace bus", () => {
   });
 
   it("is byte-identical with tracing on versus off", () => {
-    const off = runProgram(NARS_QUERY).map((g) => g.results.map(format));
-    const on = runProgram(NARS_QUERY, undefined, undefined, { trace: () => {} }).map((g) =>
+    const off = runProgram(QUEUE_TRACE_PROGRAM).map((g) => g.results.map(format));
+    const on = runProgram(QUEUE_TRACE_PROGRAM, undefined, undefined, { trace: () => {} }).map((g) =>
       g.results.map(format),
     );
     expect(on).toEqual(off);

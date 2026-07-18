@@ -29,3 +29,38 @@ path = ["corpus/EXPECTED.txt"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 TrueAGI Inc. and the hyperon-experimental contributors"
 SPDX-License-Identifier = "MIT"
+
+# Pure MeTTa library sources are generated back into runtime strings, so they cannot carry inline headers.
+# They are ports of Patrick Hammer's PeTTa lib/lib_*.metta set; roman is Roman Treutlein's PeTTa prelude.
+[[annotations]]
+path = ["packages/libraries/src/roman/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2025 Roman Treutlein — PeTTa (https://github.com/trueagi-io/PeTTa)",
+  "2026 MesTTo — MeTTa-TS adaptation",
+]
+SPDX-License-Identifier = "MIT"
+
+[[annotations]]
+path = [
+  "packages/libraries/src/vector/**",
+  "packages/libraries/src/combinatorics/**",
+  "packages/libraries/src/patrick/**",
+  "packages/libraries/src/datastructures/**",
+  "packages/libraries/src/spaces/**",
+  "packages/libraries/src/nars/**",
+  "packages/libraries/src/pln/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2025 Patrick Hammer — PeTTa (https://github.com/trueagi-io/PeTTa)",
+  "2026 MesTTo — MeTTa-TS adaptation",
+]
+SPDX-License-Identifier = "MIT"
+
+# @metta-ts/py interop parity fixtures and binary docs-site assets carry no inline header.
+[[annotations]]
+path = ["packages/py/corpus/**", "website/public/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 MesTTo"
+SPDX-License-Identifier = "MIT"
