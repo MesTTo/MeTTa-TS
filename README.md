@@ -19,6 +19,7 @@ Other packages, add as needed:
 
 ```bash
 npm install @metta-ts/hyperon     # a Python-hyperon-style class API
+npm install @metta-ts/edsl        # a typed TypeScript eDSL for building MeTTa
 npm install @metta-ts/node        # CLI + file import! + a parallel matcher
 npm install @metta-ts/browser     # web entry + in-memory virtual file system
 npm install @metta-ts/py          # optional Python interop: pythonia or Pyodide
@@ -35,6 +36,24 @@ metta-ts path/to/program.metta
 # without a global install:
 npx -p @metta-ts/node metta-ts path/to/program.metta
 ```
+
+### Experimental channel
+
+A prerelease line ships ahead of stable on the `experimental` npm dist-tag. It
+carries the in-progress Minimal MeTTa runtime and the Grounded V2 operation
+protocol: owned, pull-based answer streams with per-answer binding deltas and
+effects, and `MeTTa.registerStreamingOperation` on the runner. Opt in per package
+with the tag:
+
+```bash
+npm install @metta-ts/core@experimental
+npm install @metta-ts/hyperon@experimental
+```
+
+A plain `npm install @metta-ts/core` stays on the stable `latest` tag. The
+experimental surface may still change before it lands in a stable release; see the
+[`experimental` branch](https://github.com/MesTTo/MeTTa-TS/tree/experimental) and
+the [1.2.0-experimental.0 notes](https://github.com/MesTTo/MeTTa-TS/releases/tag/v1.2.0-experimental.0).
 
 ## Quick start
 
@@ -252,6 +271,8 @@ A faithful port of hyperon-experimental's minimal interpreter (the nondeterminis
 
 Beyond the core: transactions, async evaluation, concurrency primitives (`par`, `race`, `once`, `hyperpose`, `with-mutex`), clause indexing that scales matching to millions of atoms, a flat interned knowledge base with a worker-thread parallel matcher, and a JavaScript interop layer (`js-atom`, `js-dot`, `js-list`, `js-dict`) that calls into the host runtime directly.
 
+Eight PeTTa standard libraries load on demand with `(import! &self <name>)`, kept off the prelude so they leave default behavior unchanged: `vector`, `roman`, `combinatorics`, `patrick`, `datastructures`, `spaces`, and the `nars` and `pln` reasoners. The core list operations `size-atom`, `map-atom`, `filter-atom`, and `foldl-atom` run in linear time on a constant native stack.
+
 The language engine is pure TypeScript. The core builds to a single ESM bundle
 (~23 KB gzipped) that runs in Node and the browser with no native addon and no
 required WASM. Optional host adapters are separate packages: Pyodide and
@@ -266,87 +287,43 @@ node packages/node/dist/cli.js examples/factorial.metta
 
 ## Packages
 
-| Package                                       | What it is                                                                                    |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| [`@metta-ts/core`](packages/core)             | The interpreter, parser, type system, and standard library. Zero platform dependencies.       |
-| [`@metta-ts/hyperon`](packages/hyperon)       | A TypeScript class API over the core, modeled on Python's `hyperon`.                          |
-| [`@metta-ts/edsl`](packages/edsl)             | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template.     |
-| [`@metta-ts/node`](packages/node)             | The `metta-ts` CLI, file `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher. |
-| [`@metta-ts/browser`](packages/browser)       | Browser entry point with an in-memory virtual file system for `import!`.                      |
-| [`@metta-ts/py`](packages/py)                 | Optional Python interop: PeTTa's `py-call` and Hyperon's `py-atom`, over pythonia or Pyodide. |
-| [`@metta-ts/prolog`](packages/prolog)         | Optional Prolog interop: PeTTa-compatible predicate calls over SWI-Prolog or SWI-WASM.        |
-| [`@metta-ts/das-client`](packages/das-client) | Optional client to SingularityNET's Distributed AtomSpace via a Connect gateway.              |
+| Package                                         | What it is                                                                                    |
+| ----------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| [`@metta-ts/core`](packages/core)               | The interpreter, parser, type system, and standard library. Zero platform dependencies.       |
+| [`@metta-ts/hyperon`](packages/hyperon)         | A TypeScript class API over the core, modeled on Python's `hyperon`.                          |
+| [`@metta-ts/edsl`](packages/edsl)               | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template.     |
+| [`@metta-ts/node`](packages/node)               | The `metta-ts` CLI, file `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher. |
+| [`@metta-ts/browser`](packages/browser)         | Browser entry point with an in-memory virtual file system for `import!`.                      |
+| [`@metta-ts/py`](packages/py)                   | Optional Python interop: PeTTa's `py-call` and Hyperon's `py-atom`, over pythonia or Pyodide. |
+| [`@metta-ts/prolog`](packages/prolog)           | Optional Prolog interop: PeTTa-compatible predicate calls over SWI-Prolog or SWI-WASM.        |
+| [`@metta-ts/grapher`](packages/grapher)         | MeTTaGrapher: a visual editor with browser and headless Node reduction-GIF rendering.         |
+| [`@metta-ts/das-client`](packages/das-client)   | Optional client to SingularityNET's Distributed AtomSpace via a Connect gateway.              |
+| [`@metta-ts/das-gateway`](packages/das-gateway) | Optional transport-agnostic gateway bridging the browser to a Distributed AtomSpace.          |
 
 ## Performance
 
-The pure-MeTTa path stays TypeScript throughout, with no escape to native code. The interpreter uses a precomputed-ground short-circuit, structural sharing in substitution, a cons-list instruction stack, and Prolog-style clause indexing by head functor, indexable ground-leaf arguments at every position, and one nested expression-head level. A functor-and-argument-keyed query over a 1,000,000-atom knowledge base resolves in about 0.2 to 1.4 ms. See [`packages/node/bench/RESULTS.md`](packages/node/bench/RESULTS.md) for the full benchmark log.
+The pure-MeTTa path stays TypeScript throughout, with no escape to native code,
+and is still fast: a functor-and-argument-keyed query over a 1,000,000-atom
+knowledge base resolves in about 0.2 to 1.4 ms.
 
-### Head-to-head with PeTTa
+On the reproducible corpus benchmark
+([`corpus-bench.mjs`](packages/node/bench/corpus-bench.mjs) runs the PeTTa
+example corpus through both engines and checks each program’s `(test …)`
+assertions), MeTTa TS passes all 98 Hyperon-faithful shared programs and is
+**faster than PeTTa on every one**, median 1.63x, from pure TypeScript.
 
-A reproducible benchmark ([`packages/node/bench/corpus-bench.mjs`](packages/node/bench/corpus-bench.mjs)) runs the PeTTa example corpus through both engines as subprocesses and checks each program's embedded `(test …)` assertions. On the Hyperon-faithful subset (host-FFI examples and PeTTa-only execution-model examples are excluded, with the reason recorded for each), MeTTa TS passes 98 of the shared programs and is **faster than PeTTa on all 98**, median 1.63x and geomean 1.69x, on SWI-Prolog's GMP-backed integers, from pure TypeScript. Three-run both-pass totals are PeTTa 29.0s and MeTTa TS 17.7s.
+The core list operations run in linear time. `size-atom`, `map-atom`,
+`filter-atom`, and `foldl-atom` over N elements are O(N) on a constant native
+stack, byte-identical to the prelude recursion up to variable renaming, and beat
+PeTTa 2.7x to 5.2x at N=100000.
 
-A representative slice (wall-clock, subprocess including startup; `speedup` = PeTTa / MeTTa TS):
-
-| Program            |   PeTTa | MeTTa TS |   Speedup |
-| ------------------ | ------: | -------: | --------: |
-| `peano`            | 1645 ms |   304 ms | **5.41×** |
-| `fib`              |  486 ms |    98 ms | **4.99×** |
-| `fibadd`           |  471 ms |   107 ms | **4.39×** |
-| `peanofast`        |  571 ms |   134 ms | **4.25×** |
-| `tilepuzzle`       | 1603 ms |   415 ms | **3.86×** |
-| `permutations`     |  899 ms |   614 ms |     1.46× |
-| `he_minimalmetta`  | 1843 ms |  1272 ms |     1.45× |
-| `matespacefast`    | 4603 ms |  3701 ms |     1.24× |
-| `factorial`        |  162 ms |   144 ms |     1.12× |
-| `hyperpose_primes` | 1165 ms |  1107 ms |     1.05× |
-| `nilbc`            |  773 ms |   748 ms |     1.03× |
-
-The full per-program table is in [`RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md).
-
-The checked nondeterminism benchmark also includes four adversarial programs reported by Patrick Hammer and the `jarr` and `loowoz` bounded backward-chaining queries reported by Nil Geisweiller. Both BFC files extract the exact `obc` definitions and target queries from [`trueagi-io/chaining@bc9beb2`](https://github.com/trueagi-io/chaining/blob/bc9beb2672953e07971b3abecc1fe67651ecddc4/experimental/backward-via-forward/bfc-xp.metta). These are 15-run subprocess medians measured on 2026-07-15 on an AMD Ryzen 9 9950X, including startup, with Node 22.22.1 and the clean PeTTa `6f5639a` checkout on SWI-Prolog 9.2.9:
-
-| Program                          | PeTTa ms | PeTTa MiB | MeTTa TS ms | MeTTa TS MiB |   Speedup |
-| -------------------------------- | -------: | --------: | ----------: | -----------: | --------: |
-| BFC `jarr`                       |    136.5 |      16.4 |       113.6 |         91.4 | **1.20x** |
-| BFC `loowoz`                     |   2466.3 |      16.4 |       743.6 |        100.0 | **3.32x** |
-| filtered `matespacefast` matches |   6140.3 |    3331.0 |      3380.2 |        424.6 | **1.82x** |
-| 22^4 `superpose` cross product   |    354.5 |      87.9 |       150.3 |        146.8 | **2.36x** |
-| nondeterministic tabled `fib(7)` |    128.6 |      16.3 |        98.5 |         79.9 | **1.31x** |
-| duplicate-heavy `TupleConcat`    |    127.6 |      16.3 |        98.0 |         78.6 | **1.30x** |
-
-The MiB columns are the highest sampled process-tree RSS across the 15 runs on Linux.
-
-The benchmark validates both `jarr` proofs and all three `loowoz` proofs in exact order, all 234,256 cross-product results, all 196 distinct Fibonacci answers, the exact `TupleConcat` result, and the embedded matespace assertion. MeTTa TS uses the same default evaluator as the CLI. No benchmark, PeTTa, curry, or tabling mode is selected.
-
-Against the untouched 1.1.5 build on the same machine, alternating exact-output comparisons improved `jarr` by 1.14x cold and 1.12x loaded. `loowoz` improved by 1.18x cold and 1.31x loaded. The `jarr` cold path also improved on Node 20, 22, and 24. Ineligible programs skip the new route and retain the old generated module shape.
-
-Automatic tabling does not memoize every recursive function. Admission requires transitive purity and a recursive strongly connected component that branches back into itself at least twice. Linear recursion such as factorial stays on the compiled path. Custom host operations and space, state, file, random, time, import, and output operations are excluded.
-
-Completed and active tables share hard entry, answer, retained-cell, per-entry, and interner limits. Completed entries are LRU-evictable. Active entries cannot be evicted while their producer runs, so a call that cannot fit returns `TableResourceLimit` instead of continuing toward process exhaustion. See [Scaling to millions of atoms](website/advanced/scaling.md#automatic-tabling) for the current limits and completion policy.
-
-That speed comes from general engine work:
-
-- an O(1)-stack reduce-loop trampoline;
-- a Set-based (O(n)) variable/binding path;
-- deferred rule-RHS freshening with a head-shape candidate pre-filter;
-- an O(1)-stack worklist for nondeterminism;
-- ground-atom type memoisation;
-- an exact-match ground-fact index;
-- nested argument-functor indexing for ground static and runtime facts such as `(num (M $x))`;
-- bounded automatic tabling of pure overlapping-recursive functions, with structural token keys, runtime rule-versioned entries, and one shared budget for completed and active tables;
-- consumer-directed distinct memoization and streaming choice deduplication only where `unique-atom(collapse(...))` makes duplicate derivations unobservable, while ordinary `collapse` keeps its exact ordered bag;
-- a slot-based evaluator for closed pure `let` and `superpose` products that preserves result order and multiplicity without allocating general binding frames;
-- a native-code compiler for the pure deterministic int/bool/tuple subset, with tail-recursion compiled to loops and PeTTa-style **higher-order specialisation** so a function passed as an argument (e.g. `iterate`'s `$step`) is bound and compiled rather than interpreted;
-- a compiler for **nondeterministic `let*`-chain functions** (the backward-chainer class): a multi-equation function whose clause bodies chain space matches and recursive calls compiles to a clause-major depth-first search, the same fragment PeTTa hands to Prolog's clause alternatives;
-- dependency-sensitive dispatch for static pure search: answer-dependent recursive joins use the compiler first, while independent overlapping calls retain moded tabling; common-result-layout compilation omits input-projected fields from recursive continuations and constructs a proven independent output only after child searches succeed;
-- WAM-style fresh write-mode binding: when static dataflow proves that every slot in a constructed pattern subtree is introduced at that site, generated code binds the new structure directly; input and previously introduced slots retain the full occurs-checking unifier;
-- a compiler for **add-atom saturation loops**: the add-if-absent idiom becomes one exact-membership probe plus append, and a single-branch `case` over a space match becomes a snapshot-and-thread loop with Empty-pruned branches.
-
-Every one of these is verified against the 270-assertion Hyperon oracle and the LeaTTa differential; all are byte-identical except the nondeterministic compiler, whose results are alpha-equivalent (fresh variables get different gensym numbers, consistently renamed, deterministic run to run).
-
-The last holdouts fell in order. `permutations` is a 28-relation conjunctive `(length (collapse (match &self (, …) …)))`: MeTTa TS folds the worst-case-optimal join and counts each solution rather than materialising the ~360k answer atoms, which brings the current corpus run to 614 ms, under PeTTa's 899 ms. `hyperpose_primes` races `(once (hyperpose …))` across Node worker threads. `nilbc` is a dependently-typed backward chainer: compiling its clauses to a collect-all search with the interpreter's own unification brings the current run to 748 ms, under PeTTa's 773 ms. `peano`, the final one, is an impure dedup-build loop: compiling its saturation step (a `case` over the space with add-if-absent branches) to membership probes on the exact-match index brings the current run to 304 ms, under PeTTa's 1645 ms. The remaining parity work (PLN/NARS library ports, PeTTa-only execution-model examples) is tracked in [`packages/node/bench/TODO-parity.md`](packages/node/bench/TODO-parity.md).
-
-`matespace`/`matespace2` are **PeTTa-specific** and excluded from the faithful subset. Their expected counts, 1063919 and 1297533, are produced only by PeTTa's compilation to Prolog: native backtracking over a globally-persistent atomspace, with duplicate adds pruned by failure, which is not minimal-MeTTa semantics. Run through `hyperon-experimental` itself, `(collapse (mate-space-demo K))` is empty, and LeaTTa agrees. PeTTa, real Hyperon, and MeTTa TS each compute a different result for the same program, so no Hyperon-faithful engine reproduces PeTTa's number. The faithful rewrite of the same workload is `matespacefast`, which uses deterministic tuple recursion instead of a `case`-driven non-deterministic build. MeTTa TS runs it 1.24× faster than PeTTa in the latest corpus run, byte-identical.
+The full per-program tables, memory figures, and the nondeterminism and
+bounded-backward-chaining benchmarks are in
+[`RESULTS.md`](packages/node/bench/RESULTS.md),
+[`RESULTS-corpus.md`](packages/node/bench/RESULTS-corpus.md), and
+[`RESULTS-listops.md`](packages/node/bench/RESULTS-listops.md). Each
+release’s notes in [`RELEASE_NOTES.md`](RELEASE_NOTES.md) describe the engine
+work behind that version’s numbers.
 
 ## Provenance
 

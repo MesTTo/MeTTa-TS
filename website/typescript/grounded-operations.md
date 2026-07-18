@@ -32,7 +32,7 @@ metta.registerOperation("checked-sqrt", (args: Atom[]) => {
   return [ValueAtom(Math.sqrt(n))];
 });
 
-metta.run("!(checked-sqrt -1)"); // [ (Error (checked-sqrt -1) "negative input") ]
+metta.run("!(checked-sqrt -1)"); // [ (Error (checked-sqrt -1) negative input) ]
 ```
 
 ## Falling through to other rules

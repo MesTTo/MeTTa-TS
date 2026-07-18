@@ -47,7 +47,7 @@ To make an expression reduce to something other than itself, define an equality 
 ```metta
 (= (only-a A) accepted)
 !(only-a A)        ; accepted
-!(only-a B)        ; (only-a B)  — no rule matches, so it is left unreduced
+!(only-a B)        ; (only-a B): no rule matches, so it is left unreduced
 ```
 
 </MettaRunner>
@@ -59,7 +59,7 @@ There is no error for `(only-a B)`; it is just a value the interpreter could not
 <MettaRunner>
 
 ```metta
-!(respond me)              ; (respond me) — no rule yet
+!(respond me)              ; (respond me): no rule yet
 (= (respond me) ok)
 !(respond me)              ; ok
 ```
@@ -97,7 +97,7 @@ It is more general than functional-language matching, because the pattern can be
 ```metta
 (= (check ($x $y $x)) ($x $y))
 !(check (B A B))   ; (B A)
-!(check (B A A))   ; (check (B A A)) — does not match, left unreduced
+!(check (B A A))   ; (check (B A A)): does not match, left unreduced
 ```
 
 </MettaRunner>
@@ -124,7 +124,7 @@ This even applies when a specific rule and a general rule both match:
 (= (f special) caught)
 (= (f $x) $x)
 !(f A)             ; A
-!(f special)       ; caught and special — both
+!(f special)       ; caught and special, both
 ```
 
 </MettaRunner>

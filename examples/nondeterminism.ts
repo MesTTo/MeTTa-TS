@@ -30,5 +30,5 @@ for (const { query, results: rs } of results) {
 }
 // !(bin)                       => [ '0', '1' ]
 // !(superpose (red green blue))=> [ 'red', 'green', 'blue' ]
-// !(collapse (bin))            => [ '(0 1)' ]
+// !(collapse (bin))            => [ '(, 0 1)' ]
 // !(double (superpose (1 2 3)))=> [ '2', '4', '6' ]

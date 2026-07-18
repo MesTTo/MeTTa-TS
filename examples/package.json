@@ -13,6 +13,7 @@
     "matching": "tsx matching.ts",
     "nondeterminism": "tsx nondeterminism.ts",
     "stdlib": "tsx stdlib.ts",
+    "standard-libraries": "metta-ts standard-libraries.metta",
     "types": "tsx types.ts",
     "js-interop": "tsx js-interop.ts",
     "python-interop": "tsx python-interop.ts",
@@ -25,6 +26,7 @@
     "transactions": "tsx transactions.ts",
     "scaling": "tsx scaling.ts",
     "parallel-matcher": "tsx parallel-matcher.ts",
+    "grapher": "tsx grapher.ts",
     "grapher-gif": "tsx grapher-gif.ts",
     "typecheck": "tsc --noEmit"
   },

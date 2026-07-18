@@ -1,6 +1,6 @@
 # @metta-ts/das-client
 
-A client for SingularityNET's Distributed AtomSpace (DAS). It lets a MeTTa TS program query a remote, shared atomspace over gRPC, and it presents that DAS as a `Space` backend, so a DAS drops in wherever an in-memory space would. It is Node-only, because a participant hosts an inbound bus node; from the browser you reach a DAS through [`@metta-ts/das-gateway`](../das-gateway).
+A client for SingularityNET's Distributed AtomSpace (DAS). It lets a MeTTa TS program query a remote, shared atomspace over gRPC, and it presents that DAS as a `Space` backend, so a DAS drops in wherever an in-memory space would. It is Node-only, because a participant hosts an inbound bus node; from the browser you reach a DAS through [`@metta-ts/das-gateway`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-gateway).
 
 ## Install
 
@@ -43,8 +43,8 @@ DAS_LIVE=1 pnpm vitest run packages/das-client/src/live-query.test.ts
 
 Two things to know:
 
-- **Query leaves are bare Symbols, not quoted strings.** `animals.metta` stores `is_animal`, `human`, etc. as Symbols, so build the pattern with `sym("is_animal")`, not `gstr("is_animal")` / `sym('"is_animal"')`. (An older das quoted string literals; that is gone.)
-- **Linux only: pin MongoDB to 7.0.** On Linux kernels >= 6.19, das-cli's default `mongodb-community-server:8.x` refuses to start (`ERROR: ... tcmalloc ... known issue with the v6.19 and newer Linux kernel`). Set `MONGODB_IMAGE_NAME = "mongo"` and `MONGODB_IMAGE_VERSION = "7.0"` in das-cli's `settings/config.py` so `db start` succeeds. Other platforms (and older kernels) run the 8.x default fine.
+- Query leaves are bare Symbols, not quoted strings. `animals.metta` stores `is_animal`, `human`, etc. as Symbols, so build the pattern with `sym("is_animal")`, not `gstr("is_animal")` / `sym('"is_animal"')`. (An older das quoted string literals; that is gone.)
+- On Linux with kernel >= 6.19, pin MongoDB to 7.0: das-cli's default `mongodb-community-server:8.x` refuses to start (`ERROR: ... tcmalloc ... known issue with the v6.19 and newer Linux kernel`). Set `MONGODB_IMAGE_NAME = "mongo"` and `MONGODB_IMAGE_VERSION = "7.0"` in das-cli's `settings/config.py` so `db start` succeeds. Other platforms (and older kernels) run the 8.x default fine.
 
 A pattern with a variable then returns the matched bindings:
 

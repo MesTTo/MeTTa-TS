@@ -20,6 +20,7 @@ export * from "./space";
 export * from "./builtins";
 export * from "./eval";
 export * from "./runner";
+export type { TraceEvent, TraceSink } from "./trace";
 export * from "./host";
 export * from "./extensions";
 export * from "./stdlib";

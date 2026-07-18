@@ -33,7 +33,8 @@ const bridge = swiPrologBridge();
 const metta = new MeTTa();
 registerPrologInterop(metta, bridge);
 
-const [results] = await metta.runAsync(`
+// runAsync returns one result array per !-query; skip the assertz, take the prolog-call answer.
+const [, results] = await metta.runAsync(`
   !(assertzPredicate (Predicate (edge alice bob)))
   !(prolog-call (edge alice $x))
 `);

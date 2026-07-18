@@ -117,7 +117,7 @@ startup and long Python calls can block rendering.
 
 The unit and property tests run with no Python, against an in-process fake bridge. Two suites reach a real interpreter and are gated:
 
-- `PY_LIVE=1 pnpm vitest run packages/py` runs the pythonia end-to-end tests and the byte-parity differential against a live PeTTa checkout (`PETTA_DIR`, default `/home/user/Dev/PeTTa`).
+- `PY_LIVE=1 pnpm vitest run packages/py` runs the pythonia end-to-end tests and the byte-parity differential against a live PeTTa checkout (`PETTA_DIR`, default `../PeTTa`).
 - `HYPERON_LIVE=1 pnpm vitest run packages/py` runs the differential against pip `hyperon`. Set one up with `uv venv --python 3.11 .venv-hyperon && uv pip install -p .venv-hyperon hyperon` (override the interpreter with `HYPERON_PY`).
 - `PYODIDE_LIVE=1 pnpm vitest run packages/py/src/pyodide.test.ts`
   starts real Pyodide and checks `.py` import plus `py-call`.

@@ -59,10 +59,10 @@ The **colon** symbol `:` declares a type, as in `(: Socrates Human)`.
 
 The **arrow** symbol `->` builds a function type, as in `(: greet (-> Symbol Symbol))`.
 
-You will use `=` constantly, and meet `:` and `->` when you reach [types](/learn/evaluation/main-concepts). They are ordinary symbols, but the interpreter knows what to do with them.
+You will use `=` constantly, and meet `:` and `->` again when we get to types. They are ordinary symbols, but the interpreter knows what to do with them.
 
 ## Types and metatypes
 
-MeTTa has optional typing, close to gradual dependent types. Untyped expressions have the type `%Undefined%`; other types are just symbols and expressions you declare. On top of that sit four **metatypes**, `Symbol`, `Variable`, `Grounded`, and `Expression`, which let a program reason about the shape of atoms themselves. Types are covered in their own track; for now it is enough to know they are optional and that you can write plenty of MeTTa without them.
+MeTTa has optional typing, close to gradual dependent types. Untyped expressions have the type `%Undefined%`; other types are just symbols and expressions you declare. On top of that sit four **metatypes**, `Symbol`, `Variable`, `Grounded`, and `Expression`, which let a program reason about the shape of atoms themselves. The [Types](/learn/evaluation/types) page covers all of this; for now it is enough to know they are optional and that you can write plenty of MeTTa without them.
 
 Next, let us actually evaluate things: **[Basic evaluation](/learn/evaluation/basic-evaluation)**.

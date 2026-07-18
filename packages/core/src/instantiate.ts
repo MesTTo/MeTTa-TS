@@ -38,6 +38,13 @@ const BINDING_INDEX_MIN = (() => {
 /** A name->value view of a binding set for O(1) lookup, or null to scan the relation list directly. */
 type ValueLookup = ReadonlyMap<string, Atom> | null;
 
+// A binding set is immutable (every binding operation returns a fresh array), so its name->value index is
+// a pure function of the array and can be memoised by identity. This matters because one interpreter step
+// instantiates many atoms against the SAME binding — `scopeVars` alone re-instantiates every stack frame —
+// and rebuilding the index per call made a deep-stack step O(frames * binding), i.e. O(n^2) on a long
+// tuple. The cache is a WeakMap so an entry dies with its binding. Only indexed (large) bindings are stored.
+const lookupCache = new WeakMap<object, ReadonlyMap<string, Atom>>();
+
 // One resolution's mutable state. `visiting` is the active deref path (cycle detection). `truncations`
 // counts cycle truncations: a node whose whole subtree resolves without incrementing it is complete and
 // context-independent, so it is safe to memoize; a node spanning a truncation depends on the path and is
@@ -54,12 +61,15 @@ interface Ctx {
 
 function buildLookup(b: Bindings): ValueLookup {
   if (b.length <= BINDING_INDEX_MIN) return null;
+  const cached = lookupCache.get(b);
+  if (cached !== undefined) return cached;
   const index = new Map<string, Atom>();
   // Newest-first precedence, matching `lookupVal`: the first (most recently prepended) `val` for a name wins.
   for (let i = 0; i < b.length; i++) {
     const r = b[i]!;
     if (r.tag === "val" && !index.has(r.x)) index.set(r.x, r.a);
   }
+  lookupCache.set(b, index);
   return index;
 }
 

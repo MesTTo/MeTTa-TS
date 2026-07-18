@@ -139,4 +139,4 @@ From there, the subset-sum problem is just "generate every selection, keep the o
 
 `gen-bin-list` proposes every selection nondeterministically, `solve` keeps a selection when its sum matches and prunes it with `(empty)` otherwise. You described the problem and got the search.
 
-That completes the introduction to evaluation. From here you can dig into the standard library, types, or move to **[using MeTTa from TypeScript](/typescript/running-metta)**.
+That completes the core of evaluation. Next, meet MeTTa's optional **[type system](/learn/evaluation/types)**, then put it all into practice with the **[Exercises](/learn/exercises)**. When you are ready to embed the interpreter, continue to **[using MeTTa from TypeScript](/typescript/running-metta)**.

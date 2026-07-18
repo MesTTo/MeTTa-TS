@@ -66,13 +66,13 @@ Grounded numbers cannot be taken apart by pattern matching, so for arithmetic re
 
 </MettaRunner>
 
-Crucially, `if` does not evaluate both branches; only the taken one runs. That is what stops `factorial` from recursing forever, and it is easy to see here:
+`if` does not evaluate both branches; only the taken one runs. That is what stops `factorial` from recursing forever, and it is easy to see here:
 
 <MettaRunner>
 
 ```metta
 (= (loop) (loop))         ; an infinite loop
-!(if True done (loop))    ; done — the (loop) branch is never evaluated
+!(if True done (loop))    ; done: the (loop) branch is never evaluated
 ```
 
 </MettaRunner>

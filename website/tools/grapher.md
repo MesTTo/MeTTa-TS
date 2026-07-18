@@ -109,7 +109,7 @@ A TARGET is either a node's name, like `if`, which reaches every `if` node, or t
 
 - A **symbol node** with children composes to `(name child…)`; without children it is the bare symbol, a variable when the name starts with `$`, or a grounded value when it is a number.
 - A **list node** is a headless expression `(child…)`, so `(f)` stays distinct from `f`.
-- **Argument order is screen order.** Children sort left to right, ties top to bottom, so `(- 5 3)` is the `-` node with `5` placed left of `3`.
+- Argument order is screen order: children sort left to right, ties top to bottom, so `(- 5 3)` is the `-` node with `5` placed left of `3`.
 
 Nodes form a cycle-guarded graph, so a node can feed several parents and no cycle can form. Evaluating a node composes the atom for the tree it belongs to and shows the result beneath the top node.
 

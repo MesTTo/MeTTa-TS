@@ -28,6 +28,8 @@ for (const { query, results: rs } of results) {
 
 `runProgram` parses the source, adds every non-bang atom to the knowledge base, evaluates each `!`-query, and returns one result group per query. For a higher-level class API modeled on Python's `hyperon`, see [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon).
 
+The experimental line adds a pull-based streaming grounded-operation protocol on the `experimental` npm tag; see [Experimental features](https://mestto.github.io/MeTTa-TS/guide/experimental).
+
 ## License
 
 [MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).

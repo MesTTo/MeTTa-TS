@@ -25,7 +25,7 @@ const A = (...xs) => expr(xs);
 // connect a live DAS space (transport/connection details depend on your deployment)
 const space = new DasLiveSpace(/* connection */);
 
-// "who are Tom's children?" — every $c such that (parent Tom $c) is in the DAS
+// "who are Tom's children?": every $c such that (parent Tom $c) is in the DAS
 const results = await matchAsync(space, A(sym("parent"), sym("Tom"), variable("c")));
 console.log(results.map(String));
 ```
@@ -57,7 +57,7 @@ import { queryDas, type GatewayTransport } from "@metta-ts/das-gateway";
 import { parse, standardTokenizer } from "@metta-ts/core";
 
 const transport: GatewayTransport = {
-  /* query(request) => Promise<QueryResponse> — e.g. a Connect client */
+  /* query(request) => Promise<QueryResponse>, e.g. a Connect client */
 };
 
 const pattern = parse("(Parent $x Bob)", standardTokenizer())!;

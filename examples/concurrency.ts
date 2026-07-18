@@ -20,7 +20,7 @@ const last = async (src: string): Promise<string[]> =>
   (await runProgramAsync(src, new Map([["aw", aw]]))).at(-1)!.results.map(format);
 
 // par: three branches run concurrently; collapse gathers the union.
-console.log("par:", await last("!(collapse (par (aw 3) (aw 4) (aw 2)))")); // [ '(3 4 2)' ]
+console.log("par:", await last("!(collapse (par (aw 3) (aw 4) (aw 2)))")); // [ '(, 3 4 2)' ]
 
 // race: the fast branch (3ms) wins over the slow one (40ms).
 console.log("race:", await last("!(race (aw 40) (aw 3))")); // [ '3' ]

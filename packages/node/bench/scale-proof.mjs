@@ -224,6 +224,28 @@ const runtimeRemoval =
   `!(collapse (match &self (keep ${mid} $y) $y))`;
 runCase("runtime removal-index", runtimeRemoval, [`(, ${mid + 1})`], 15_000);
 
+// List-op scaling: `size-atom`, `map-atom`, `filter-atom`, `foldl-atom` over an N-element literal list must stay O(N).
+// Before the grounded `size-atom` short-circuit and grounded `map-atom`/`filter-atom`/`foldl-atom`, these were
+// O(n^2)/O(n^3) in the evaluator and blew the time limit (or the native stack) well before this N. The
+// generous limits here are a regression gate: a return to super-linear behaviour trips them.
+const listN = Math.min(SIZE, 200_000);
+const listLit = "(" + Array.from({ length: listN }, (_, i) => i).join(" ") + ")";
+const listSum = String((BigInt(listN) * BigInt(listN - 1)) / 2n);
+runCase("size-atom scale", `!(size-atom ${listLit})`, [String(listN)], 4_000);
+runCase(
+  "map-atom scale",
+  `(= (dbl $x) (* $x 2))\n!(size-atom (map-atom ${listLit} $x (dbl $x)))`,
+  [String(listN)],
+  10_000,
+);
+runCase(
+  "filter-atom scale",
+  `(= (ev $x) (== 0 (% $x 2)))\n!(size-atom (filter-atom ${listLit} $x (ev $x)))`,
+  [String(Math.ceil(listN / 2))],
+  10_000,
+);
+runCase("foldl-atom scale", `!(foldl-atom ${listLit} 0 $a $b (+ $a $b))`, [listSum], 10_000);
+
 const CORPUS_PROOF_CASES = [
   "foldall.metta",
   "foldallmatch.metta",

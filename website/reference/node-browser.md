@@ -34,10 +34,12 @@ With those flags, `.py` and `.pl` files imported through `import!` are handled
 by the matching host adapter. Without the flags, the CLI never loads Python,
 Prolog, or their optional dependencies.
 
+`@metta-ts/node` also installs `metta-debug`, a headless debugger for the same runner. It supports `run`, `eval`, and `why`; `why` attaches the core trace bus and reports grounded reducers, higher-order specialization, overflow cut points, reduction count, and result. See [metta-debug and traces](/tools/metta-debug).
+
 ### API
 
 ```ts
-function runFile(path: string, fuel?: number): QueryResult[];
+function runFile(path: string, fuel?: number, opts?: RunOptions): QueryResult[];
 function readImports(src: string, baseDir: string): Map<string, Atom[]>;
 class ParallelFlatMatcher {
   constructor(kb: FlatKB, workerCount?: number);

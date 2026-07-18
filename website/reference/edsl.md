@@ -59,6 +59,11 @@ const add, sub, mul, div, mod: (a: Term, b: Term) => ExpressionAtom; // arithmet
 const eq, neq, gt, lt, ge, le: (a: Term, b: Term) => ExpressionAtom; // comparison
 const and, or: (a: Term, b: Term) => ExpressionAtom;
 const not: (x: Term) => ExpressionAtom;
+const getType, getMetatype: (x: Term) => ExpressionAtom; //           get-type / get-metatype
+const unique: (x: Term) => ExpressionAtom; //                         de-duplicate a nondeterministic result
+const union, intersection, subtraction: (a: Term, b: Term) => ExpressionAtom; // set ops
+const assertEqual, assertAlphaEqual: (a: Term, b: Term) => ExpressionAtom;      // test assertions
+const println: (x: Term) => ExpressionAtom; //                        println!
 const carAtom, cdrAtom, deconsAtom: (x: Term) => ExpressionAtom; //   expression/list ops
 const consAtom: (head: Term, tail: Term) => ExpressionAtom;
 // JSON module (enable with db.useJson()):
@@ -120,6 +125,8 @@ type SourceRow<S extends string> = { [K in SourceVars<S>]: unknown }; // $-vars 
 ```
 
 `query` runs `match &self` and returns one row per match (keys inferred from the pattern, or typed by an explicit `vars` map). `q` does the same from a source string with the row keys extracted from the source's `$`-variables at compile time. `fn`/`fns`/`asyncFn` register plain typed functions (args auto-unwrapped, result auto-grounded); `op`/`asyncOp` give raw atom control. `call` and `import` call MeTTa functions back from TypeScript. Pass a schema to `mettaDB<Schema>()` to type all of these; both an `interface` and a `type` work.
+
+For annotations without a second import, the entry also re-exports `Atom`, `GroundedAtom`, `ValueAtom`, and `atomToJs` from [`@metta-ts/hyperon`](/reference/hyperon).
 
 ## Optional host interop builders
 

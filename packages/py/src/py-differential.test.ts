@@ -5,7 +5,7 @@
 // Differential oracle: the same corpus through live PeTTa (SWI + janus) and through
 // @metta-ts/py + pythonia, comparing the (RESULT ...) line sequences byte-for-byte on the parity
 // surface, and asserting mutual failure on the error corpus. Gated on PY_LIVE=1; the PeTTa checkout
-// is PETTA_DIR (default /home/user/Dev/PeTTa). The helper defs (PY_METTA_SRC) are prepended to both
+// is PETTA_DIR (default ../PeTTa). The helper defs (PY_METTA_SRC) are prepended to both
 // sides, so the corpus needs no library import.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -17,7 +17,7 @@ import { setOutputSink, runProgramAsync, format } from "@metta-ts/core";
 import { PY_METTA_SRC, pyCoreAsyncOps, type PyBridge } from "./index";
 import { makePythoniaBridge } from "./live-bridge";
 
-const PETTA = process.env.PETTA_DIR ?? "/home/user/Dev/PeTTa";
+const PETTA = process.env.PETTA_DIR ?? "../PeTTa";
 const LIVE = process.env.PY_LIVE === "1" && existsSync(join(PETTA, "run.sh"));
 const d = LIVE ? describe : describe.skip;
 

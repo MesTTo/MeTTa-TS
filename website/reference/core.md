@@ -14,10 +14,10 @@ npm install @metta-ts/core
 ## Running programs
 
 ```ts
-function runProgram(src: string, fuel?: number, imports?: Map<string, Atom[]>): QueryResult[]
+function runProgram(src: string, fuel?: number, imports?: Map<string, Atom[]>, opts?: RunOptions): QueryResult[]
 ```
 
-Parse and evaluate a MeTTa source string. Non-bang atoms are added to the knowledge base; each `!`-query is evaluated. Returns one `QueryResult` per `!`-query, in order. `fuel` bounds evaluation steps (default 100000). `imports` backs `import!` (pre-read by the caller).
+Parse and evaluate a MeTTa source string. Non-bang atoms are added to the knowledge base; each `!`-query is evaluated. Returns one `QueryResult` per `!`-query, in order. `fuel` bounds evaluation steps (default 100000). `imports` backs `import!` (pre-read by the caller). `opts` is a `RunOptions` bag that toggles tabling, the experimental interpreter flags such as `flatAtomspace`, the initial `maxStackDepth`, and the optional execution trace sink.
 
 ```ts
 function runProgramAsync(
@@ -25,10 +25,11 @@ function runProgramAsync(
   asyncOps?: Map<string, AsyncGroundFn>,
   fuel?: number,
   imports?: Map<string, Atom[]>,
+  opts?: RunOptions,
 ): Promise<QueryResult[]>
 ```
 
-Like `runProgram`, but `!`-queries are awaited so async grounded operations (passed in `asyncOps`) can do I/O. A program with no async operations gives identical results to `runProgram`.
+Like `runProgram`, but `!`-queries are awaited so async grounded operations (passed in `asyncOps`) can do I/O. A program with no async operations gives identical results to `runProgram`. `opts` is the same `RunOptions` bag used by the sync runner.
 
 ```ts
 interface QueryResult {
@@ -36,18 +37,30 @@ interface QueryResult {
   readonly results: Atom[]; // its (nondeterministic) results
 }
 
-function evalSequential(atoms: readonly { atom: Atom; bang: boolean }[], fuel?, imports?): QueryResult[]
+function evalSequential(atoms: readonly { atom: Atom; bang: boolean }[], fuel?, imports?, opts?: RunOptions): QueryResult[]
 function collectImports(src: string): string[]   // import! targets referenced by a program
 ```
 
 `evalSequential` runs an already-parsed program. `collectImports` lists the module names a program `import!`s, so a host can pre-read them.
 
+### Execution trace
+
+```ts
+type TraceSink = (event: TraceEvent) => void;
+type TraceEvent =
+  | { readonly kind: "reduce"; readonly atom: string }
+  | { readonly kind: "grounded"; readonly op: string }
+  | { readonly kind: "specialize"; readonly from: string; readonly to: string }
+  | { readonly kind: "overflow"; readonly atom: string };
+```
+
+Pass `trace` in `RunOptions` to collect internal evaluator decisions. The runner emits a formatted atom for each reduction step, a grounded operation name when a native reducer fires, a `from -> to` specialization when a higher-order functor is specialized by a function argument, and the cut-point atom when native stack overflow is caught. The types are exported from `@metta-ts/core`; see [metta-debug and traces](/tools/metta-debug) for a runnable example.
+
 ## Parsing and formatting
 
 ```ts
 function parse(src: string, tk: Tokenizer): Atom | undefined        // the first atom
-function parseAll(src: string, tk: Tokenizer): TopAtom[]            // every top-level atom
-function parseTop(src: string, tk: Tokenizer): TopAtom | undefined  // first, with its bang flag
+function parseAll(src: string, tk: Tokenizer): TopAtom[]            // every top-level atom, each with its bang flag
 function format(a: Atom): string                                    // render an atom as MeTTa text
 function standardTokenizer(): Tokenizer                             // integers, floats, True/False
 class Tokenizer { registerToken(regex: RegExp, constr: (token: string) => Atom): void }
@@ -72,7 +85,7 @@ function sym(name: string): SymAtom
 function variable(name: string): VarAtom
 function expr(items: readonly Atom[]): ExprAtom
 function gnd(value: Ground, typ?: Atom, exec?: GroundedExec, match?: GroundedMatch): GndAtom
-const gint:  (n: number) => GndAtom    // Number (integer)
+const gint:  (n: IntVal) => GndAtom    // Number (integer); IntVal = number | bigint
 const gfloat:(n: number) => GndAtom    // Number (float)
 const gstr:  (s: string) => GndAtom    // String
 const gbool: (b: boolean) => GndAtom   // Bool
@@ -83,7 +96,7 @@ const emptyExpr: ExprAtom
 A grounded atom carries a `Ground` value plus an optional type, an optional `exec` (makes it callable as an operation), and an optional `match` (custom unification):
 
 ```ts
-type GroundedExec  = (args: readonly Atom[]) => readonly Atom[];
+type GroundedExec  = (args: readonly Atom[]) => readonly Atom[] | Promise<readonly Atom[]>;
 type GroundedMatch = (other: Atom) => readonly unknown[];
 function groundType(v: Ground): Atom;     // the default type of a ground value
 function groundEq(a: Ground, b: Ground): boolean;
@@ -119,7 +132,7 @@ type GroundMatcher = (left: Atom, right: Atom) => Bindings[];
 type Bindings = readonly BindingRel[];
 const emptyBindings: Bindings;
 function lookupVal(b: Bindings, x: string): Atom | undefined
-function eqClasses(b: Bindings, x: string): string[]
+function eqRelations(b: Bindings): Iterable<EqRel>    // each eq alias relation (x ~ y), newest-first
 function addValRaw(b: Bindings, x: string, a: Atom): Bindings
 function addEqRaw(b: Bindings, x: string, y: string): Bindings
 function merge(a: Bindings, b: Bindings): Bindings[]   // consistent combinations of two frames

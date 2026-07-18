@@ -27,6 +27,7 @@ export default defineConfig({
       { text: "eDSL", link: "/edsl/overview" },
       { text: "Visual editor", link: "/tools/grapher" },
       { text: "Advanced", link: "/advanced/concurrency" },
+      { text: "Experimental", link: "/guide/experimental" },
       { text: "Reference", link: "/reference/packages" },
       { text: "Playground", link: "/playground" },
       { text: "GitHub", link: "https://github.com/MesTTo/MeTTa-TS" },
@@ -38,6 +39,14 @@ export default defineConfig({
           { text: "Introduction", link: "/guide/introduction" },
           { text: "Getting started", link: "/guide/getting-started" },
           { text: "Playground", link: "/playground" },
+        ],
+      },
+      {
+        text: "Experimental",
+        collapsed: false,
+        items: [
+          { text: "Overview", link: "/guide/experimental" },
+          { text: "Streaming grounded operations", link: "/experimental/streaming-operations" },
         ],
       },
       {
@@ -55,9 +64,11 @@ export default defineConfig({
                 text: "Free variables and nondeterminism",
                 link: "/learn/evaluation/nondeterminism",
               },
+              { text: "Types", link: "/learn/evaluation/types" },
             ],
           },
           { text: "Exercises", link: "/learn/exercises" },
+          { text: "Standard libraries", link: "/learn/standard-libraries" },
         ],
       },
       {
@@ -84,6 +95,7 @@ export default defineConfig({
         items: [
           { text: "MeTTaGrapher", link: "/tools/grapher" },
           { text: "Generate GIFs in Node.js", link: "/tools/grapher-node-gif" },
+          { text: "metta-debug and traces", link: "/tools/metta-debug" },
         ],
       },
       {

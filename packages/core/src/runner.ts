@@ -27,6 +27,7 @@ import { withBuiltinModules } from "./extensions";
 import { stdlibAtoms } from "./stdlib";
 import { pettaStdlibAtoms } from "./petta-stdlib";
 import { TableSpace } from "./table-space";
+import type { TraceSink } from "./trace";
 
 /** The standard tokenizer: integer/float literals and the `True`/`False` grounded booleans. */
 export function standardTokenizer(): Tokenizer {
@@ -103,6 +104,7 @@ function buildDefaultEnv(
   );
   env.imports = withBuiltinModules(imports);
   if (opts.hostImport !== undefined) env.hostImport = opts.hostImport;
+  if (opts.trace !== undefined) env.trace = opts.trace;
   if (experimental?.hashCons === true) env.intern = createInternTable();
   if (experimental?.trail === true) env.useTrail = true;
   if (flatAtomspaceEnabled(opts)) env.useFlatAtomspace = true;
@@ -139,6 +141,10 @@ export interface RunOptions {
   // starting bound but is not a hard ceiling; the `fuel` argument is the resource ceiling. Left to the
   // developer rather than hardcoded so a host embedding untrusted programs can pick its own policy.
   readonly maxStackDepth?: number;
+  // Optional opt-in execution trace sink. When set, the interpreter emits a `TraceEvent` per internal
+  // decision (grounded dispatch, higher-order specialization, reduction step, stack-overflow cut). Off by
+  // default at zero cost; used by the `metta-debug` CLI to explain evaluation.
+  readonly trace?: TraceSink | undefined;
   // Optional parallel branch evaluator for `(once (hyperpose …))`, supplied by hosts that can block the
   // caller while branch workers run. Node uses this for the CLI worker_threads path.
   readonly parEvalImpl?: (

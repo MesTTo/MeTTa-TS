@@ -59,8 +59,8 @@ class Range extends MatchableObject {
 }
 
 const range = G(new Range(1, 10));
-matchAtoms(range.catom, gint(5)).length;  // 1 — matches
-matchAtoms(range.catom, gint(20)).length; // 0 — does not
+matchAtoms(range.catom, gint(5)).length;  // 1: matches
+matchAtoms(range.catom, gint(20)).length; // 0: does not
 ```
 
 Return one (empty) binding to signal a match, or none to signal no match. This is the same hook the standard library's grounded values use for custom matching.

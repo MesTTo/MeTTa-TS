@@ -61,6 +61,7 @@ import {
   type ReduceResult,
 } from "./builtins";
 import {
+  type CompiledRunResult,
   type CompiledFns,
   type CompiledImpureOps,
   compileDependentNondetGroup,
@@ -76,6 +77,7 @@ import { instantiate } from "./instantiate";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { addInt, type IntVal, subInt } from "./number";
 import { format } from "./parser";
+import type { TraceSink } from "./trace";
 import { stdlibDocAtoms } from "./stdlib";
 import { applySubst, type Subst } from "./substitution";
 import {
@@ -96,6 +98,7 @@ const CTOR_SC = readEnv("METTA_CTOR_SC") !== "0";
 // Internal A/B gate for the `(case (match ...) cases)` streaming path. Default on; `0` restores the
 // materializing stdlib expansion in one binary.
 const STREAM_CASE = readEnv("METTA_STREAM_CASE") !== "0";
+const GROUNDED_COMPILED = readEnv("METTA_GROUNDED_COMPILED") !== "0";
 
 // ---------- generator-based evaluation (sync core, optional async) ----------
 // The driver functions are generators that `yield` a pending Promise only at the one async boundary
@@ -428,6 +431,62 @@ function isNormalFormAssumingVars(env: MinEnv, w: World, t: Atom): boolean {
   }
 }
 
+function isCompiledFinalResult(env: MinEnv, w: World, t: Atom): boolean {
+  if (isNormalForm(env, w, t)) return true;
+  if (t.kind !== "expr" || t.items.length === 0) return false;
+  if (t.items[0]!.kind === "sym") return false;
+  return t.items.every((item) => isCompiledFinalResult(env, w, item));
+}
+
+// The head symbol of every expression-headed rule (`((partial $f $b) $a)`, the `|->` lambda applicators):
+// the only symbols `S` for which a term `((S …) …)` can rewrite. Variable-headed expression rules
+// (`(($f $x) …)`) are excluded because `isVariableHeaded` routes them to `varRulesVar`, which the caller's
+// guard requires empty. Cached by the `varRules` array identity + length, since it is append-only.
+const exprRuleHeadCache = new WeakMap<object, { len: number; syms: ReadonlySet<string> }>();
+function exprRuleHeadSyms(varRules: ReadonlyArray<[Atom, Atom]>): ReadonlySet<string> {
+  const cached = exprRuleHeadCache.get(varRules);
+  if (cached !== undefined && cached.len === varRules.length) return cached.syms;
+  const syms = new Set<string>();
+  for (const [lhs] of varRules)
+    if (lhs.kind === "expr" && lhs.items.length > 0) {
+      const h = lhs.items[0]!;
+      if (h.kind === "expr" && h.items.length > 0 && h.items[0]!.kind === "sym")
+        syms.add((h.items[0] as { name: string }).name);
+    }
+  exprRuleHeadCache.set(varRules, { len: varRules.length, syms });
+  return syms;
+}
+
+// Inert data: no rewrite or grounded reduction can fire anywhere in `t`. It differs from `isNormalForm` in
+// accepting a non-symbol head, so a term like `((Inheritance A B) (stv 0.5 0.9))` — the belief/truth pairs a
+// reasoner's queues are full of — is recognised as data. Without that, a queue of such terms falls through to
+// the O(n^2) `interpret-tuple` threading below. Soundness rests on the caller's guard that no variable-headed
+// rule exists (those match any head): a term then rewrites only through a defined symbol head, or an
+// expression head whose own head symbol keys an expression-headed rule (`exprHeads`).
+function isInertData(env: MinEnv, w: World, t: Atom, exprHeads: ReadonlySet<string>): boolean {
+  switch (t.kind) {
+    case "var":
+    case "gnd":
+      return true;
+    case "sym":
+      return !isDefinedHead(env, w, t.name);
+    case "expr": {
+      const its = t.items;
+      if (its.length === 0) return true;
+      const h = its[0]!;
+      if (h.kind === "sym") {
+        if (isDefinedHead(env, w, h.name)) return false;
+      } else if (h.kind === "expr" && h.items.length > 0) {
+        const hh = h.items[0]!;
+        if (hh.kind === "sym" && exprHeads.has(hh.name)) return false;
+      }
+      for (let i = 0; i < its.length; i++)
+        if (!isInertData(env, w, its[i]!, exprHeads)) return false;
+      return true;
+    }
+  }
+}
+
 // ---------- atom_to_stack ----------
 function atomToStack(a: Atom, prev: Stack): Stack {
   if (a.kind === "expr") {
@@ -477,6 +536,9 @@ export interface MinEnv {
   agt: Map<string, AsyncGroundFn>;
   /** Optional host-language import hook used by async `import!` for files outside the MeTTa import map. */
   hostImport?: HostImportFn;
+  /** Optional opt-in execution trace sink. `undefined` when tracing is off, so emit sites cost one branch.
+   *  Always present (as `undefined` when off) to keep the env object's shape monomorphic on the hot path. */
+  trace?: TraceSink | undefined;
   /** Per-runner `with-mutex` locks (a Promise chain per key), so mutexes do not leak across runners. */
   mutexes: Map<string, Promise<void>>;
   /** Optional per-run hash-cons table for immutable terms. */
@@ -660,6 +722,7 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     nonGroundAtPos: new Map(),
     nestedMatchIndex: emptyStaticNestedMatchIndex(),
     varHeadedFacts: [],
+    trace: undefined,
   };
   for (const [name, op] of gt) addGroundedOperationType(env, name, op);
   return env;
@@ -784,6 +847,7 @@ function makeSpec(env: MinEnv, g: string, k: number, fsym: string): string | und
   const newLhs = expr([sym(sName), ...params.filter((_, i) => i !== k)]);
   const newRhs = specBody(rhs, pk.name, fsym, g, sName, k, params.length);
   addAtomToEnv(env, expr([sym("="), newLhs, newRhs]));
+  if (env.trace) env.trace({ kind: "specialize", from: g, to: sName });
   return sName;
 }
 
@@ -2144,6 +2208,506 @@ export function checkApplication(
     ]);
   }
   return null;
+}
+
+const STANDARD_FOLDL_LHS = "(foldl-atom $list $init $a $b $op)";
+const STANDARD_FOLDL_RHS =
+  "(function (eval (if-equal $list () (return $init) (chain (decons-atom $list) $ht (unify ($head $tail) $ht (chain (eval (atom-subst $init $a $op)) $op1 (chain (eval (atom-subst $head $b $op1)) $op2 (chain (metta $op2 %Undefined% &self) $newacc (chain (eval (foldl-atom $tail $newacc $a $b $op)) $r (return $r))))) (return $init))))))";
+const STANDARD_MAP_LHS = "(map-atom $list $var $map)";
+const STANDARD_MAP_RHS =
+  "(function (chain (decons-atom $list) $ht (unify ($head $tail) $ht (chain (eval (sealed ($var) $map)) $sealedmap (chain (eval (map-atom $tail $var $sealedmap)) $tail-mapped (chain (eval (atom-subst $head $var $sealedmap)) $map-expr (chain (metta $map-expr %Undefined% &self) $head-mapped (chain (cons-atom $head-mapped $tail-mapped) $res (return $res)))))) (return ()))))";
+const STANDARD_FILTER_LHS = "(filter-atom $list $var $filter)";
+const STANDARD_FILTER_RHS =
+  "(function (chain (decons-atom $list) $ht (unify ($head $tail) $ht (chain (eval (sealed ($var) $filter)) $sealedfilter (chain (eval (filter-atom $tail $var $sealedfilter)) $tail-filtered (chain (eval (atom-subst $head $var $sealedfilter)) $filter-expr (chain (metta $filter-expr %Undefined% &self) $is-filtered (eval (if $is-filtered (chain (cons-atom $head $tail-filtered) $res (return $res)) (return $tail-filtered))))))) (return ()))))";
+const nativeFoldEnabled = (): boolean => readEnv("METTA_NATIVE_FOLD") !== "0";
+const nativeMapEnabled = (): boolean => readEnv("METTA_NATIVE_MAP") !== "0";
+const nativeFilterEnabled = (): boolean => readEnv("METTA_NATIVE_FILTER") !== "0";
+
+function canUseNativeFoldlAtom(env: MinEnv, w: World): boolean {
+  if (!nativeFoldEnabled()) return false;
+  if (env.varRulesVar.length > 0 || w.selfVarRules.length > 0 || w.selfRules.has("foldl-atom"))
+    return false;
+  const foldlRules = visibleStaticRulesForHead(env, w, "foldl-atom");
+  if (foldlRules.length !== 1) return false;
+  const [foldlLhs, foldlRhs] = foldlRules[0]!;
+  return format(foldlLhs) === STANDARD_FOLDL_LHS && format(foldlRhs) === STANDARD_FOLDL_RHS;
+}
+
+function canUseNativeMapAtom(env: MinEnv, w: World): boolean {
+  if (!nativeMapEnabled()) return false;
+  if (env.varRulesVar.length > 0 || w.selfVarRules.length > 0 || w.selfRules.has("map-atom"))
+    return false;
+  const mapRules = visibleStaticRulesForHead(env, w, "map-atom");
+  if (mapRules.length !== 1) return false;
+  const [mapLhs, mapRhs] = mapRules[0]!;
+  return format(mapLhs) === STANDARD_MAP_LHS && format(mapRhs) === STANDARD_MAP_RHS;
+}
+
+function canUseNativeFilterAtom(env: MinEnv, w: World): boolean {
+  if (!nativeFilterEnabled()) return false;
+  if (env.varRulesVar.length > 0 || w.selfVarRules.length > 0 || w.selfRules.has("filter-atom"))
+    return false;
+  const filterRules = visibleStaticRulesForHead(env, w, "filter-atom");
+  if (filterRules.length !== 1) return false;
+  const [filterLhs, filterRhs] = filterRules[0]!;
+  return format(filterLhs) === STANDARD_FILTER_LHS && format(filterRhs) === STANDARD_FILTER_RHS;
+}
+
+interface FoldlBranch {
+  readonly acc: Atom;
+  readonly bnd: Bindings;
+}
+
+function foldlContinuationVars(
+  tail: readonly Atom[],
+  acc: Atom,
+  aVar: Atom,
+  bVar: Atom,
+  op: Atom,
+): readonly string[] {
+  return atomVars(expr([expr(tail), acc, aVar, bVar, op]));
+}
+
+function* evalFoldlAtomCallG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  args: readonly Atom[],
+  bnd: Bindings,
+): Gen<{ readonly pairs: Array<[Atom, Bindings]>; readonly state: St } | undefined> {
+  if (args.length !== 5) return undefined;
+  const [list, init, aVar, bVar, op] = args;
+  if (list?.kind !== "expr" || aVar?.kind !== "var" || bVar?.kind !== "var") return undefined;
+  let cur = st;
+  let branches: FoldlBranch[] = [{ acc: init!, bnd }];
+  for (let i = 0; i < list.items.length && branches.length > 0; i++) {
+    const elem = list.items[i]!;
+    const next: FoldlBranch[] = [];
+    for (const branch of branches) {
+      cur = { counter: cur.counter + 1, world: cur.world };
+      const op1 = applySubst([[aVar.name, branch.acc]], op!);
+      const op2 = applySubst([[bVar.name, elem]], op1);
+      const op2Head = opOf(op2);
+      let compiled: { readonly pairs: Array<[Atom, Bindings]>; readonly state: St } | undefined;
+      // A bare let/let* step falls back to the metta wrapper. Fold substitutes into the raw op without
+      // sealing it (unlike map/filter), so the bound variable is not freshened and the routed let*-chain
+      // holder drops the branch to Empty. case/if and a user function with a let body route correctly, so
+      // only the bare binding heads are excluded.
+      if (op2Head !== "let" && op2Head !== "let*")
+        compiled = yield* evalGroundedCompiledExprG(env, fuel, cur, branch.bnd, op2);
+      let accPairs: Array<[Atom, Bindings]>;
+      if (compiled !== undefined) {
+        accPairs = compiled.pairs;
+        cur = compiled.state;
+      } else {
+        const [fallbackPairs, st2] = yield* mettaEvalG(
+          env,
+          fuel - 1,
+          cur,
+          branch.bnd,
+          makeExpr(env, [sym("metta"), op2, UNDEF, sym("&self")]),
+        );
+        accPairs = fallbackPairs;
+        cur = st2;
+      }
+      for (const [acc, accBnd] of accPairs) {
+        // A ground fold carries no live bindings, so skip the O(list) continuation-var scan and the tail
+        // slice it needs, the same short-circuit the map/filter restrict uses for an empty binding. This is
+        // what keeps a ground fold O(N) instead of O(N^2); restrictBnd of an empty set is already
+        // emptyBindings, so the result is unchanged.
+        next.push({
+          acc,
+          bnd:
+            size(accBnd) === 0
+              ? emptyBindings
+              : restrictBnd(
+                  env,
+                  foldlContinuationVars(list.items.slice(i + 1), acc, aVar, bVar, op!),
+                  accBnd,
+                ),
+        });
+      }
+    }
+    enforceDistinctLimit(env, next.length);
+    branches = next;
+  }
+
+  cur = { counter: cur.counter + branches.length, world: cur.world };
+  return {
+    pairs: branches.map((branch) => [branch.acc, branch.bnd]),
+    state: cur,
+  };
+}
+
+interface NativeListNode {
+  readonly head: Atom;
+  readonly tail: NativeList;
+}
+
+type NativeList = NativeListNode | null;
+
+interface MapFilterBranch {
+  readonly list: NativeList;
+  readonly bnd: Bindings;
+}
+
+type FilterResult =
+  | { readonly kind: "list"; readonly list: NativeList }
+  | { readonly kind: "atom"; readonly atom: Atom };
+
+interface FilterBranch {
+  readonly result: FilterResult;
+  readonly bnd: Bindings;
+}
+
+function nativeListToExpr(env: MinEnv, list: NativeList): ExprAtom {
+  const items: Atom[] = [];
+  for (let node = list; node !== null; node = node.tail) items.push(node.head);
+  return makeExpr(env, items);
+}
+
+function mapFilterContinuationVars(
+  items: readonly Atom[],
+  sealed: readonly Atom[],
+  upto: number,
+  result: Atom,
+  v: Atom,
+): readonly string[] {
+  return atomVars(expr([expr(items.slice(0, upto)), expr(sealed.slice(0, upto)), result, v]));
+}
+
+function restrictMapFilterBnd(
+  env: MinEnv,
+  items: readonly Atom[],
+  sealed: readonly Atom[],
+  upto: number,
+  result: () => Atom,
+  v: Atom,
+  bnd: Bindings,
+): Bindings {
+  if (size(bnd) === 0) return emptyBindings;
+  return restrictBnd(env, mapFilterContinuationVars(items, sealed, upto, result(), v), bnd);
+}
+
+function filterResultAtom(env: MinEnv, result: FilterResult): Atom {
+  return result.kind === "list" ? nativeListToExpr(env, result.list) : result.atom;
+}
+
+function boolValue(a: Atom): boolean | undefined {
+  return a.kind === "gnd" && a.value.g === "bool" ? a.value.b : undefined;
+}
+
+function* evalGroundedCompiledExprG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  bnd: Bindings,
+  atom: Atom,
+): Gen<{ readonly pairs: Array<[Atom, Bindings]>; readonly state: St } | undefined> {
+  if (!GROUNDED_COMPILED || atom.kind !== "expr" || atom.items.length === 0) return undefined;
+  const head = atom.items[0]!;
+  if (head.kind !== "sym") return undefined;
+  const op = head.name;
+  if (
+    env.compiled?.has(op) !== true ||
+    st.world.selfRules.has(op) ||
+    staticRulesChangedFor(st.world, op) ||
+    st.world.selfVarRules.length !== 0
+  )
+    return undefined;
+  const args = atom.items.slice(1);
+  if (checkApplication(env, st.world, op, args, env.sigs.get(op)) !== null) return undefined;
+  const cr = runCompiled(env, op, args, st, COMPILED_IMPURE_OPS, undefined, fuel);
+  if (cr === undefined) return undefined;
+  const sig = env.sigs.get(op);
+  const opReturnsAtom =
+    sig !== undefined && sig.length > 0 && atomEq(sig[sig.length - 1]!, sym("Atom"));
+  const [pairs, state] = yield* reduceCompiledResultsG(
+    env,
+    fuel,
+    st,
+    queryVarsOf(args),
+    bnd,
+    atom,
+    cr,
+    opReturnsAtom,
+  );
+  return { pairs, state };
+}
+
+function* sealedTemplatesG(
+  env: MinEnv,
+  st: St,
+  items: readonly Atom[],
+  v: Atom,
+  tmpl: Atom,
+  bnd: Bindings,
+): Gen<
+  | {
+      readonly sealed: readonly Atom[];
+      readonly bnd: Bindings;
+      readonly state: St;
+    }
+  | undefined
+> {
+  let cur = st;
+  const sealed: Atom[] = [];
+  let nextTemplate = tmpl;
+  for (let i = 0; i < items.length; i++) {
+    cur = { counter: cur.counter + 1, world: cur.world };
+    const sealedResult = yield* callGroundedG(env, "sealed", [makeExpr(env, [v]), nextTemplate]);
+    if (sealedResult.tag !== "ok" || sealedResult.results.length !== 1) return undefined;
+    const nextSealed = sealedResult.results[0]!;
+    sealed.push(nextSealed);
+    nextTemplate = nextSealed;
+  }
+  cur = { counter: cur.counter + 1, world: cur.world };
+  return { sealed, bnd, state: cur };
+}
+
+function* evalMapAtomCallG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  args: readonly Atom[],
+  bnd: Bindings,
+): Gen<{ readonly pairs: Array<[Atom, Bindings]>; readonly state: St } | undefined> {
+  if (args.length !== 3) return undefined;
+  const [list, v, tmpl] = args;
+  if (list?.kind !== "expr" || v?.kind !== "var" || tmpl === undefined) return undefined;
+  const needsSeal = atomVars(tmpl).some((n) => n !== v.name);
+  const descended = needsSeal
+    ? yield* sealedTemplatesG(env, st, list.items, v, tmpl, bnd)
+    : undefined;
+  if (needsSeal && descended === undefined) return undefined;
+  const templates = descended?.sealed ?? [];
+  let cur = descended?.state ?? st;
+  let branches: MapFilterBranch[] = [{ list: null, bnd: descended?.bnd ?? bnd }];
+  for (let i = list.items.length - 1; i >= 0 && branches.length > 0; i--) {
+    const item = list.items[i]!;
+    const sealed = needsSeal ? templates[i]! : tmpl;
+    const next: MapFilterBranch[] = [];
+    for (const branch of branches) {
+      const mapExpr = applySubst([[v.name, item]], sealed);
+      const compiled = yield* evalGroundedCompiledExprG(env, fuel, cur, branch.bnd, mapExpr);
+      let mappedPairs: Array<[Atom, Bindings]>;
+      if (compiled !== undefined) {
+        mappedPairs = compiled.pairs;
+        cur = compiled.state;
+      } else {
+        const [fallbackPairs, st2] = yield* mettaEvalG(
+          env,
+          fuel - 1,
+          cur,
+          branch.bnd,
+          makeExpr(env, [sym("metta"), mapExpr, UNDEF, sym("&self")]),
+        );
+        mappedPairs = fallbackPairs;
+        cur = st2;
+      }
+      for (const [mapped, mappedBnd] of mappedPairs) {
+        const mappedValue = inst(env, mappedBnd, mapped);
+        const mappedList: NativeList = { head: mappedValue, tail: branch.list };
+        next.push({
+          list: mappedList,
+          bnd: restrictMapFilterBnd(
+            env,
+            list.items,
+            templates,
+            i,
+            () => nativeListToExpr(env, mappedList),
+            v,
+            mappedBnd,
+          ),
+        });
+      }
+    }
+    enforceDistinctLimit(env, next.length);
+    branches = next;
+  }
+  return {
+    pairs: branches.map((branch) => [nativeListToExpr(env, branch.list), branch.bnd]),
+    state: cur,
+  };
+}
+
+function* evalFilterAtomCallG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  args: readonly Atom[],
+  bnd: Bindings,
+): Gen<{ readonly pairs: Array<[Atom, Bindings]>; readonly state: St } | undefined> {
+  if (args.length !== 3) return undefined;
+  const [list, v, tmpl] = args;
+  if (list?.kind !== "expr" || v?.kind !== "var" || tmpl === undefined) return undefined;
+  const needsSeal = atomVars(tmpl).some((n) => n !== v.name);
+  const descended = needsSeal
+    ? yield* sealedTemplatesG(env, st, list.items, v, tmpl, bnd)
+    : undefined;
+  if (needsSeal && descended === undefined) return undefined;
+  const templates = descended?.sealed ?? [];
+  let cur = descended?.state ?? st;
+  let branches: FilterBranch[] = [
+    { result: { kind: "list", list: null }, bnd: descended?.bnd ?? bnd },
+  ];
+  for (let i = list.items.length - 1; i >= 0 && branches.length > 0; i--) {
+    const item = list.items[i]!;
+    const sealed = needsSeal ? templates[i]! : tmpl;
+    const next: FilterBranch[] = [];
+    for (const branch of branches) {
+      const filterExpr = applySubst([[v.name, item]], sealed);
+      const compiled = yield* evalGroundedCompiledExprG(env, fuel, cur, branch.bnd, filterExpr);
+      let filteredPairs: Array<[Atom, Bindings]>;
+      if (compiled !== undefined) {
+        filteredPairs = compiled.pairs;
+        cur = compiled.state;
+      } else {
+        const [fallbackPairs, st2] = yield* mettaEvalG(
+          env,
+          fuel - 1,
+          cur,
+          branch.bnd,
+          makeExpr(env, [sym("metta"), filterExpr, UNDEF, sym("&self")]),
+        );
+        filteredPairs = fallbackPairs;
+        cur = st2;
+      }
+      for (const [filtered, filteredBnd] of filteredPairs) {
+        const keep = boolValue(inst(env, filteredBnd, filtered));
+        if (keep === undefined) {
+          next.push({
+            result: { kind: "atom", atom: errAtom(notReducibleA, "NoReturn") },
+            bnd: emptyBindings,
+          });
+          continue;
+        }
+        const filteredResult: FilterResult =
+          branch.result.kind === "atom"
+            ? keep
+              ? {
+                  kind: "atom",
+                  atom: errAtom(
+                    makeExpr(env, [sym("cons-atom"), item, branch.result.atom]),
+                    "cons-atom: expected expression tail",
+                  ),
+                }
+              : branch.result
+            : {
+                kind: "list",
+                list: keep ? { head: item, tail: branch.result.list } : branch.result.list,
+              };
+        next.push({
+          result: filteredResult,
+          bnd: restrictMapFilterBnd(
+            env,
+            list.items,
+            templates,
+            i,
+            () => filterResultAtom(env, filteredResult),
+            v,
+            filteredBnd,
+          ),
+        });
+      }
+    }
+    enforceDistinctLimit(env, next.length);
+    branches = next;
+  }
+  return {
+    pairs: branches.map((branch) => [filterResultAtom(env, branch.result), branch.bnd]),
+    state: cur,
+  };
+}
+
+function atomNumber(a: Atom): number | undefined {
+  return a.kind === "gnd" && (a.value.g === "int" || a.value.g === "float")
+    ? Number(a.value.n)
+    : undefined;
+}
+
+// Evaluate `($keyFn item)` to a single number for each item — the shared key pass for the grounded
+// key-based reducers below. Returns undefined if any key does not reduce to exactly one number, so the
+// caller declines and the ordinary MeTTa definition takes over.
+function* evalNumericKeysG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  keyFn: Atom,
+  items: readonly Atom[],
+  bnd: Bindings,
+): Gen<{ readonly keys: number[]; readonly state: St } | undefined> {
+  let cur = st;
+  const keys: number[] = [];
+  for (const item of items) {
+    const [pairs, st2] = yield* mettaEvalG(env, fuel - 1, cur, bnd, makeExpr(env, [keyFn, item]));
+    cur = st2;
+    if (pairs.length !== 1) return undefined;
+    const k = atomNumber(inst(env, pairs[0]![1], pairs[0]![0]));
+    if (k === undefined) return undefined;
+    keys.push(k);
+  }
+  return { keys, state: cur };
+}
+
+// General grounded argmax keyed by a unary function. `(max-by-atom $keyfn $init $list)` returns the element
+// of `($init . $list)` with the greatest `($keyfn element)`, ties broken by first occurrence (so `$init`
+// and earlier elements win). Byte-identical to a `(foldl-atom … (if (> (f cand) (f cur)) cand cur))` argmax
+// but with O(1) native stack. Purely grounded, so it is never specialized; a user equation disables it.
+function* evalMaxByAtomG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  args: readonly Atom[],
+  bnd: Bindings,
+): Gen<{ readonly pairs: Array<[Atom, Bindings]>; readonly state: St } | undefined> {
+  if (args.length !== 3) return undefined;
+  const [keyFn, init, list] = args;
+  if (keyFn === undefined || init === undefined || list?.kind !== "expr") return undefined;
+  const candidates = [init, ...list.items];
+  const scored = yield* evalNumericKeysG(env, fuel, st, keyFn, candidates, bnd);
+  if (scored === undefined) return undefined;
+  let bestIdx = 0;
+  for (let i = 1; i < scored.keys.length; i++)
+    if (scored.keys[i]! > scored.keys[bestIdx]!) bestIdx = i;
+  return { pairs: [[candidates[bestIdx]!, bnd]], state: scored.state };
+}
+
+// General grounded top-K reducer keyed by a unary function. `(top-k-by-atom $keyfn $n $list)` trims the
+// list in JS: while it still holds at least `$n` items, drop every copy (by structural equality) of the
+// first item with the lowest key. Order is preserved and ties break by first occurrence, so it is
+// byte-identical to the MeTTa "repeatedly remove the lowest-ranked item" priority-queue trim (the
+// reasoners' `LimitSize`) while running in O(list) evaluator re-entries and O(1) native stack instead of
+// the recursive fold's O(list^2) strict re-entry. Purely grounded, so never specialized; a user equation
+// disables it. Declines when a key does not reduce to one number.
+function* evalTopKByAtomG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  args: readonly Atom[],
+  bnd: Bindings,
+): Gen<{ readonly pairs: Array<[Atom, Bindings]>; readonly state: St } | undefined> {
+  if (args.length !== 3) return undefined;
+  const [keyFn, sizeAtom, list] = args;
+  if (keyFn === undefined || sizeAtom === undefined || list?.kind !== "expr") return undefined;
+  const size = atomNumber(sizeAtom);
+  if (size === undefined) return undefined;
+  const items = list.items.slice();
+  const scored = yield* evalNumericKeysG(env, fuel, st, keyFn, items, bnd);
+  if (scored === undefined) return undefined;
+  const keys = scored.keys;
+  while (items.length >= size && items.length > 0) {
+    let minIdx = 0;
+    for (let i = 1; i < keys.length; i++) if (keys[i]! < keys[minIdx]!) minIdx = i;
+    const lowest = items[minIdx]!;
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (atomEq(items[i]!, lowest)) {
+        items.splice(i, 1);
+        keys.splice(i, 1);
+      }
+    }
+  }
+  return { pairs: [[expr(items), bnd]], state: scored.state };
 }
 
 // ---------- conjunctive match ----------
@@ -5196,6 +5760,108 @@ function* reduceRulePairsG(
   return [out, cur];
 }
 
+function* reduceCompiledResultG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  queryVars: readonly string[],
+  bnd: Bindings,
+  atom: Atom,
+  opReturnsAtom: boolean,
+  allowFinalShortcut: boolean,
+): Gen<[Array<[Atom, Bindings]>, St]> {
+  if (
+    (opReturnsAtom && !isEmbeddedOp(atom)) ||
+    (allowFinalShortcut && isCompiledFinalResult(env, st.world, atom))
+  )
+    return [[[atom, bnd]], st];
+  if (isStackOverflowAtom(atom)) return [[[atom, bnd]], st];
+  const [pairs, st2] = yield* mettaEvalG(env, fuel - 1, st, bnd, atom);
+  const out: Array<[Atom, Bindings]> = [];
+  let cur = st2;
+  for (const p of pairs) {
+    if (atomEq(p[0], notReducibleA) || atomEq(p[0], atom)) {
+      out.push([atom, bnd]);
+      continue;
+    }
+    const pb = mergeRestrict(env, queryVars, bnd, p[1]);
+    const [more, st3] = yield* reduceCompiledResultG(
+      env,
+      fuel - 1,
+      cur,
+      queryVars,
+      pb,
+      p[0],
+      opReturnsAtom,
+      true,
+    );
+    cur = st3;
+    out.push(...more);
+  }
+  return [out, cur];
+}
+
+function* reduceCompiledResultsG(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  queryVars: readonly string[],
+  partB: Bindings,
+  wApp: Atom,
+  cr: CompiledRunResult,
+  opReturnsAtom: boolean,
+): Gen<[Array<[Atom, Bindings]>, St]> {
+  const out: Array<[Atom, Bindings]> = [];
+  let cur = st;
+  // A compiled holder returns the one-step rule-application results (the instantiated RHSs) plus
+  // the counter advance the candidate scan would have cost. Reduce each result to normal form
+  // exactly as the interpreted rule-application path does (the `pairs` loop below), so a RHS with
+  // reducible subterms (a recursive call, a grounded op) finishes evaluating and the fresh-variable
+  // counter stays in lockstep.
+  // An impure compiled body usually runs the slot machine to completion, so re-reducing its final
+  // value only re-walks it. For a deep binary build (matespace rewriteK) that re-walk is the
+  // dominant cost and advances the fresh-variable counter past what the build needed. Skip only
+  // when the returned atom is provably final. A `(return $x)` can hand back a caller-supplied
+  // control form such as `let` or `if` raw; those must still go through the normal reducer.
+  const impResult = cr.state !== undefined;
+  if (cr.state !== undefined) cur = cr.state;
+  else if (cr.counterDelta !== 0)
+    cur = {
+      counter: cur.counter + cr.counterDelta,
+      world: cur.world,
+    };
+  for (const r of cr.results) {
+    const pb = mergeRestrict(env, queryVars, partB, r.bnd);
+    if (atomEq(r.atom, notReducibleA) || atomEq(r.atom, wApp)) {
+      if (wApp.ground) env.evaluatedAtoms.add(wApp);
+      out.push([wApp, partB]);
+    } else if (
+      (opReturnsAtom || (impResult && isCompiledFinalResult(env, cur.world, r.atom))) &&
+      !isEmbeddedOp(r.atom)
+    ) {
+      out.push([r.atom, pb]);
+    } else if (opOf(r.atom) === "function") {
+      const [more, st4] = yield* reduceCompiledResultG(
+        env,
+        fuel,
+        cur,
+        queryVars,
+        pb,
+        r.atom,
+        opReturnsAtom,
+        false,
+      );
+      cur = st4;
+      for (const m of more) out.push(m);
+    } else {
+      const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur, pb, r.atom);
+      cur = st4;
+      for (const m of more) out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
+    }
+  }
+  return [out, cur];
+}
+
 function* mettaEvalG(
   env: MinEnv,
   fuel: number,
@@ -5206,6 +5872,8 @@ function* mettaEvalG(
   if (fuel <= 0)
     return [[[makeExpr(env, [sym("Error"), inst(env, bnd, a), sym("StackOverflow")]), bnd]], st];
   const w = inst(env, bnd, a);
+  if (env.trace && w.kind === "expr" && w.items.length > 0)
+    env.trace({ kind: "reduce", atom: format(w) });
   if (w.kind === "expr" && w.ground && env.evaluatedAtoms.has(w)) return [[[w, bnd]], st];
   // Constructor / normal-form short-circuit (Curry's constructor/defined partition; Hanus' incremental
   // normalization). A non-ground operator-headed term whose head is a constructor and whose arguments are all
@@ -5503,6 +6171,64 @@ function* mettaEvalG(
         const wApp = partAtoms.every((p, i) => p === args[i])
           ? lw
           : makeExpr(env, [sym(op), ...partAtoms]);
+        if (op === "foldl-atom" && canUseNativeFoldlAtom(env, cur2.world)) {
+          const folded = yield* evalFoldlAtomCallG(env, fuel, cur2, partAtoms, partB);
+          if (folded !== undefined) {
+            if (env.trace) env.trace({ kind: "grounded", op });
+            cur2 = folded.state;
+            for (const [value, rb] of folded.pairs)
+              out.push([value, mergeRestrict(env, queryVars, partB, rb)]);
+            continue;
+          }
+        }
+        if (op === "map-atom" && canUseNativeMapAtom(env, cur2.world)) {
+          const mapped = yield* evalMapAtomCallG(env, fuel, cur2, partAtoms, partB);
+          if (mapped !== undefined) {
+            if (env.trace) env.trace({ kind: "grounded", op });
+            cur2 = mapped.state;
+            for (const [value, rb] of mapped.pairs)
+              out.push([value, mergeRestrict(env, queryVars, partB, rb)]);
+            continue;
+          }
+        }
+        if (op === "filter-atom" && canUseNativeFilterAtom(env, cur2.world)) {
+          const filtered = yield* evalFilterAtomCallG(env, fuel, cur2, partAtoms, partB);
+          if (filtered !== undefined) {
+            if (env.trace) env.trace({ kind: "grounded", op });
+            cur2 = filtered.state;
+            for (const [value, rb] of filtered.pairs)
+              out.push([value, mergeRestrict(env, queryVars, partB, rb)]);
+            continue;
+          }
+        }
+        if (
+          op === "max-by-atom" &&
+          !env.ruleIndex.has("max-by-atom") &&
+          !cur2.world.selfRules.has("max-by-atom")
+        ) {
+          const picked = yield* evalMaxByAtomG(env, fuel, cur2, partAtoms, partB);
+          if (picked !== undefined) {
+            if (env.trace) env.trace({ kind: "grounded", op });
+            cur2 = picked.state;
+            for (const [value, rb] of picked.pairs)
+              out.push([value, mergeRestrict(env, queryVars, partB, rb)]);
+            continue;
+          }
+        }
+        if (
+          op === "top-k-by-atom" &&
+          !env.ruleIndex.has("top-k-by-atom") &&
+          !cur2.world.selfRules.has("top-k-by-atom")
+        ) {
+          const topk = yield* evalTopKByAtomG(env, fuel, cur2, partAtoms, partB);
+          if (topk !== undefined) {
+            if (env.trace) env.trace({ kind: "grounded", op });
+            cur2 = topk.state;
+            for (const [value, rb] of topk.pairs)
+              out.push([value, mergeRestrict(env, queryVars, partB, rb)]);
+            continue;
+          }
+        }
         // PeTTa-style partial application: grounded ops and untyped lowercase user functions applied to
         // fewer arguments than their arity become `(partial fn (args))` closures. Requires at least one
         // argument, so a nullary thunk is still evaluated rather than curried.
@@ -5561,39 +6287,18 @@ function* mettaEvalG(
         ) {
           const cr = runCompiled(env, op, partAtoms, cur2, COMPILED_IMPURE_OPS, undefined, fuel);
           if (cr !== undefined) {
-            // A compiled holder returns the one-step rule-application results (the instantiated RHSs) plus
-            // the counter advance the candidate scan would have cost. Reduce each result to normal form
-            // exactly as the interpreted rule-application path does (the `pairs` loop below), so a RHS with
-            // reducible subterms (a recursive call, a grounded op) finishes evaluating and the fresh-variable
-            // counter stays in lockstep.
-            // An impure compiled body runs the slot machine to completion (every recursive call resolves
-            // through the holder, every grounded op is computed) or BAILs; it never returns a half-reduced
-            // term. So its result is already normal form and the re-reduce below only re-walks it. For a
-            // deep binary build (matespace rewriteK) that re-walk is the dominant cost and advances the
-            // fresh-variable counter past what the build needed. Skip it. The result stays alpha-equivalent
-            // to the interpreted path (the gensym counter only names fresh vars, so a different count yields
-            // a consistently-renamed term, never a captured one), which is exactly the equality the oracle
-            // and LeaTTa check (`alphaEq`). Pure compiled results keep the re-reduce (unchanged).
-            const impResult = cr.state !== undefined;
-            if (cr.state !== undefined) cur2 = cr.state;
-            else if (cr.counterDelta !== 0)
-              cur2 = {
-                counter: cur2.counter + cr.counterDelta,
-                world: cur2.world,
-              };
-            for (const r of cr.results) {
-              const pb = mergeRestrict(env, queryVars, partB, r.bnd);
-              if (atomEq(r.atom, notReducibleA) || atomEq(r.atom, wApp)) {
-                if (wApp.ground) env.evaluatedAtoms.add(wApp);
-                out.push([wApp, partB]);
-              } else if ((opReturnsAtom || impResult) && !isEmbeddedOp(r.atom)) {
-                out.push([r.atom, pb]);
-              } else {
-                const [more, st4] = yield* mettaEvalG(env, fuel - 1, cur2, pb, r.atom);
-                cur2 = st4;
-                for (const m of more) out.push([m[0], mergeRestrict(env, queryVars, pb, m[1])]);
-              }
-            }
+            const [handled, st4] = yield* reduceCompiledResultsG(
+              env,
+              fuel,
+              cur2,
+              queryVars,
+              partB,
+              wApp,
+              cr,
+              opReturnsAtom,
+            );
+            cur2 = st4;
+            for (const h of handled) out.push(h);
             continue;
           }
         }
@@ -5822,6 +6527,19 @@ function* mettaEvalG(
     ]);
     const reduced = ruleRes.filter((p) => !atomEq(p[0], w) && !atomEq(p[0], notReducibleA));
     if (reduced.length === 0) {
+      // No rule fired above and every element is already inert data, so the tuple is its own value. Skip
+      // `interpret-tuple`, whose element-by-element threading is O(n^2) on a long tuple — each `metta-thread`
+      // re-scopes the whole growing interpreter stack and re-restricts an O(depth) live-var set. This is the
+      // common case for a large data list or a reasoner's belief/task queue, and returning `w` here is exactly
+      // what the threading would have produced (every element reduces to itself). Ground-only so no fresh
+      // variable is involved and the fresh-variable counter cannot diverge from the threaded path. The
+      // var/expr-rule guard is what lets `isInertData` treat a non-symbol-headed element (a belief's
+      // `((Inheritance A B) (stv ..))` pair) as data: with no such rule, nothing can rewrite it.
+      if (w.ground && env.varRulesVar.length === 0 && st1.world.selfVarRules.length === 0) {
+        const exprHeads = exprRuleHeadSyms(env.varRules);
+        if (w.items.every((it) => isInertData(env, st1.world, it, exprHeads)))
+          return [[[w, bnd]], st1];
+      }
       const [tupleRes, st2] = yield* interpretLoopG(env, fuel, st1, [
         {
           stack: atomToStack(
@@ -5873,6 +6591,7 @@ function stackOverflowResult(
   bnd: Bindings,
   a: Atom,
 ): [Array<[Atom, Bindings]>, St] {
+  if (env.trace) env.trace({ kind: "overflow", atom: format(inst(env, bnd, a)) });
   return [[[makeExpr(env, [sym("Error"), inst(env, bnd, a), sym("StackOverflow")]), bnd]], st];
 }
 

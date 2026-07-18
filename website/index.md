@@ -6,7 +6,7 @@ layout: home
 hero:
   name: MeTTa
   text: MeTTa, in pure TypeScript
-  tagline: A complete implementation of the OpenCog Hyperon language that runs in the browser, Node, Deno, Bun, edge functions, and TypeScript AI agents. No native addons, no required WASM.
+  tagline: A faithful implementation of the OpenCog Hyperon language that runs in the browser, Node, Deno, Bun, edge functions, and TypeScript AI agents. No native addons, no required WASM.
   image:
     src: /search.gif
     alt: MeTTaGrapher playing a generate-and-test search, where candidate selections fan out, are tested, and prune to the answers

@@ -42,8 +42,8 @@ factorial(6); // 720
 
 ## The two term surfaces
 
-- **Proxies + combinators.** `names()` and `vars()` mint names and variables (`const { parent, x } = ...`), and the capitalized combinators build the special forms: `If`, `Case`, `Let`, `LetStar`, `Match`, `Superpose`, `Collapse`, `Empty`, `Unify`, `Sealed`, `Quote`. Lowercase builders cover the grounded ops: `add`/`sub`/`mul`/`div`/`mod`, `eq`/`gt`/`lt`/`ge`/`le`, `and`/`or`/`not`, `carAtom`/`cdrAtom`/`consAtom`/`deconsAtom`, and `list`/`nil`/`e`. Builders compose, so nested patterns and repeated variables are just nested calls.
-- **The tagged template ``m`...` `` (and `mAll` for several atoms)** runs the real parser, so it expresses every MeTTa form, and `${value}` auto-grounds, which is the easiest way to drop a TS object in.
+- `names()` and `vars()` mint names and variables (`const { parent, x } = ...`), and the capitalized combinators build the special forms: `If`, `Case`, `Let`, `LetStar`, `Match`, `Superpose`, `Collapse`, `Empty`, `Unify`, `Sealed`, `Quote`. Lowercase builders cover the grounded ops: `add`/`sub`/`mul`/`div`/`mod`, `eq`/`gt`/`lt`/`ge`/`le`, `and`/`or`/`not`, `carAtom`/`cdrAtom`/`consAtom`/`deconsAtom`, and `list`/`nil`/`e`. Builders compose, so nested patterns and repeated variables are just nested calls.
+- The tagged template ``m`...` `` (and `mAll` for several atoms) runs the real parser, so it expresses every MeTTa form, and `${value}` auto-grounds, which is the easiest way to drop a TS object in.
 
 ## The runner and the host bridge
 
@@ -51,8 +51,8 @@ factorial(6); // 720
 
 The host bridge runs both directions:
 
-- **TypeScript into MeTTa (grounded functions).** `db.fn("name", fn)` registers a plain typed function with arguments auto-unwrapped to JS and the result auto-grounded; `db.fns({ ... })` registers several at once keyed by name; `db.asyncFn` awaits an async function. The raw `db.op`/`db.asyncOp` stay for full atom control (multiple results, custom matching).
-- **MeTTa into TypeScript (backward import).** `db.call.<name>(...)` builds and evaluates `(<name> ...args)` and returns every result unwrapped to JS; use bracket access for hyphenated names (`db.call["is-even"](4)`). `db.import("name")` returns a callable.
+- Grounded functions bridge TypeScript into MeTTa. `db.fn("name", fn)` registers a plain typed function with arguments auto-unwrapped to JS and the result auto-grounded; `db.fns({ ... })` registers several at once keyed by name; `db.asyncFn` awaits an async function. The raw `db.op`/`db.asyncOp` stay for full atom control (multiple results, custom matching).
+- A backward import bridges MeTTa into TypeScript. `db.call.<name>(...)` builds and evaluates `(<name> ...args)` and returns every result unwrapped to JS; use bracket access for hyphenated names (`db.call["is-even"](4)`). `db.import("name")` returns a callable.
 
 ### Typing the host bridge
 

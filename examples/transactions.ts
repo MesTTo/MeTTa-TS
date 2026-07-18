@@ -19,7 +19,7 @@ console.log(
     !(transaction (add-atom &self (cnt 7)))
     !(collapse (match &self (cnt $v) $v))
   `),
-); // [ '(5 7)' ]
+); // [ '(, 5 7)' ]
 
 // Rollback: the body adds (cnt 6) then produces zero results, so the add is undone.
 console.log(
@@ -30,4 +30,4 @@ console.log(
     !(transaction (let $u (add-atom &self (cnt 6)) (superpose ())))
     !(collapse (match &self (cnt $v) $v))
   `),
-); // [ '(5)' ]
+); // [ '(, 5)' ]

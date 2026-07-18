@@ -22,6 +22,16 @@ For the command-line runner, install `@metta-ts/node`:
 npm install -g @metta-ts/node
 ```
 
+### Experimental channel
+
+A prerelease line ships ahead of stable on the `experimental` npm dist-tag, with the in-progress Minimal MeTTa runtime and the Grounded V2 operation protocol (owned, pull-based grounded answer streams with per-answer binding deltas and effects, and `MeTTa.registerStreamingOperation`). Opt in with the tag:
+
+```bash
+npm install @metta-ts/core@experimental
+```
+
+A plain `npm install @metta-ts/core` stays on the stable `latest` tag. The experimental surface may still change before it reaches a stable release. See [Experimental features](/guide/experimental) for what the channel contains and how to use it.
+
 ## Your first program
 
 Here is a small MeTTa program. Press **Run** to evaluate it in your browser, or save it as `hello.metta` to run from the command line:

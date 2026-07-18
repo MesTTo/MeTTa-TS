@@ -2,7 +2,7 @@
 
 A TypeScript class API for MeTTa atoms, spaces, and a runner, modeled on Hyperon's `hyperon.atoms`
 and `hyperon.base`. Where the Python package wraps a Rust core over FFI, this one wraps the immutable
-terms of [`@metta-ts/core`](../core) in classes. It runs anywhere TypeScript runs, with no native
+terms of [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core) in classes. It runs anywhere TypeScript runs, with no native
 addon and no WASM.
 
 Hyperon's Python method names are kept as aliases next to the idiomatic TypeScript ones, so code
@@ -60,7 +60,7 @@ sp.subst(E(S("parent"), S("tom"), V("c")), V("c"))
   .map((a) => a.toString());       // ["bob", "liz"]
 ```
 
-For a Distributed AtomSpace backend, see [`@metta-ts/das-client`](../das-client), whose `DasLiveSpace`
+For a Distributed AtomSpace backend, see [`@metta-ts/das-client`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-client), whose `DasLiveSpace`
 is the async analogue (a remote query is a network round-trip).
 
 ## Running MeTTa
@@ -93,6 +93,8 @@ m.run("!(double 21)")[0].map((a) => a.toString()); // ["42"]
 
 `registerToken(regex, constr)` registers a custom token, `space()` exposes the knowledge base, and
 `getAtomTypes(atom)` returns the types the runner infers for an atom.
+
+An experimental pull-based variant, `registerStreamingOperation` (and its async twin), yields answers one at a time so a consumer such as `once` stops the producer rather than draining it. It ships on the `experimental` npm tag; see [Experimental features](https://mestto.github.io/MeTTa-TS/guide/experimental).
 
 The runner's `space()` is live: an atom added through it reaches the evaluator
 exactly as a non-bang atom in `run` does, querying it sees what the evaluator sees, and removing an

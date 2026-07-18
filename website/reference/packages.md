@@ -8,14 +8,15 @@ SPDX-License-Identifier: MIT
 MeTTa TS is a small set of packages under the `@metta-ts` scope. Install only
 what you need; everything builds on the core. For the full API of each, see the
 detailed reference: [core](/reference/core), [hyperon](/reference/hyperon),
-[edsl](/reference/edsl), and [node and browser](/reference/node-browser).
+[edsl](/reference/edsl), [node and browser](/reference/node-browser), and
+[grapher](/reference/grapher).
 
 | Package                                                                                      | What it is                                                                                                                    |
 | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core)               | The interpreter, parser, type system, and standard library. Zero platform dependencies, runs in any JavaScript runtime.       |
 | [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon)         | A TypeScript class API over the core (atoms, spaces, grounded operations).                                                    |
 | [`@metta-ts/edsl`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/edsl)               | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template.                                     |
-| [`@metta-ts/node`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/node)               | The `metta-ts` CLI, file `import!`, and the `SharedArrayBuffer` worker-thread parallel matcher.                               |
+| [`@metta-ts/node`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/node)               | The `metta-ts` runner CLI, the `metta-debug` trace CLI, file `import!`, and the `SharedArrayBuffer` worker-thread parallel matcher. |
 | [`@metta-ts/browser`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/browser)         | Browser entry point with an in-memory virtual file system for `import!` and optional host-runtime composition.                |
 | [`@metta-ts/py`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/py)                   | Python interop: PeTTa's `py-call` and Hyperon's `py-atom`, over pythonia in Node or Pyodide in the browser. Opt-in and async. |
 | [`@metta-ts/prolog`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/prolog)           | Prolog interop: PeTTa-compatible predicate calls, `prolog-call`, and `import_prolog_function` over SWI-Prolog or SWI-WASM.    |

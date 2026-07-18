@@ -20,7 +20,7 @@ import { runProgram, format } from "@metta-ts/core";
 
 const facts = Array.from({ length: 200_000 }, (_, i) => `(edge ${i} ${i + 1})`).join("\n");
 const res = runProgram(`${facts}\n!(match &self (edge 150000 $y) $y)`);
-console.log(res.at(-1)!.results.map(format)); // [ '150001' ] — the index jumps to the keyed row
+console.log(res.at(-1)!.results.map(format)); // [ '150001' ]: the index jumps to the keyed row
 ```
 
 ## The compact runtime `&self` store

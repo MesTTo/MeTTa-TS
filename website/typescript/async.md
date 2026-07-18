@@ -47,6 +47,6 @@ const results = await runProgramAsync("!(wait 10)", new Map([["wait", wait]]));
 console.log(results[0]!.results.map(format)); // [ '10' ]
 ```
 
-Async operations are the foundation for the **[concurrency primitives](/typescript/running-metta)** (`par`, `race`, `once`, `with-mutex`), which run branches concurrently and combine their results.
+Async operations are the foundation for the **[concurrency primitives](/advanced/concurrency)** (`par`, `race`, `once`, `with-mutex`), which run branches concurrently and combine their results.
 
 Next: call straight into the host runtime with **[JavaScript interop](/typescript/js-interop)**.

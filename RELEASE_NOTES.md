@@ -1,3 +1,90 @@
+# MeTTa TS 1.2.0
+
+MeTTa TS 1.2.0 adds eight importable standard libraries and makes the core list
+operations run in linear time. Both changes keep the conformance oracle
+byte-identical: the libraries stay off the prelude, and the faster list
+operations return results equal to the prelude recursion up to variable renaming.
+
+## Standard libraries
+
+Eight libraries from the PeTTa distribution are now importable modules. Load one
+with `(import! &self <name>)`. They are kept off the prelude, so a program that
+imports none of them behaves exactly as before and the oracle is unchanged.
+
+- `vector`, `roman`, `combinatorics`, `patrick`, `datastructures`, and `spaces`
+  port the corresponding PeTTa utilities.
+- `nars` is a Non-Axiomatic Reasoning System belief engine.
+- `pln` is a Probabilistic Logic Networks reasoner with truth-value revision,
+  negation, and deduction, reached through a `PLN.Query` entry point.
+
+The ports follow Hyperon semantics rather than PeTTa's cons-cell representation:
+list construction uses `decons-atom`/`cons-atom`, `collapse` yields a comma
+tuple, and `foldl`/`msort` map to `foldl-atom`/`sort`.
+
+## Linear-time list operations
+
+`size-atom`, `map-atom`, `filter-atom`, and `foldl-atom` over a literal list of
+N elements now run in O(N) time on a constant native stack. The prelude
+recursion was quadratic to cubic and overflowed the stack before reaching a
+million elements.
+
+`size-atom` gains a fast path that returns a ground tuple of inert data without
+threading each element through the interpreter. `map-atom`, `filter-atom`, and
+`foldl-atom` evaluate as grounded operations, and when the per-element function
+is compiled they call it directly on the compiled path. Every result is equal to
+the prelude recursion up to variable renaming, checked by an on/off differential.
+
+A five-run minimum-time subprocess benchmark against PeTTa on SWI-Prolog, at
+N=100000 and including process startup, with a one-clause user function per
+element:
+
+| Operation     |  PeTTa | MeTTa TS | Speedup |
+| ------------- | -----: | -------: | ------: |
+| `size-atom`   | 887 ms |   170 ms |   5.23x |
+| `map-atom`    | 999 ms |   348 ms |   2.87x |
+| `filter-atom` | 966 ms |   360 ms |   2.68x |
+| `foldl-atom`  | 999 ms |   346 ms |   2.89x |
+
+## Trace bus and metta-debug
+
+The core exposes an optional trace bus: pass a `trace` sink to a run and the
+evaluator reports its reduce, rule-selection, grounded-dispatch, and
+specialization decisions, with no cost when no sink is set. The `@metta-ts/node`
+package adds a `metta-debug` command that runs a call under that sink and prints
+those decisions, so a depth or dispatch question is a one-command diagnosis.
+
+## Fixes
+
+A function that returns a control form such as `let` or `if` under
+`{tabling: true}` now reduces it fully instead of leaving it partially reduced.
+
+## Verification
+
+Checked on Linux with Node and pnpm.
+
+- Build, type check, lint, and format checks pass across all ten packages.
+- `pnpm test` passes: 1,208 tests across 123 files, with 38 optional live
+  integration tests (7 files) skipped.
+- The checked oracle passes all 23 corpus files. It is byte-identical to 1.1.7:
+  the new libraries are opt-in and off the prelude, and the faster list
+  operations equal the prelude recursion up to variable renaming.
+
+## Packages
+
+All public packages use version `1.2.0`:
+
+```bash
+npm install @metta-ts/core@1.2.0
+npm install -g @metta-ts/node@1.2.0
+```
+
+Optional host packages use the same version:
+
+```bash
+npm install @metta-ts/py@1.2.0 pythonia
+npm install @metta-ts/prolog@1.2.0
+```
+
 # MeTTa TS 1.1.7
 
 MeTTa TS 1.1.7 fixes a unification soundness bug in grounded substitution.

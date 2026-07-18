@@ -26,7 +26,7 @@ class MeTTa {
   tokenizer(): Tokenizer;
   getAtomTypes(atom: Atom): Atom[];                              // inferred types of an atom
   registerOperation(name: string, op: (args: Atom[]) => Atom[]): void;
-  registerAsyncOperation(name: string, op: (args: Atom[]) => Promise<Atom[]>): void;
+  registerAsyncOperation(name: string, op: (args: Atom[]) => Promise<AsyncOperationReturn>): void; // Atom[], or { results, effects? }
   registerToken(regex: RegExp, constr: (token: string) => Atom): void;
   registerAtom(name: string, atom: Atom): void;                 // bind a token to a fixed atom
 }
