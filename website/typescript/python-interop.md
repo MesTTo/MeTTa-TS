@@ -145,10 +145,10 @@ The two surfaces differ only in shape. `py-call` is one operation that dispatche
 
 ## From the command line
 
-`metta-ts --py` runs a file with Python interop wired over pythonia:
+`metta run --py` runs a file with Python interop wired over pythonia:
 
 ```sh
-metta-ts --py program.metta
+metta run --py program.metta
 ```
 
 You need `pythonia` installed and `python3` on your path. Without `--py`, the CLI never loads Python and runs exactly as before.

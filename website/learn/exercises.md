@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Exercises
 
-A few exercises to practice the evaluation model. Each has a worked solution you can run in this engine (paste it into a `.metta` file and run `metta-ts file.metta`, or pass it to `runProgram`). Try them before peeking.
+A few exercises to practice the evaluation model. Each has a worked solution you can run in this engine (paste it into a `.metta` file and run `metta run file.metta`, or pass it to `runProgram`). Try them before peeking.
 
 A reminder on the list encoding used below: the empty list is `()` and a cons cell is `(:: head tail)`, so `[A, B, C]` is `(:: A (:: B (:: C ())))`.
 

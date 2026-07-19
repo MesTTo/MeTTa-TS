@@ -1,6 +1,10 @@
 # MeTTa TS
 
-A pure-TypeScript implementation of **MeTTa** (Meta Type Talk), the OpenCog Hyperon language. The core engine runs anywhere TypeScript runs: the browser, Node, Deno, Bun, edge and serverless functions, and inside TypeScript-based AI agents. No native addons, no required WASM, no Rust.
+MeTTa TS is a metagraph rewriting database, written in pure TypeScript. You store facts in a space, query them by pattern, and compute by writing rewrite rules over the same facts, all with the same pattern-matching mechanism.
+
+A metagraph is the most expressive of the graph data models. A graph joins two nodes with an edge, a hypergraph joins any number of nodes, and a metagraph lets links contain other links, so a fact can be about another fact: `(Believes Tom (parent Bob Ann))` is a statement whose subject is itself a statement. Rules live in the space as atoms too, so you compute by rewriting the data itself, and a program can query and rewrite its own rules.
+
+The core engine runs anywhere TypeScript runs: the browser, Node, Deno, Bun, edge and serverless functions, and inside TypeScript-based AI agents. No native addons, no required WASM, no Rust. MeTTa (Meta Type Talk) is the language of OpenCog Hyperon, and MeTTa TS is a faithful port of its interpreter, but you do not need to know Hyperon to use it.
 
 <p align="center">
   <img src="website/public/recursion.gif" width="840" alt="The factorial (fact 5) reducing to 120, played side by side as a node graph and as nested blocks in MeTTaGrapher" />

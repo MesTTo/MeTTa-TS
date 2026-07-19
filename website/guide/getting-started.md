@@ -48,7 +48,7 @@ Here is a small MeTTa program. Press **Run** to evaluate it in your browser, or 
 Run it with the CLI:
 
 ```bash
-metta-ts hello.metta
+metta run hello.metta
 ```
 
 You will see the result of the one `!`-query:

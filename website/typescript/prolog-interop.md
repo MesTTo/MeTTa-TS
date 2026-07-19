@@ -46,7 +46,7 @@ await bridge.dispose();
 From the CLI, pass `--prolog`:
 
 ```sh
-metta-ts --prolog program.metta
+metta run --prolog program.metta
 ```
 
 The CLI wires `.pl` imports through the same host import hook:

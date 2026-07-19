@@ -11,14 +11,14 @@ The two platform entry points. Both re-export everything from [`@metta-ts/core`]
 
 ```bash
 npm install @metta-ts/node          # library
-npm install -g @metta-ts/node       # the metta-ts CLI on your PATH
+npm install -g @metta-ts/node       # the metta CLI on your PATH
 ```
 
 ### CLI
 
 ```bash
-metta-ts path/to/program.metta
-npx -p @metta-ts/node metta-ts path/to/program.metta   # without a global install
+metta run path/to/program.metta
+npx -p @metta-ts/node metta run path/to/program.metta   # without a global install
 ```
 
 Runs a `.metta` file, resolving `import!` relative to the file's directory, and prints each `!`-query's results.
@@ -26,15 +26,15 @@ Runs a `.metta` file, resolving `import!` relative to the file's directory, and 
 Host runtime flags are opt-in:
 
 ```bash
-metta-ts --py program.metta       # Python through pythonia
-metta-ts --prolog program.metta   # Prolog through a local swipl executable
+metta run --py program.metta       # Python through pythonia
+metta run --prolog program.metta   # Prolog through a local swipl executable
 ```
 
 With those flags, `.py` and `.pl` files imported through `import!` are handled
 by the matching host adapter. Without the flags, the CLI never loads Python,
 Prolog, or their optional dependencies.
 
-`@metta-ts/node` also installs `metta-debug`, a headless debugger for the same runner. It supports `run`, `eval`, and `why`; `why` attaches the core trace bus and reports grounded reducers, higher-order specialization, overflow cut points, reduction count, and result. See [metta-debug and traces](/tools/metta-debug).
+`@metta-ts/node` also installs `metta debug`, a headless debugger for the same runner. It supports `run`, `eval`, and `why`; `why` attaches the core trace bus and reports grounded reducers, higher-order specialization, overflow cut points, reduction count, and result. See [Debugging and traces](/tools/metta-debug).
 
 ### API
 

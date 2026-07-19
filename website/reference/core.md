@@ -54,7 +54,7 @@ type TraceEvent =
   | { readonly kind: "overflow"; readonly atom: string };
 ```
 
-Pass `trace` in `RunOptions` to collect internal evaluator decisions. The runner emits a formatted atom for each reduction step, a grounded operation name when a native reducer fires, a `from -> to` specialization when a higher-order functor is specialized by a function argument, and the cut-point atom when native stack overflow is caught. The types are exported from `@metta-ts/core`; see [metta-debug and traces](/tools/metta-debug) for a runnable example.
+Pass `trace` in `RunOptions` to collect internal evaluator decisions. The runner emits a formatted atom for each reduction step, a grounded operation name when a native reducer fires, a `from -> to` specialization when a higher-order functor is specialized by a function argument, and the cut-point atom when native stack overflow is caught. The types are exported from `@metta-ts/core`; see [Debugging and traces](/tools/metta-debug) for a runnable example.
 
 ## Parsing and formatting
 

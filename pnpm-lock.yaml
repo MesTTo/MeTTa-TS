@@ -198,6 +198,9 @@ importers:
         specifier: workspace:*
         version: link:../py
     devDependencies:
+      '@metta-ts/grapher':
+        specifier: workspace:*
+        version: link:../grapher
       pythonia:
         specifier: ^1.2.6
         version: 1.2.6(ws@7.5.11)

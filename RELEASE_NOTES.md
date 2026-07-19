@@ -1,3 +1,39 @@
+# MeTTa TS 1.4.0
+
+MeTTa TS 1.4.0 replaces the two command-line tools with one `metta` command and
+documents every package.
+
+## The metta CLI
+
+`@metta-ts/node` now installs a single `metta` command with subcommands:
+
+- `metta run <file.metta>` runs a program, and `metta <file.metta>` is shorthand for it.
+- `metta check <file.metta>` runs the static analyzer.
+- `metta debug (--file <p> | --source '<m>') <why|eval|run>` is the engine debugger.
+- `metta graph <file.metta> -o out.gif` renders the reduction as an animated GIF through
+  `@metta-ts/grapher`, which is loaded only when you use the command.
+
+The earlier `metta-ts` and `metta-debug` commands stay as aliases, so existing scripts keep
+working. Note that the Python Hyperon package also installs a `metta` executable, so if both
+are on your PATH they shadow each other; the `metta-ts` alias reaches this runner.
+
+## Documentation
+
+The API reference now covers all twelve packages, with new pages for `@metta-ts/py`,
+`@metta-ts/prolog`, `@metta-ts/libraries`, `@metta-ts/debug`, and the Distributed AtomSpace
+packages. The debugger and traces page moved out of the visual-editor section into a Tools
+section next to the CLI and MeTTaGrapher.
+
+The README and the repository description now open by saying what MeTTa TS is, a metagraph
+rewriting database in pure TypeScript, instead of assuming you already know OpenCog Hyperon.
+
+## Verification
+
+`pnpm -r build`, `pnpm typecheck`, `pnpm lint`, and `pnpm format:check` pass. The test suite
+runs 1228 tests plus the 23-file byte-identical oracle, and the documentation site builds with
+no dead links. The `metta-ts` and `metta-debug` aliases are covered by tests asserting they
+stay byte-identical to `metta run` and `metta debug`.
+
 # MeTTa TS 1.3.1
 
 MeTTa TS 1.3.1 fixes the type checker's arity check for overloaded operations. An

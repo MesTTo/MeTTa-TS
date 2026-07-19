@@ -8,21 +8,23 @@ SPDX-License-Identifier: MIT
 MeTTa TS is a small set of packages under the `@metta-ts` scope. Install only
 what you need; everything builds on the core. For the full API of each, see the
 detailed reference: [core](/reference/core), [hyperon](/reference/hyperon),
-[edsl](/reference/edsl), [node and browser](/reference/node-browser), and
-[grapher](/reference/grapher).
+[edsl](/reference/edsl), [node and browser](/reference/node-browser),
+[grapher](/reference/grapher), [py](/reference/py),
+[prolog](/reference/prolog), [libraries](/reference/libraries),
+[debug](/reference/debug), and [das-client and das-gateway](/reference/das).
 
 | Package                                                                                      | What it is                                                                                                                    |
 | -------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core)               | The interpreter, parser, type system, and prelude. Zero platform dependencies, runs in any JavaScript runtime.                |
 | [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon)         | A TypeScript class API over the core (atoms, spaces, grounded operations).                                                    |
 | [`@metta-ts/edsl`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/edsl)               | An ergonomic, typed eDSL: term builders, special-form combinators, and a tagged template.                                     |
-| [`@metta-ts/node`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/node)               | The `metta-ts` runner CLI, the `metta-debug` trace CLI, file `import!`, and the `SharedArrayBuffer` worker-thread parallel matcher. |
+| [`@metta-ts/node`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/node)               | The `metta` CLI, compatibility aliases, file `import!`, and the `SharedArrayBuffer` worker-thread parallel matcher. |
 | [`@metta-ts/browser`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/browser)         | Browser entry point with an in-memory virtual file system for `import!` and optional host-runtime composition.                |
 | [`@metta-ts/libraries`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/libraries)     | The PeTTa standard libraries as importable modules (`vector`, `roman`, `nars`, `pln`, and more), loaded automatically by node, hyperon, and browser. |
 | [`@metta-ts/py`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/py)                   | Python interop: PeTTa's `py-call` and Hyperon's `py-atom`, over pythonia in Node or Pyodide in the browser. Opt-in and async. |
 | [`@metta-ts/prolog`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/prolog)           | Prolog interop: PeTTa-compatible predicate calls, `prolog-call`, and `import_prolog_function` over SWI-Prolog or SWI-WASM.    |
 | [`@metta-ts/grapher`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/grapher)         | MeTTaGrapher: a visual editor plus browser and headless Node reduction-GIF rendering over the same core trace.                |
-| [`@metta-ts/debug`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/debug)             | The debugger engine behind `metta-debug`: the execution-trace bus, `explainCall`/`why`, and trace summaries. Depends only on the core. |
+| [`@metta-ts/debug`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/debug)             | The debugger engine behind `metta debug`: the execution-trace bus, `explainCall`/`why`, and trace summaries. Depends only on the core. |
 | [`@metta-ts/das-client`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-client)   | Client for SingularityNET's Distributed AtomSpace.                                                                            |
 | [`@metta-ts/das-gateway`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-gateway) | A transport-agnostic gateway bridging the browser to a Distributed AtomSpace.                                                 |
 
@@ -50,7 +52,7 @@ interpreter path free of host runtimes. See [Python
 interop](/typescript/python-interop) and [Prolog
 interop](/typescript/prolog-interop).
 
-`@metta-ts/debug` is the engine behind the `metta-debug` CLI: it records the evaluator's trace bus and explains why a call reduced the way it did. It depends only on the core and uses no Node APIs, so an editor or tool can drive it directly.
+`@metta-ts/debug` is the engine behind the `metta debug` CLI: it records the evaluator's trace bus and explains why a call reduced the way it did. It depends only on the core and uses no Node APIs, so an editor or tool can drive it directly.
 
 `@metta-ts/das-client` and `@metta-ts/das-gateway` are optional, for querying a remote Distributed AtomSpace.
 

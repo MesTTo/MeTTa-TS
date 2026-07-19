@@ -3,18 +3,18 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# Debugging with metta-debug
+# Debugging and traces
 
-`metta-debug` is the headless debugger that ships with `@metta-ts/node`. It runs the same Node source runner as `metta-ts`, then prints either the result or a short explanation from the engine trace bus.
+`metta debug` is the headless debugger that ships with `@metta-ts/node`. It runs the same Node source runner as `metta run`, then prints either the result or a short explanation from the engine trace bus.
 
-After `@metta-ts/node` is installed globally, the package registers the command as `metta-debug`.
+After `@metta-ts/node` is installed globally, the package registers the command through `metta debug`. The standalone `metta-debug` command remains an alias.
 
 ## Evaluate one expression
 
 Use `eval` when you want to add rules first, then ask one question:
 
 ```bash
-metta-debug --source '(= (double $x) (* $x 2))' eval '(double 21)'
+metta debug --source '(= (double $x) (* $x 2))' eval '(double 21)'
 ```
 
 ```text
@@ -25,7 +25,7 @@ result:
 Use `run` when the program already contains `!` queries:
 
 ```bash
-metta-debug --source '!(+ 1 2)' run
+metta debug --source '!(+ 1 2)' run
 ```
 
 ```text
@@ -40,7 +40,7 @@ The source can come from `--source '<metta>'` or `--file <path>`. `--max-steps N
 Use `why` when a call reduces in a surprising way. The command evaluates the call with tracing on and reports the visible decisions:
 
 ```bash
-metta-debug --source '(= (twice $f $x) ($f ($f $x))) (= (inc $n) (+ $n 1)) (= (main) (twice inc 0))' why '(main)' --llm
+metta debug --source '(= (twice $f $x) ($f ($f $x))) (= (inc $n) (+ $n 1)) (= (main) (twice inc 0))' why '(main)' --llm
 ```
 
 ```json
