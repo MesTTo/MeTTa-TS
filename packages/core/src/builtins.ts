@@ -317,7 +317,7 @@ function arithBin(
 }
 
 /** Three-way compare: exact for two Ints (promoting to bigint as needed), f64 otherwise. */
-function compareNumbers(a: Atom, b: Atom): number | undefined {
+export function compareNumbers(a: Atom, b: Atom): number | undefined {
   const ai = asIntVal(a);
   const bi = asIntVal(b);
   if (ai !== undefined && bi !== undefined) {

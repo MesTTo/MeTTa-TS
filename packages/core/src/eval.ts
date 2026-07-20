@@ -72,11 +72,21 @@ import {
 import { runChoicePlan, runDistinctChoicePlan, runDistinctChoicePlanBound } from "./choice-plan";
 import { runDistinctIntRelation } from "./distinct-int";
 import { readEnv } from "./env";
-import { FlatAtomSpace } from "./flat-atomspace";
+import { canCompactAtom, FlatAtomSpace } from "./flat-atomspace";
 import { instantiate } from "./instantiate";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { addInt, type IntVal, subInt } from "./number";
 import { format } from "./parser";
+import {
+  countInRange,
+  inRange,
+  numericColumnIndex,
+  numericFactCount,
+  type RangeEntry,
+  type SortedColumn,
+} from "./range-index";
+import { OBJECT_SLOT, StaticAtomStore } from "./static-atoms";
+import { StaticCompactBase } from "./static-base";
 import type { TraceSink } from "./trace";
 import { stdlibDocAtoms } from "./stdlib";
 import { applySubst, type Subst } from "./substitution";
@@ -528,7 +538,10 @@ export interface MinEnv {
   varRulesVar: Array<[Atom, Atom]>;
   sigs: Map<string, Atom[]>;
   gt: GroundingTable;
-  atoms: Atom[];
+  /** Static `&self` atoms in insertion (occurrence) order. Slot-stable: the nested match index refers
+   *  to slots by occurrence id and `get-atoms` order is observable, so the compaction sweep swaps a
+   *  slot's storage without renumbering. */
+  atoms: StaticAtomStore;
   types: Map<string, Atom[]>;
   imports: Map<string, Atom[]>;
   exprTypes: Array<[Atom, Atom]>;
@@ -602,6 +615,42 @@ export interface MinEnv {
   /** Compact runtime `&self` atomspace. When on, runtime additions are stored as flat term ids and decoded
    *  only when a query or observable operation needs tree atoms. */
   useFlatAtomspace?: boolean;
+  /** Anchored-acyclic conjunctive matching (`experimental.conjNested`, on by default): a `(, ...)` whose
+   *  first goal is anchored by a ground argument and whose later goals are connected over a ground,
+   *  duplicate-free candidate domain runs through the source-ordered binding-aware nested loop (matchConj),
+   *  which probes the argument index per bound join variable instead of materializing every goal's full
+   *  relation for matchConjJoin's WCO. Differential-gated to matchConjJoin (same solutions, same order).
+   *  Cyclic, unanchored, non-ground-fact, or duplicate-fact conjunctions stay on matchConjJoin. */
+  useConjNested?: boolean;
+  /** Ordered numeric single-column range matching (`experimental.rangeIndex`, on by default): a single
+   *  functor-headed all-variable pattern whose template is a pure nested `if` numeric range filter enumerates
+   *  the sorted numeric column slice instead of scanning the whole functor bucket. The selected slice is
+   *  restored to source order before yielding. */
+  useRangeIndex?: boolean;
+  /** Mark normal-form ground `match` results as already evaluated (`experimental.matchEvalMark`, on by
+   *  default) so the first consumer visit takes the existing evaluatedAtoms short-circuit. */
+  useMatchEvalMark?: boolean;
+  /** Answer a public-entry bare `(match &self pat templ)` straight from its match plan
+   *  (`experimental.directMatch`, on by default), skipping the generator driver, the worklist, and the
+   *  per-result reduce probe those would run. Guarded to the exact cases where that machinery is a
+   *  provable no-op; anything else declines to the general path. */
+  useDirectMatch?: boolean;
+  /** Lazily-computed set of head functors that have a duplicate ground fact. matchConjJoin's WCO trie dedups
+   *  duplicate relation tuples, so it collapses a conjunction over duplicate facts to one solution; the nested
+   *  loop preserves multiplicity. Only functors with no duplicate facts route to the nested loop, so the two
+   *  paths stay byte-identical. Computed once (conjNested only) from factIndex and cached here. */
+  duplicateFactHeadsCache?: Set<string> | undefined;
+  /** Compact static fact storage (`experimental.staticCompact`, on by default for buildEnv loads): large
+   *  all-ground flat-fact functors are swept into one shared StaticCompactBase; their slots, factIndex
+   *  buckets, and argIndex postings release the object forest, and candidates decode on demand through the
+   *  base's memoized decoder with sorted-column equality/range probes standing in for argIndex. */
+  staticBase?: StaticCompactBase;
+  /** Per-functor compaction metadata for `staticBase` (functors currently served by the compact base). */
+  compactHeads?: Map<string, CompactHeadMeta>;
+  /** Lazy ordered numeric column indexes for `experimental.rangeIndex`. Keyed by functor and argument
+   *  position; a `null` cache entry records a column that is not safely numeric, so later declined queries do
+   *  not rescan the fact bucket. */
+  numericRangeIndexCache?: Map<string, SortedColumn | null> | undefined;
 }
 
 interface StaticNestedMatchIndex {
@@ -611,6 +660,173 @@ interface StaticNestedMatchIndex {
   readonly wildcardAtPos: Map<string, number[]>;
   /** Root functors with a non-ground static fact. */
   readonly nonGroundFactHeads: Set<string>;
+}
+
+/** Compaction metadata for one functor served by the shared StaticCompactBase. */
+interface CompactHeadMeta {
+  /** Fact count (the whole bucket, every arity). */
+  readonly count: number;
+  /** The facts' env.atoms slots, ascending (bucket insertion order). */
+  readonly slots: Int32Array;
+  /** The uniform expression arity (item count), or -1 when the bucket mixes arities. */
+  readonly arity: number;
+  /** Fact count per expression arity (the all-distinct-variable tally reads these without decoding). */
+  readonly arityCounts: ReadonlyMap<number, number>;
+  /** Distinct leaf symbol names across all argument positions; with the functor itself, these decide
+   *  whether a decoded fact is in normal form without decoding (isNormalForm on a flat ground fact
+   *  reduces to isDefinedHead over the head and its symbol leaves). */
+  readonly leafSyms: readonly string[];
+  /** Whether the bucket stores two structurally identical facts (the conjNested routing guard). */
+  readonly hasDup: boolean;
+}
+
+// Functors below this size stay object-mode: the compact machinery only pays for bulk loads. Tests
+// lower it to 1 to force compaction through the differential suites.
+let staticCompactThreshold = 64;
+export function setStaticCompactThresholdForTests(n: number): number {
+  const prev = staticCompactThreshold;
+  staticCompactThreshold = n;
+  return prev;
+}
+
+// A fact the compact base can serve without changing any candidate path: symbol-headed, ground, flat
+// (every argument a leaf the argIndex would key exactly — so the residual nonGroundAtPos bucket stays
+// empty for the functor), and free of grounded metadata (executors, custom matchers, custom types).
+function isFlatCompactFact(a: Atom): boolean {
+  if (a.kind !== "expr" || !a.ground || a.items.length === 0 || a.items[0]!.kind !== "sym")
+    return false;
+  for (let i = 1; i < a.items.length; i++) {
+    const item = a.items[i]!;
+    if (item.kind === "sym") continue;
+    if (item.kind !== "gnd" || argKey(item) === undefined) return false;
+  }
+  return canCompactAtom(a);
+}
+
+function plannedStaticCompactHeads(
+  atoms: readonly Atom[],
+  gt: GroundingTable,
+): ReadonlySet<string> | undefined {
+  const counts = new Map<string, number>();
+  const rejected = new Set<string>();
+  for (const atom of atoms) {
+    const k = headKey(atom);
+    if (k === undefined) continue;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+    if (k === "=" || k === ":" || gt.has(k) || !isFlatCompactFact(atom)) rejected.add(k);
+  }
+
+  const heads = new Set<string>();
+  for (const [k, count] of counts)
+    if (count >= staticCompactThreshold && !rejected.has(k)) heads.add(k);
+  return heads.size === 0 ? undefined : heads;
+}
+
+// The compaction sweep: move every eligible functor's facts into one shared StaticCompactBase, release
+// their slots' object storage, factIndex buckets, and argIndex postings, and record per-functor
+// metadata. Runs once after a bulk static load (buildEnv). "=" and ":" stay object-mode (their rule
+// and type tables pin the objects anyway), as does any functor with a grounded operation.
+function compactStaticFacts(env: MinEnv, skippedArgIndexHeads?: ReadonlySet<string>): void {
+  if (env.staticBase !== undefined) return;
+  const eligible: Array<[string, Atom[]]> = [];
+  for (const [k, bucket] of env.factIndex) {
+    if (bucket.length < staticCompactThreshold || k === "=" || k === ":" || env.gt.has(k)) continue;
+    let ok = true;
+    for (const fact of bucket)
+      if (!isFlatCompactFact(fact)) {
+        ok = false;
+        break;
+      }
+    if (ok) eligible.push([k, bucket]);
+  }
+  if (eligible.length === 0) return;
+  const compactAtoms: Atom[] = [];
+  for (const [, bucket] of eligible) for (const fact of bucket) compactAtoms.push(fact);
+  const base = StaticCompactBase.fromAtoms(compactAtoms);
+  if (base === undefined) return; // encode declined; stay object-mode
+  // Decode stays unmemoized: repeated queries re-decode their candidates (ground facts have no
+  // identity requirement — freshening a ground fact is the identity and every consumer compares
+  // structurally), and the retained heap stays flat instead of re-growing the object forest. The
+  // full-list memo in StaticAtomStore still keeps enumeration (get-atoms) stable per version.
+  // Per-functor contiguous id ranges in compactAtoms order. Slots are walked in ascending order,
+  // consuming each functor's cursor, so the mapping follows position rather than object identity
+  // (the same Atom object stored twice maps to two ids).
+  const cursors = new Map<string, number>();
+  let nextId = 0;
+  for (const [k, bucket] of eligible) {
+    cursors.set(k, nextId);
+    nextId += bucket.length;
+  }
+  const factIds = new Int32Array(env.atoms.length).fill(OBJECT_SLOT);
+  const slotsByHead = new Map<string, number[]>();
+  for (let slot = 0; slot < env.atoms.length; slot++) {
+    const atom = env.atoms.get(slot);
+    if (atom.kind !== "expr" || atom.items.length === 0 || atom.items[0]!.kind !== "sym") continue;
+    const k = (atom.items[0] as { name: string }).name;
+    const cursor = cursors.get(k);
+    if (cursor === undefined) continue;
+    factIds[slot] = cursor;
+    cursors.set(k, cursor + 1);
+    pushTo(slotsByHead, k, slot);
+  }
+  const heads = new Map<string, CompactHeadMeta>();
+  for (const [k, bucket] of eligible) {
+    const slots = Int32Array.from(slotsByHead.get(k) ?? []);
+    // Every bucket fact must have been found at exactly one slot; a mismatch means the walk and the
+    // bucket disagree, so leave the whole env object-mode rather than adopt a wrong mapping.
+    if (slots.length !== bucket.length) return;
+    let arity = (bucket[0] as ExprAtom).items.length;
+    const arityCounts = new Map<number, number>();
+    const leafSyms = new Set<string>();
+    for (const fact of bucket as ExprAtom[]) {
+      if (fact.items.length !== arity) arity = -1;
+      arityCounts.set(fact.items.length, (arityCounts.get(fact.items.length) ?? 0) + 1);
+      for (let i = 1; i < fact.items.length; i++) {
+        const item = fact.items[i]!;
+        if (item.kind === "sym") leafSyms.add(item.name);
+      }
+    }
+    heads.set(k, {
+      count: bucket.length,
+      slots,
+      arity,
+      arityCounts,
+      leafSyms: [...leafSyms],
+      hasDup: base.hasDuplicateFacts(k),
+    });
+  }
+  // All parities verified; now mutate: drop the object indexes for the compacted functors.
+  const compactedHeads = new Set(eligible.map(([k]) => k));
+  for (const key of [...env.argIndex.keys()]) {
+    const sep = key.indexOf(KEY_SEP);
+    if (sep <= 0) continue;
+    const head = key.slice(0, sep);
+    if (compactedHeads.has(head) && skippedArgIndexHeads?.has(head) !== true)
+      env.argIndex.delete(key);
+  }
+  for (const k of compactedHeads) env.factIndex.delete(k);
+  env.staticBase = base;
+  env.compactHeads = heads;
+  env.atoms.adoptCompact(base, factIds);
+  env.duplicateFactHeadsCache = undefined;
+  env.numericRangeIndexCache = undefined;
+}
+
+// De-compaction for one functor: a static add (or any change that must see the functor as objects)
+// restores the slots from the memoized decoder, rebuilds the factIndex bucket and argIndex postings,
+// and removes the functor from the compact set. The base keeps its (now unused) columns; this path is
+// rare and correctness-first.
+function decompactFunctor(env: MinEnv, k: string): void {
+  const meta = env.compactHeads?.get(k);
+  if (meta === undefined) return;
+  env.atoms.restoreSlots(meta.slots);
+  const bucket: Atom[] = [];
+  for (const slot of meta.slots) bucket.push(env.atoms.get(slot));
+  env.factIndex.set(k, bucket);
+  for (const fact of bucket) indexFactArgs(env, fact as ExprAtom, k);
+  env.compactHeads!.delete(k);
+  env.duplicateFactHeadsCache = undefined;
+  env.numericRangeIndexCache = undefined;
 }
 
 function emptyStaticNestedMatchIndex(): StaticNestedMatchIndex {
@@ -678,10 +894,10 @@ function orderedIndexedAtoms(
     const indexedId = indexed[i];
     const wildcardId = wildcards[j];
     if (wildcardId === undefined || (indexedId !== undefined && indexedId < wildcardId)) {
-      out.push(env.atoms[indexedId!]!);
+      out.push(env.atoms.get(indexedId!));
       i += 1;
     } else {
-      out.push(env.atoms[wildcardId]!);
+      out.push(env.atoms.get(wildcardId));
       j += 1;
     }
   }
@@ -710,7 +926,7 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     varRulesVar: [],
     sigs: new Map(),
     gt,
-    atoms: [],
+    atoms: new StaticAtomStore(),
     types: new Map(),
     imports: new Map(),
     exprTypes: [],
@@ -723,6 +939,13 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     nestedMatchIndex: emptyStaticNestedMatchIndex(),
     varHeadedFacts: [],
     trace: undefined,
+    // The byte-identical planner optimizations are the default for every env, including ones built through
+    // the raw buildEnv/emptyEnv API (embedders and benchmarks get them without settings). runProgram's
+    // `experimental` options and direct field writes turn them off for differential tests and profiling.
+    useConjNested: true,
+    useRangeIndex: true,
+    useMatchEvalMark: true,
+    useDirectMatch: true,
   };
   for (const [name, op] of gt) addGroundedOperationType(env, name, op);
   return env;
@@ -986,11 +1209,28 @@ function disableTabling(env: MinEnv): void {
   }
 }
 
+/** The argIndex/nonGroundAtPos postings for one expression fact. Shared by addAtomToEnv and
+ *  decompactFunctor (which rebuilds a compacted functor's postings from its restored objects). */
+function indexFactArgs(env: MinEnv, atom: ExprAtom, fk: string): void {
+  for (let i = 1; i < atom.items.length; i++) {
+    const argument = atom.items[i]!;
+    const ak = argKey(argument);
+    if (ak !== undefined) pushTo(env.argIndex, fk + KEY_SEP + i + KEY_SEP + ak, atom);
+    else pushTo(env.nonGroundAtPos, fk + KEY_SEP + i, atom);
+  }
+}
+
 /** Incorporate one atom into `env` (mutating): rule index, signatures, types, and the atom list.
  *  Lets a sequential runner extend the env per atom instead of rebuilding it each query; correctness
  *  gated by the 270/270 oracle. */
-export function addAtomToEnv(env: MinEnv, x: Atom): void {
+function addAtomToEnvPlanned(env: MinEnv, x: Atom, skipArgIndexHeads?: ReadonlySet<string>): void {
   const atom = env.intern === undefined ? x : internAtom(env.intern, x);
+  // A static add to a compacted functor first restores that functor to object storage, so the new
+  // fact and its bucket keep one representation and one insertion order.
+  if (env.compactHeads !== undefined) {
+    const fk0 = headKey(atom);
+    if (fk0 !== undefined && env.compactHeads.has(fk0)) decompactFunctor(env, fk0);
+  }
   const occurrenceId = env.atoms.length;
   // Old structural MinEnv values may not carry this optional index. Initialize only for an empty env;
   // a nonempty legacy env must stay on the complete candidate path because its earlier atoms are unindexed.
@@ -1003,23 +1243,23 @@ export function addAtomToEnv(env: MinEnv, x: Atom): void {
   if (fk === undefined) env.varHeadedFacts.push(atom);
   else {
     pushTo(env.factIndex, fk, atom);
+    // A new fact can introduce a duplicate or extend an indexed numeric column, and evalSequential
+    // extends the env between directives, so the lazily-built routing caches must not survive the add.
+    env.duplicateFactHeadsCache = undefined;
+    env.numericRangeIndexCache = undefined;
     if (!atom.ground) nestedMatchIndex?.nonGroundFactHeads.add(fk);
-    if (atom.kind === "expr")
-      for (let i = 1; i < atom.items.length; i++) {
-        const argument = atom.items[i]!;
-        const positionKey = fk + KEY_SEP + i;
-        const ak = argKey(argument);
-        if (ak !== undefined) pushTo(env.argIndex, fk + KEY_SEP + i + KEY_SEP + ak, atom);
-        else pushTo(env.nonGroundAtPos, positionKey, atom);
-
-        if (atom.ground) {
+    if (atom.kind === "expr") {
+      if (skipArgIndexHeads?.has(fk) !== true) indexFactArgs(env, atom, fk);
+      if (atom.ground)
+        for (let i = 1; i < atom.items.length; i++) {
+          const argument = atom.items[i]!;
           const nestedHead = nestedArgHead(argument);
           if (nestedHead !== undefined && nestedMatchIndex !== undefined)
             pushTo(nestedMatchIndex.byHead, fk + KEY_SEP + i + KEY_SEP + nestedHead, occurrenceId);
           else if (matchesAnyNestedHead(argument) && nestedMatchIndex !== undefined)
-            pushTo(nestedMatchIndex.wildcardAtPos, positionKey, occurrenceId);
+            pushTo(nestedMatchIndex.wildcardAtPos, fk + KEY_SEP + i, occurrenceId);
         }
-      }
+    }
   }
   if (opOf(atom) === "=" && atom.kind === "expr" && atom.items.length === 3) {
     env.evaluatedAtoms = new WeakSet();
@@ -1050,9 +1290,28 @@ export function addAtomToEnv(env: MinEnv, x: Atom): void {
   }
 }
 
-export function buildEnv(atoms: Atom[], gt: GroundingTable): MinEnv {
+export function addAtomToEnv(env: MinEnv, x: Atom): void {
+  addAtomToEnvPlanned(env, x);
+}
+
+export function buildEnv(atoms: Atom[], gt: GroundingTable, staticCompact = true): MinEnv {
   const env = emptyEnv(gt);
-  for (const x of atoms) addAtomToEnv(env, x);
+  const skippedArgIndexHeads = staticCompact ? plannedStaticCompactHeads(atoms, gt) : undefined;
+  for (const x of atoms) addAtomToEnvPlanned(env, x, skippedArgIndexHeads);
+  // Bulk static loads sweep large flat-ground functors into the compact base (the object forest and
+  // its argIndex postings are released; candidates decode on demand). `false` keeps the plain object
+  // env for differential tests and profiling.
+  if (staticCompact) compactStaticFacts(env, skippedArgIndexHeads);
+  // The planner skipped argIndex postings for heads it expected the sweep to compact. If the sweep
+  // declined any of them (encode bail, slot parity mismatch), those heads would serve exact-arg
+  // lookups from missing postings, which matchCandidates reads as zero candidates. Rebuild the
+  // postings for every planned head that stayed object-mode.
+  if (skippedArgIndexHeads !== undefined)
+    for (const k of skippedArgIndexHeads) {
+      if (env.compactHeads?.has(k) === true) continue;
+      const bucket = env.factIndex.get(k);
+      if (bucket !== undefined) for (const fact of bucket) indexFactArgs(env, fact as ExprAtom, k);
+    }
   return env;
 }
 
@@ -1094,7 +1353,8 @@ function selfAtoms(env: MinEnv, w: World): readonly Atom[] {
     return runtime.length === 0 ? stat : [...stat, ...runtime];
   }
   const runtime = runtimeAtoms(w);
-  return runtime.length === 0 ? env.atoms : [...env.atoms, ...runtime];
+  // toArray is memoized on the store, so the common no-runtime case stays allocation-free per call.
+  return runtime.length === 0 ? env.atoms.toArray() : [...env.atoms.toArray(), ...runtime];
 }
 
 function runtimeAtoms(w: World): Atom[] {
@@ -1125,7 +1385,7 @@ function removedStaticRuleInfo(a: Atom): { readonly lhs: Atom; readonly rhs: Ato
 }
 
 function hasStaticAtom(env: MinEnv, a: Atom): boolean {
-  return env.atoms.some((x) => atomEq(x, a));
+  return env.atoms.hasAtom(a);
 }
 
 function staticAtomRemoved(w: World, a: Atom): boolean {
@@ -1134,9 +1394,10 @@ function staticAtomRemoved(w: World, a: Atom): boolean {
   return false;
 }
 
-function visibleStaticAtoms(w: World, atoms: readonly Atom[]): Atom[] {
-  if (w.removedStatic === null) return atoms.slice();
-  return atoms.filter((a) => !staticAtomRemoved(w, a));
+function visibleStaticAtoms(w: World, atoms: StaticAtomStore): Atom[] {
+  const all = atoms.toArray();
+  if (w.removedStatic === null) return all;
+  return all.filter((a) => !staticAtomRemoved(w, a));
 }
 
 function staticRulesChangedFor(w: World, op: string): boolean {
@@ -2770,10 +3031,17 @@ function matchCandidates(
     w.store.size === 0 &&
     w.selfExtra === null &&
     (w.flatSelfExtra?.size ?? 0) === 0;
+  // Compact functors have no factIndex bucket or argIndex postings: sizes and candidate slices come
+  // from the base's sorted columns, and candidates decode on demand through the memoized decoder in
+  // the same source order the object postings kept.
+  const compactMeta = env.compactHeads?.get(k);
+  const headCount = compactMeta?.count ?? headCandidates.length;
   // Pick the most selective eligible argument position. Nested buckets include custom grounded matchers
   // from the residual bucket, then merge by source occurrence id.
   let bestKey: string | undefined;
   let bestPosKey: string | undefined;
+  let bestPos = 0;
+  let bestArg: Atom = pInst;
   let bestIsNested = false;
   let bestSize = Infinity;
   const hasLeafConstraint =
@@ -2786,12 +3054,17 @@ function matchCandidates(
       const ak = argKey(argument);
       if (ak !== undefined) {
         const ik = k + KEY_SEP + i + KEY_SEP + ak;
+        // A compact functor's residual bucket is empty by eligibility (every leaf is argKey-able).
         const size =
-          (env.argIndex.get(ik)?.length ?? 0) + (env.nonGroundAtPos.get(posKey)?.length ?? 0);
+          compactMeta !== undefined
+            ? env.staticBase!.bucketSize(k, i, argument)
+            : (env.argIndex.get(ik)?.length ?? 0) + (env.nonGroundAtPos.get(posKey)?.length ?? 0);
         if (size < bestSize) {
           bestSize = size;
           bestKey = ik;
           bestPosKey = posKey;
+          bestPos = i;
+          bestArg = argument;
           bestIsNested = false;
         }
       }
@@ -2805,7 +3078,7 @@ function matchCandidates(
         const size =
           (nestedMatchIndex!.byHead.get(ik)?.length ?? 0) +
           (nestedMatchIndex!.wildcardAtPos.get(posKey)?.length ?? 0);
-        if (size < bestSize && size < headCandidates.length) {
+        if (size < bestSize && size < headCount) {
           bestSize = size;
           bestKey = ik;
           bestPosKey = posKey;
@@ -2822,7 +3095,12 @@ function matchCandidates(
         nestedMatchIndex!.byHead.get(bestKey) ?? [],
         nestedMatchIndex!.wildcardAtPos.get(bestPosKey!) ?? [],
       );
-      counterPadding = headCandidates.length - cands.length;
+      counterPadding = headCount - cands.length;
+    } else if (compactMeta !== undefined) {
+      // The equality slice is ascending by fact id, which is the bucket's insertion order.
+      const ids = env.staticBase!.equalRange(k, bestPos, bestArg);
+      cands = new Array(ids.length);
+      for (let n = 0; n < ids.length; n++) cands[n] = env.staticBase!.factAtom(ids[n]!);
     } else {
       // Retain the established leaf-index order: exact candidates, then the residual bucket.
       cands = [
@@ -2830,6 +3108,12 @@ function matchCandidates(
         ...(env.nonGroundAtPos.get(bestPosKey!) ?? []),
       ];
     }
+  } else if (compactMeta !== undefined) {
+    // No bound argument position: decode the whole functor bucket in insertion order.
+    cands = new Array(compactMeta.count);
+    let n = 0;
+    for (const id of env.staticBase!.factsForHead(k).ids())
+      cands[n++] = env.staticBase!.factAtom(id);
   } else {
     // no bound argument position: the whole functor bucket.
     cands = headCandidates.slice();
@@ -3119,6 +3403,88 @@ function matchConjCount(
     },
   });
   return bailed ? undefined : { count, counter };
+}
+
+// Head functors with a duplicate ground fact, computed once from the static fact buckets and cached. Two
+// stored facts collide only when they are format-identical (a ground fact is fully determined by its columns),
+// so a functor is duplicate-free when its bucket has no repeated serialization. Lazy: only conjNested routing
+// asks, so a conjNested-off run never pays the scan.
+function duplicateFactHeads(env: MinEnv): Set<string> {
+  const cached = env.duplicateFactHeadsCache;
+  if (cached !== undefined) return cached;
+  const dup = new Set<string>();
+  for (const [k, facts] of env.factIndex) {
+    if (facts.length < 2) continue;
+    const seen = new Set<string>();
+    for (const f of facts) {
+      const key = format(f);
+      if (seen.has(key)) {
+        dup.add(k);
+        break;
+      }
+      seen.add(key);
+    }
+  }
+  env.duplicateFactHeadsCache = dup;
+  return dup;
+}
+
+// The candidate domain is ground: every fact any goal can match is ground, so freshenRule is a no-op and no
+// fresh variable name reaches a result in a path-dependent order. This is what lets matchConj stand in for
+// matchConjJoin byte-for-byte. A non-ground fact (static or runtime) makes the two paths advance the gensym
+// counter differently, so results diverge in order or naming (the fuzz witness: an anchored goal over
+// `(edge $a 0 $a $c)` facts). Removals and state resolution also change the candidate stream, so they decline.
+function conjNestedGroundDomain(env: MinEnv, w: World): boolean {
+  if (env.varHeadedFacts.length !== 0) return false;
+  if (w.removedStatic !== null || w.store.size !== 0) return false;
+  if (w.selfExtra !== null && logNonGround(w.selfExtra) !== 0) return false;
+  if ((w.flatSelfExtra?.nonGroundCount ?? 0) !== 0) return false;
+  return true;
+}
+
+// Route a `(, ...)` to the source-ordered nested loop (matchConj) instead of matchConjJoin's WCO when it is
+// anchored-acyclic over a ground candidate domain: the first goal is anchored by a ground argument (a
+// constant, or a variable bound by b, at an indexed position, so its candidate bucket is a selective slice,
+// not the whole functor), every goal's functor has only ground facts, and every later goal shares a variable
+// with the goals before it. Then each later goal is matched with its join variables already bound, so matchConj
+// probes the argument index per solution rather than scanning the whole functor, and matchConjJoin's per-goal
+// full-relation materialization (the 120k-row build the two-hop pays) never happens. The enumeration order
+// matches matchConjJoin for this shape: the nested loop binds variables in the same first-seen order the WCO
+// uses, and drives them from the same anchored goal the WCO picks as its smallest cursor. An unanchored first
+// goal (the all-variable goals of the cyclic triangle among them), a non-ground-fact functor, or a
+// disconnected goal fails a test and stays on matchConjJoin, whose variable-at-a-time intersection is
+// worst-case optimal for the cyclic case. Differential-gated behind experimental.conjNested.
+function anchoredAcyclicSourceOrder(
+  env: MinEnv,
+  w: World,
+  patterns: readonly Atom[],
+  b: Bindings,
+): boolean {
+  if (patterns.length < 2) return false;
+  if (!conjNestedGroundDomain(env, w)) return false;
+  const ngHeads = env.nestedMatchIndex?.nonGroundFactHeads;
+  if (ngHeads === undefined) return false;
+  const insts = patterns.map((p) => inst(env, b, p));
+  const first = insts[0]!;
+  const anchored =
+    first.kind === "expr" && first.items.slice(1).some((arg) => argKey(arg) !== undefined);
+  if (!anchored) return false;
+  const dupHeads = duplicateFactHeads(env);
+  const accumulated = new Set<string>(atomVars(first));
+  for (let i = 0; i < insts.length; i++) {
+    const k = headKey(insts[i]!);
+    // Variable-headed, non-ground-fact, or duplicate-fact functor: keep it on matchConjJoin. A compact
+    // functor's duplicate check comes from its sweep metadata (it has no factIndex bucket).
+    if (k === undefined || ngHeads.has(k) || dupHeads.has(k)) return false;
+    if (env.compactHeads?.get(k)?.hasDup === true) return false;
+    if (i > 0) {
+      const vs = atomVars(insts[i]!);
+      const shared = vs.filter((v) => accumulated.has(v));
+      if (vs.length > 0 && shared.length !== 1) return false;
+      for (const v of vs) accumulated.add(v);
+    }
+  }
+  return true;
 }
 
 // ---------- get-doc ----------
@@ -3850,6 +4216,9 @@ function compiledAddIfAbsent(
   if (name === "&self") {
     const k = headKey(atom);
     if (k === undefined) return undefined;
+    // A compacted functor's static facts are not in factIndex; decline so the interpreter's
+    // membership check (which consults the compact base) decides.
+    if (env.compactHeads?.has(k) === true) return undefined;
     if (env.varHeadedFacts.length !== 0 || (env.factIndex.get(k)?.length ?? 0) !== 0)
       return undefined;
     if (logNonGround(w.selfExtra) !== 0 || (w.flatSelfExtra?.nonGroundCount ?? 0) !== 0)
@@ -4631,6 +5000,292 @@ interface MatchPlan {
   foldValues(): Iterable<Atom>;
 }
 
+function markIfNormal(env: MinEnv, atom: Atom, valuesAreNormal: boolean): Atom {
+  if (env.useMatchEvalMark === true && valuesAreNormal && atom.kind === "expr" && atom.ground)
+    env.evaluatedAtoms.add(atom);
+  return atom;
+}
+
+type RangeSide = "lower" | "upper";
+
+interface RangeCondition {
+  readonly varName: string;
+  readonly side: RangeSide;
+  readonly bound: Atom;
+  readonly inclusive: boolean;
+}
+
+interface RangeTemplate {
+  readonly result: Atom;
+  readonly conditions: readonly RangeCondition[];
+}
+
+interface RangeBounds {
+  readonly low: Atom | undefined;
+  readonly high: Atom | undefined;
+  readonly incLow: boolean;
+  readonly incHigh: boolean;
+}
+
+interface RangePattern {
+  readonly functor: string;
+  readonly arity: number;
+  readonly argPosition: number;
+  readonly varNames: readonly string[];
+}
+
+const RANGE_RULE_COUNTS: ReadonlyArray<readonly [string, number]> = [
+  ["if", 2],
+  [">=", 0],
+  ["<", 0],
+  ["<=", 0],
+  [">", 0],
+  ["empty", 0],
+];
+
+function isEmptyCall(a: Atom): boolean {
+  return a.kind === "expr" && opOf(a) === "empty" && a.items.length === 1;
+}
+
+function isNumericGround(a: Atom): boolean {
+  return a.kind === "gnd" && (a.value.g === "int" || a.value.g === "float");
+}
+
+function rangeCondition(a: Atom): RangeCondition | undefined {
+  if (a.kind !== "expr" || a.items.length !== 3) return undefined;
+  const op = opOf(a);
+  if (op !== ">=" && op !== ">" && op !== "<=" && op !== "<") return undefined;
+  const left = a.items[1]!;
+  const right = a.items[2]!;
+  if (left.kind === "var" && isNumericGround(right)) {
+    switch (op) {
+      case ">=":
+        return { varName: left.name, side: "lower", bound: right, inclusive: true };
+      case ">":
+        return { varName: left.name, side: "lower", bound: right, inclusive: false };
+      case "<=":
+        return { varName: left.name, side: "upper", bound: right, inclusive: true };
+      case "<":
+        return { varName: left.name, side: "upper", bound: right, inclusive: false };
+    }
+  }
+  if (isNumericGround(left) && right.kind === "var") {
+    switch (op) {
+      case "<=":
+        return { varName: right.name, side: "lower", bound: left, inclusive: true };
+      case "<":
+        return { varName: right.name, side: "lower", bound: left, inclusive: false };
+      case ">=":
+        return { varName: right.name, side: "upper", bound: left, inclusive: true };
+      case ">":
+        return { varName: right.name, side: "upper", bound: left, inclusive: false };
+    }
+  }
+  return undefined;
+}
+
+function rangeTemplate(template: Atom): RangeTemplate | undefined {
+  const conditions: RangeCondition[] = [];
+  let cursor = template;
+  while (cursor.kind === "expr" && opOf(cursor) === "if" && cursor.items.length === 4) {
+    if (conditions.length >= 2 || !isEmptyCall(cursor.items[3]!)) return undefined;
+    const condition = rangeCondition(cursor.items[1]!);
+    if (condition === undefined) return undefined;
+    conditions.push(condition);
+    cursor = cursor.items[2]!;
+    if (isEmptyCall(cursor)) return undefined;
+  }
+  if (conditions.length === 0) return undefined;
+  return { result: cursor, conditions };
+}
+
+function rangeBounds(conditions: readonly RangeCondition[]): RangeBounds | undefined {
+  let varName: string | undefined;
+  let low: Atom | undefined;
+  let high: Atom | undefined;
+  let incLow = false;
+  let incHigh = false;
+  for (const condition of conditions) {
+    if (varName === undefined) varName = condition.varName;
+    else if (condition.varName !== varName) return undefined;
+    if (condition.side === "lower") {
+      if (low !== undefined) return undefined;
+      low = condition.bound;
+      incLow = condition.inclusive;
+    } else {
+      if (high !== undefined) return undefined;
+      high = condition.bound;
+      incHigh = condition.inclusive;
+    }
+  }
+  return { low, high, incLow, incHigh };
+}
+
+function standardRangeOpsUnchanged(env: MinEnv, w: World): boolean {
+  if (env.varRulesVar.length !== 0 || w.selfVarRules.length !== 0) return false;
+  for (const [name, count] of RANGE_RULE_COUNTS) {
+    if ((env.ruleIndex.get(name)?.length ?? 0) !== count) return false;
+    if (w.selfRules.has(name) || staticRulesChangedFor(w, name)) return false;
+  }
+  return env.gt.has(">=") && env.gt.has(">") && env.gt.has("<=") && env.gt.has("<");
+}
+
+function rangeStaticSelfOnly(env: MinEnv, w: World): boolean {
+  return (
+    env.varHeadedFacts.length === 0 &&
+    w.removedStatic === null &&
+    w.store.size === 0 &&
+    logSize(w.selfExtra) === 0 &&
+    (w.flatSelfExtra?.size ?? 0) === 0
+  );
+}
+
+function rangePattern(pattern: Atom, varName: string): RangePattern | undefined {
+  if (pattern.kind !== "expr" || pattern.items.length === 0) return undefined;
+  const functor = headKey(pattern);
+  if (functor === undefined) return undefined;
+  const seen = new Set<string>();
+  const varNames: string[] = [];
+  let argPosition: number | undefined;
+  for (let i = 1; i < pattern.items.length; i++) {
+    const arg = pattern.items[i]!;
+    if (arg.kind !== "var" || seen.has(arg.name)) return undefined;
+    seen.add(arg.name);
+    varNames.push(arg.name);
+    if (arg.name === varName) {
+      if (argPosition !== undefined) return undefined;
+      argPosition = i;
+    }
+  }
+  if (argPosition === undefined) return undefined;
+  return { functor, arity: pattern.items.length, argPosition, varNames };
+}
+
+function countPassingCondition(
+  column: SortedColumn,
+  arity: number,
+  condition: RangeCondition,
+): number {
+  return condition.side === "lower"
+    ? countInRange(column, arity, condition.bound, undefined, condition.inclusive, false)
+    : countInRange(column, arity, undefined, condition.bound, false, condition.inclusive);
+}
+
+function rangeIfCounter(
+  column: SortedColumn,
+  arity: number,
+  conditions: readonly RangeCondition[],
+): number {
+  const outer = conditions[0];
+  if (outer === undefined) return 0;
+  let applications = numericFactCount(column, arity);
+  if (conditions.length > 1) applications += countPassingCondition(column, arity, outer);
+  return applications * 2;
+}
+
+function sourceOrdered(entries: readonly RangeEntry[]): RangeEntry[] {
+  return entries.length <= 1
+    ? entries.slice()
+    : entries.slice().sort((a, b) => a.occurrence - b.occurrence);
+}
+
+function tryRangeScan(
+  env: MinEnv,
+  st: St,
+  space: Atom,
+  pattern: Atom,
+  template: Atom,
+  b: Bindings,
+): MatchPlan | undefined {
+  if (env.useRangeIndex !== true) return undefined;
+  if (size(b) !== 0) return undefined;
+  const sn = spaceName(st.world, inst(env, b, space));
+  if (sn !== undefined && sn !== "&self") return undefined;
+  if (!rangeStaticSelfOnly(env, st.world) || !standardRangeOpsUnchanged(env, st.world))
+    return undefined;
+  const templ = rangeTemplate(inst(env, b, template));
+  if (templ === undefined || !isNormalFormAssumingVars(env, st.world, templ.result))
+    return undefined;
+  const bounds = rangeBounds(templ.conditions);
+  if (bounds === undefined) return undefined;
+  const varName = templ.conditions[0]!.varName;
+  const pInst = inst(env, b, pattern);
+  const pat = rangePattern(pInst, varName);
+  if (pat === undefined) return undefined;
+  // A compact functor serves the range from the base's sorted column; the object path keeps its lazy
+  // per-functor column. Both produce the slice in source order and end at the counter the full scan
+  // (every bucket fact through the `if` reductions) would reach.
+  const compactMeta = env.compactHeads?.get(pat.functor);
+  let selectedAtoms: readonly ExprAtom[];
+  let endCounter: number;
+  if (compactMeta !== undefined) {
+    // Mixed arities would need per-arity filtering the base does not track; the scan path handles them.
+    if (compactMeta.arity !== pat.arity) return undefined;
+    const base = env.staticBase!;
+    const ids = base.numericRange(
+      pat.functor,
+      pat.argPosition,
+      bounds.low,
+      bounds.high,
+      bounds.incLow,
+      bounds.incHigh,
+    );
+    if (ids === undefined) return undefined;
+    // Mirror rangeIfCounter: every bucket fact applies the outer `if`; the outer-passing facts apply
+    // the inner one. Single-arity flat facts all carry the position, so the arity total is the count.
+    const outer = templ.conditions[0]!;
+    let applications = compactMeta.count;
+    if (templ.conditions.length > 1) {
+      const oneSided =
+        outer.side === "lower"
+          ? base.numericRange(
+              pat.functor,
+              pat.argPosition,
+              outer.bound,
+              undefined,
+              outer.inclusive,
+              false,
+            )
+          : base.numericRange(
+              pat.functor,
+              pat.argPosition,
+              undefined,
+              outer.bound,
+              false,
+              outer.inclusive,
+            );
+      applications += oneSided?.length ?? 0;
+    }
+    endCounter = st.counter + compactMeta.count + applications * 2;
+    selectedAtoms = ids.map((id) => base.factAtom(id) as ExprAtom);
+  } else {
+    const column = numericColumnIndex(env, pat.functor, pat.argPosition);
+    if (column === undefined) return undefined;
+    selectedAtoms = sourceOrdered(
+      inRange(column, pat.arity, bounds.low, bounds.high, bounds.incLow, bounds.incHigh),
+    ).map((entry) => entry.atom as ExprAtom);
+    endCounter =
+      st.counter + column.totalCandidates + rangeIfCounter(column, pat.arity, templ.conditions);
+  }
+  const endState = { counter: endCounter, world: st.world };
+  const bindingsFor = (atom: ExprAtom): Bindings =>
+    fromRelations(pat.varNames.map((name, index) => makeValRel(name, atom.items[index + 1]!)));
+  const solutions = function* (): Iterable<Bindings> {
+    for (const atom of selectedAtoms) yield bindingsFor(atom);
+  };
+  return {
+    endState,
+    valuesAreNormal: true,
+    *foldItems(prev: Stack): Iterable<Item> {
+      for (const m of solutions())
+        yield finItem(prev, markIfNormal(env, inst(env, m, templ.result), true), m);
+    },
+    *foldValues(): Iterable<Atom> {
+      for (const m of solutions()) yield markIfNormal(env, inst(env, m, templ.result), true);
+    },
+  };
+}
+
 function* matchSingleSolutions(
   env: MinEnv,
   getCandidates: (pInst: Atom) => CandidateSource,
@@ -4682,30 +5337,38 @@ function matchPlan(
   const { getCandidates, patterns } = matchSetup(env, st, space, pattern, b);
   if (patterns.length === 1) {
     const pat = patterns[0]!;
+    // One candidate source for the end-state pass and every solutions pass: the source materializes
+    // its candidate array once, so the compact base decodes (and the object path assembles) each
+    // matched bucket a single time per match instead of once per pass.
+    const source = getCandidates(inst(env, b, pat));
+    const sharedSource = (): CandidateSource => source;
     const { endState, valuesAreNormal } = matchSingleEndState(
       env,
-      getCandidates,
+      sharedSource,
       pat,
       template,
       st,
       b,
     );
-    const solutions = (): Iterable<Bindings> =>
-      matchSingleSolutions(env, getCandidates, pat, st, b);
+    const solutions = (): Iterable<Bindings> => matchSingleSolutions(env, sharedSource, pat, st, b);
     return {
       endState,
       valuesAreNormal,
       *foldItems(prev: Stack): Iterable<Item> {
-        for (const m of solutions()) yield finItem(prev, inst(env, m, template), m);
+        for (const m of solutions())
+          yield finItem(prev, markIfNormal(env, inst(env, m, template), valuesAreNormal), m);
       },
       *foldValues(): Iterable<Atom> {
-        for (const m of solutions()) yield inst(env, m, template);
+        for (const m of solutions())
+          yield markIfNormal(env, inst(env, m, template), valuesAreNormal);
       },
     };
   }
   const [sols, endState] =
     patterns.length >= 2
-      ? matchConjJoin(env, getCandidates, patterns, st, b)
+      ? env.useConjNested === true && anchoredAcyclicSourceOrder(env, st.world, patterns, b)
+        ? matchConj(env, getCandidates, patterns, st, [b])
+        : matchConjJoin(env, getCandidates, patterns, st, b)
       : matchConj(env, getCandidates, patterns, st, [b]);
   return {
     endState,
@@ -4728,7 +5391,11 @@ function matchOp(
   template: Atom,
   b: Bindings,
 ): [Item[], St] {
-  const plan = matchPlan(env, st, space, pattern, template, b);
+  const plan =
+    prev === null
+      ? (tryRangeScan(env, st, space, pattern, template, b) ??
+        matchPlan(env, st, space, pattern, template, b))
+      : matchPlan(env, st, space, pattern, template, b);
   const out: Item[] = [];
   for (const item of plan.foldItems(prev)) out.push(item);
   return [out, plan.endState];
@@ -4743,7 +5410,11 @@ function matchItemSource(
   template: Atom,
   b: Bindings,
 ): ItemSource {
-  const plan = matchPlan(env, st, space, pattern, template, b);
+  const plan =
+    prev === null
+      ? (tryRangeScan(env, st, space, pattern, template, b) ??
+        matchPlan(env, st, space, pattern, template, b))
+      : matchPlan(env, st, space, pattern, template, b);
   return {
     endState: plan.endState,
     foldItems(): Iterable<Item> {
@@ -5338,14 +6009,19 @@ function tryCountAggregate(
   // mirrors `unifies` exactly); at most one of the two stores is non-empty, and summing keeps the tally
   // right either way.
   const sn = spaceName(w, inst(env, bnd, match.items[1]!));
+  // A compacted functor's static tally reads the sweep's per-arity counts (every bucket fact is a
+  // same-head expr, so `unifies` reduces to the arity check); removals must fall through to the
+  // filtering candidate scan.
+  const compactMeta = env.compactHeads?.get(k);
   if (
     (sn === undefined || sn === "&self") &&
     w.store.size === 0 &&
     env.varHeadedFacts.length === 0 &&
-    (env.factIndex.get(k)?.length ?? 0) === 0
+    (env.factIndex.get(k)?.length ?? 0) === 0 &&
+    (compactMeta === undefined || w.removedStatic === null)
   ) {
-    let count = 0;
-    let iterated = 0;
+    let count = compactMeta === undefined ? 0 : (compactMeta.arityCounts.get(arity) ?? 0);
+    let iterated = compactMeta?.count ?? 0;
     for (let p = w.selfExtra; p !== null; p = p.prev) {
       const akk = headKey(p.atom);
       if (akk === undefined || akk === k) {
@@ -5595,7 +6271,8 @@ const staticCustomMatcherCache = new WeakMap<
 function staticSpaceHasCustomMatcher(env: MinEnv): boolean {
   const cached = staticCustomMatcherCache.get(env);
   if (cached?.atomCount === env.atoms.length) return cached.hasCustomMatcher;
-  const hasCustomMatcher = env.atoms.some(atomHasCustomGrounded);
+  // Object slots only: a compacted fact passed canCompactAtom, so it cannot hold a custom matcher.
+  const hasCustomMatcher = env.atoms.someObject(atomHasCustomGrounded);
   staticCustomMatcherCache.set(env, { atomCount: env.atoms.length, hasCustomMatcher });
   return hasCustomMatcher;
 }
@@ -6620,6 +7297,84 @@ function stackOverflowResult(
   return [[[makeExpr(env, [sym("Error"), inst(env, bnd, a), sym("StackOverflow")]), bnd]], st];
 }
 
+// Direct top-level match (`experimental.directMatch`, on by default). A public-entry query that IS a
+// bare `(match &self pattern template)` builds the same plan the interpreter would build, then returns
+// the plan's final items directly instead of spinning up the generator driver, the worklist, and the
+// per-result reduce probe that the evaluated-mark would immediately short-circuit. Every condition
+// under which the general path could do anything more declines to that path, so results, bindings,
+// the gensym counter, and the env mutations (the evaluated-mark stamps the plan itself makes) stay
+// byte-identical. Differential gate: eval-direct-match.test.ts.
+function tryDirectTopMatch(
+  env: MinEnv,
+  fuel: number,
+  st: St,
+  bnd: Bindings,
+  a: Atom,
+): [Array<[Atom, Bindings]>, St] | undefined {
+  if (env.useDirectMatch !== true) return undefined;
+  if (a.kind !== "expr" || a.items.length !== 4) return undefined;
+  const head = a.items[0]!;
+  if (head.kind !== "sym" || head.name !== "match") return undefined;
+  // Observables the fast path does not reproduce: trace events, fuel-exhaustion errors, and the
+  // distinct-ground dedup with its resource limit. Decline while any is live. Tabling needs no
+  // decline: ground tabling requires an application with no query variables (declined below), and
+  // moded tabling rejects any application whose head is an impure op, which `match` is.
+  if (env.trace !== undefined || fuel < 16) return undefined;
+  if (distinctGroundEnabled(env)) return undefined;
+  // The general path consults rules, signatures, and grounded ops for the head symbol, a catch-all
+  // (bare-var-headed) rule can rewrite any result value, and a rule or signature on `&self` would
+  // change the space argument's type-directed evaluation. Decline unless `match` is exactly the
+  // builtin special form. Var-headed expression rules (`(= ($f ...) ...)`) need no decline: they do
+  // not fire on symbol-headed values, and every value this path returns is ground and symbol- or
+  // grounded-headed (an expression-headed value fails isNormalForm, so valuesAreNormal declines it).
+  if (
+    hasVisibleStaticRuleHead(env, st.world, "match") ||
+    st.world.selfRules.has("match") ||
+    env.gt.has("match") ||
+    env.agt.has("match") ||
+    env.varRulesVar.length > 0 ||
+    st.world.selfVarRules.length > 0 ||
+    hasVisibleStaticRuleHead(env, st.world, "&self") ||
+    st.world.selfRules.has("&self") ||
+    env.sigs.has("&self")
+  )
+    return undefined;
+  const w = inst(env, bnd, a);
+  if (w.kind !== "expr" || w.items.length !== 4) return undefined;
+  const space = w.items[1]!;
+  if (space.kind !== "sym" || space.name !== "&self") return undefined;
+  // A ground query already stamped evaluated returns itself unevaluated on the general path.
+  if (w.ground && env.evaluatedAtoms.has(w)) return undefined;
+  const args = w.items.slice(1);
+  // The applicability check the trampoline runs for every application; a type error takes the
+  // general path (checkApplication is a pure function of env, world, and args, so re-running it
+  // there reproduces the identical error atom).
+  if (checkApplication(env, st.world, "match", args, env.sigs.get("match")) !== null)
+    return undefined;
+  // With no query variables, a single op-headed solution tail-calls back into the trampoline;
+  // decline the whole class rather than model it.
+  const queryVars = queryVarsOf(args);
+  if (queryVars.length === 0) return undefined;
+  const plan =
+    tryRangeScan(env, st, space, w.items[2]!, w.items[3]!, bnd) ??
+    matchPlan(env, st, space, w.items[2]!, w.items[3]!, bnd);
+  // Only fully-normal values make the general path's per-result reduce probe a pure zero-counter
+  // short-circuit (the plan's own evaluated-mark guarantees the ground ones hit it).
+  if (!plan.valuesAreNormal) return undefined;
+  const out: Array<[Atom, Bindings]> = [];
+  for (const item of plan.foldItems(null)) {
+    if (!isFinal(item)) return undefined;
+    const pair = finalPair(env, item);
+    if (!pair[0].ground) return undefined;
+    // reduceRulePairsG's bindings shape: restrict the solution to the query variables under the empty
+    // partial (match evaluates no argument into bindings), then the reduce probe's round trip merges
+    // the restricted set with itself.
+    const pb = mergeRestrict(env, queryVars, [], pair[1]);
+    out.push([pair[0], mergeRestrict(env, queryVars, pb, pb)]);
+  }
+  return [out, plan.endState];
+}
+
 function mettaEval(
   env: MinEnv,
   fuel: number,
@@ -6629,6 +7384,8 @@ function mettaEval(
 ): [Array<[Atom, Bindings]>, St] {
   ensureCompiled(env, a);
   try {
+    const direct = tryDirectTopMatch(env, fuel, st, bnd, a);
+    if (direct !== undefined) return direct;
     return runGenSync(mettaEvalG(env, fuel, st, bnd, a));
   } catch (e) {
     if (isNativeStackOverflow(e)) return stackOverflowResult(env, st, bnd, a);
@@ -6647,6 +7404,8 @@ export function mettaEvalAsync(
   signal?: AbortSignal,
 ): Promise<[Array<[Atom, Bindings]>, St]> {
   ensureCompiled(env, a);
+  const direct = tryDirectTopMatch(env, fuel, st, bnd, a);
+  if (direct !== undefined) return Promise.resolve(direct);
   return runGenAsync(mettaEvalG(env, fuel, st, bnd, a), signal).catch((e: unknown) => {
     if (isNativeStackOverflow(e)) return stackOverflowResult(env, st, bnd, a);
     throw e;

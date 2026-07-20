@@ -60,9 +60,34 @@ export interface QueryResult {
 export const DEFAULT_FUEL = 100_000;
 const DEFAULT_TABLING = true;
 const DEFAULT_FLAT_ATOMSPACE = true;
+const DEFAULT_CONJ_NESTED = true;
+const DEFAULT_RANGE_INDEX = true;
+const DEFAULT_MATCH_EVAL_MARK = true;
+const DEFAULT_STATIC_COMPACT = true;
+const DEFAULT_DIRECT_MATCH = true;
 
 function flatAtomspaceEnabled(opts: RunOptions): boolean {
   return opts.experimental?.flatAtomspace ?? DEFAULT_FLAT_ATOMSPACE;
+}
+
+function conjNestedEnabled(opts: RunOptions): boolean {
+  return opts.experimental?.conjNested ?? DEFAULT_CONJ_NESTED;
+}
+
+function rangeIndexEnabled(opts: RunOptions): boolean {
+  return opts.experimental?.rangeIndex ?? DEFAULT_RANGE_INDEX;
+}
+
+function matchEvalMarkEnabled(opts: RunOptions): boolean {
+  return opts.experimental?.matchEvalMark ?? DEFAULT_MATCH_EVAL_MARK;
+}
+
+function staticCompactEnabled(opts: RunOptions): boolean {
+  return opts.experimental?.staticCompact ?? DEFAULT_STATIC_COMPACT;
+}
+
+function directMatchEnabled(opts: RunOptions): boolean {
+  return opts.experimental?.directMatch ?? DEFAULT_DIRECT_MATCH;
 }
 
 interface TablingAnalysis {
@@ -101,12 +126,19 @@ function buildDefaultEnv(
   const env: MinEnv = buildEnv(
     [...preludeAtoms(), ...stdlibAtoms(), ...pettaStdlibAtoms()],
     stdTable(),
+    staticCompactEnabled(opts),
   );
   env.imports = withBuiltinModules(imports);
   if (opts.hostImport !== undefined) env.hostImport = opts.hostImport;
   if (opts.trace !== undefined) env.trace = opts.trace;
   if (experimental?.hashCons === true) env.intern = createInternTable();
   if (experimental?.trail === true) env.useTrail = true;
+  // buildEnv already defaults these on; assign (not just enable) so an explicit `false` forces the
+  // reference path for differential tests and profiling.
+  env.useConjNested = conjNestedEnabled(opts);
+  env.useRangeIndex = rangeIndexEnabled(opts);
+  env.useMatchEvalMark = matchEvalMarkEnabled(opts);
+  env.useDirectMatch = directMatchEnabled(opts);
   if (flatAtomspaceEnabled(opts)) env.useFlatAtomspace = true;
   if (tabling) {
     env.tableSpace = new TableSpace();
@@ -135,6 +167,32 @@ export interface RunOptions {
     // Trail-based zero-allocation conjunctive matching (eval.ts matchConjTrail). Byte-identical to the
     // immutable matcher, differential-gated; off by default.
     readonly trail?: boolean;
+    // Anchored-acyclic conjunctive matching (eval.ts matchPlan -> matchConj). For a `(, ...)` whose first
+    // goal is anchored by a ground argument and whose later goals are connected over a ground, duplicate-free
+    // candidate domain, the source-ordered nested loop probes the argument index per bound join variable
+    // instead of materializing every goal's full relation for the WCO join (the anchored two-hop drops from
+    // ~170 ms to ~0.5 ms at 120k facts). Byte-identical to matchConjJoin (differential-gated across the corpus
+    // plus property fuzzing); on by default, set false to force the WCO path.
+    readonly conjNested?: boolean;
+    // Single-pattern numeric range matching (eval.ts matchPlan -> ordered range index). A pure nested `if`
+    // template such as `(if (>= $x lo) (if (< $x hi) result (empty)) (empty))` over one all-variable
+    // functor pattern enumerates the sorted numeric column slice, then restores source order. Byte-identical
+    // to the full scan under its guards; on by default, set false to force the scan.
+    readonly rangeIndex?: boolean;
+    // Normal-form ground results from single-pattern `match` plans are pre-marked in the evaluated-atom cache
+    // so their first consumer visit skips the redundant reduce probe. Byte-identical to letting that probe
+    // discover the same no-op reduction; on by default, set false for differential tests and profiling.
+    readonly matchEvalMark?: boolean;
+    // A public-entry bare `(match &self pat templ)` answers straight from its match plan (eval.ts
+    // tryDirectTopMatch), skipping the generator driver, the worklist, and the per-result reduce probe.
+    // Guarded to the cases where that machinery is a provable no-op and byte-identical under the
+    // differential gate; on by default, set false to force the general path.
+    readonly directMatch?: boolean;
+    // Compact static fact storage: bulk buildEnv loads sweep large all-ground flat-fact functors into an
+    // interned column store (eval.ts compactStaticFacts), releasing the object forest and argIndex postings;
+    // candidates decode on demand and sorted columns serve equality and range probes. Byte-identical under
+    // its guards; on by default, set false to keep the plain object environment.
+    readonly staticCompact?: boolean;
   };
   // Initial interpreter stack-depth bound; 0 (the default) means unlimited, matching Hyperon. A program can
   // tighten it in-language with `(pragma! max-stack-depth N)`. This is the embedder's knob: it sets the

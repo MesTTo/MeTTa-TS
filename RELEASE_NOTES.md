@@ -1,3 +1,60 @@
+# MeTTa TS 1.5.0
+
+MeTTa TS 1.5.0 is an engine release. Declarative queries over large fact bases route through new
+evaluation paths, each proven byte-identical to the reference path by a differential suite and on
+by default with no configuration. On DataScript's own browser-database workloads, MeTTa TS now
+wins every declarative query at both tested sizes and distributions; the README carries the
+comparison table.
+
+## Query routing
+
+- Anchored acyclic conjunctions run as a source-ordered indexed nested loop instead of the
+  worst-case-optimal join, when the first goal is anchored by a ground argument and every later
+  goal connects through exactly one shared variable over ground, duplicate-free facts. The
+  anchored two-hop join over 120,000 facts answers in 0.14 ms.
+- Single-pattern numeric range templates, the `(if (>= $x lo) (if (< $x hi) R (empty)) (empty))`
+  shape, enumerate an ordered numeric column slice instead of scanning the functor's whole
+  bucket: a one-percent range over 120,000 facts answers in 2.1 ms (a full scan took 2343 ms).
+- A public-entry bare `(match &self pattern template)` answers straight from its match plan,
+  skipping the interpreter's generator driver, worklist, and per-result reduce probe when those
+  are provably no-ops. An anchored single-row lookup drops from 10.1 us to 5.5 us, and the warm
+  indexed source lookup reaches parity with DataScript's direct `datoms` seek at 120,000 records.
+- Normal-form ground match results are pre-marked evaluated, so consumers skip the redundant
+  reduce probe on first visit.
+
+## The compiled search
+
+The zero-allocation trail search now serves rule groups that query spaces. Space-match goals
+compile into the clause skeletons; at a match goal the trail run resolves the call through its
+cells, asks the immutable matcher, advances the fresh-variable counter by exactly the interpreted
+match's cost, and binds each solution onto the cells with trail undo between candidates, like a
+clause dispatch. The JIT declines match-bearing groups, which keep the immutable engine as a
+runtime fallback. Alongside this, merge results in the compiled search check for binding loops
+incrementally (a merge only prepends relations onto its base, so the cycle search roots at the
+prepended variables), and the instantiation memos allocate lazily. The nilbc backward chainer,
+the workload these serve, drops from 918 ms to 485 ms.
+
+## Memory and build
+
+Bulk static loads sweep large all-ground flat functors into a compact interned column store. The
+object forest and its per-argument postings are released; candidates decode on demand and sorted
+columns serve equality and range probes. Retained heap after building 120,000 facts is 36.5 MiB
+against DataScript's 48.8 MiB, peak process RSS 2037 MiB against 2493 MiB, and counting a swept
+functor's facts is a per-arity tally (0.002 ms). Numeric ground interning keys int and float
+pools by number instead of by string, buildEnv pre-plans which functors the sweep will compact
+and skips their throwaway argument postings, and the flat store's probe loop no longer clones:
+encoding 120,000 facts drops from 428 ms to 151 ms and buildEnv from 751 ms to 224 ms, taking
+the full build past DataScript's (322.6 ms against 385.9 ms, uniform).
+
+## Verification
+
+The PeTTa corpus gate holds and strengthens: 105 examples, 98 passing on both engines, no example
+changed status, and no shared row slower than PeTTa. Median speedup 1.55x, geomean 1.61x; nilbc,
+which had drifted to a loss under this session's environment, reads 1.54x after the trail match
+bridge, and peano rises to 5.19x. The full workspace gate is green: 940 core tests across 77
+files, including the seven differential suites, the 23-file byte-identical oracle, typecheck,
+lint, and format.
+
 # MeTTa TS 1.4.0
 
 MeTTa TS 1.4.0 replaces the two command-line tools with one `metta` command and

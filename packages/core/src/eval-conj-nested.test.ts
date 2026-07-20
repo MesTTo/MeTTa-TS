@@ -1,0 +1,235 @@
+// SPDX-FileCopyrightText: 2026 MesTTo
+//
+// SPDX-License-Identifier: MIT
+
+// Differential gate for experimental.conjNested (matchPlan -> matchConj for anchored-acyclic conjunctions).
+// The source-ordered nested loop must produce the SAME solutions in the SAME order as matchConjJoin's WCO for
+// every routed shape, and leave unrouted shapes (unanchored/cyclic) untouched. Every case asserts the flag-on
+// results are byte-identical to the flag-off reference (`.map(format)` equal, ordered), across ground and
+// adversarial inputs: anchored two-hop and chains, stars, duplicates, ground existence checks, cycle-closing
+// goals, entity-id anchors, and non-ground templates. The unanchored two-hop and the cyclic triangle exercise
+// the fall-through to matchConjJoin.
+
+import { describe, expect, it } from "vitest";
+import fc from "fast-check";
+import { runProgram, format, alphaEq, type Atom } from "./index";
+
+function answers(src: string, conjNested: boolean): Atom[] {
+  return runProgram(src, 1_000_000, new Map(), { experimental: { conjNested } }).flatMap(
+    (r) => r.results,
+  );
+}
+
+// The flag-on results must be byte-identical to the flag-off reference, in order.
+function sameBothWays(src: string): void {
+  const off = answers(src, false).map(format);
+  const on = answers(src, true).map(format);
+  expect(on).toEqual(off);
+}
+
+// A four-column edge KB shaped like the DataScript benchmark: (edge entity from to group). Enough structure
+// for multi-value join fan-out, duplicate join keys, and a three-node cycle.
+const EDGES = [
+  "(edge 1 10 20 0)",
+  "(edge 2 10 30 1)",
+  "(edge 3 10 20 2)", // duplicate (from,to)=(10,20) with a different entity, so the join fans out with dups
+  "(edge 4 20 40 0)",
+  "(edge 5 20 50 1)",
+  "(edge 6 30 40 0)",
+  "(edge 7 30 60 2)",
+  "(edge 8 40 10 1)", // closes 10 -> 20 -> 40 -> 10 and 10 -> 30 -> 40 -> 10
+  "(edge 9 50 10 0)",
+  "(edge 10 60 30 2)",
+  "(edge 11 40 70 1)",
+  "(edge 12 20 40 2)", // second (20,40) edge, more duplicate join keys
+].join("\n");
+
+const kb = (query: string): string => `${EDGES}\n${query}`;
+
+describe("experimental.conjNested matches matchConjJoin byte-for-byte", () => {
+  it("anchored two-hop join (the DataScript benchmark shape)", () => {
+    sameBothWays(
+      kb("!(match &self (, (edge $e1 10 $mid $g1) (edge $e2 $mid $to $g2)) (Row $e1 $e2 $to))"),
+    );
+  });
+
+  it("anchored three-goal chain", () => {
+    sameBothWays(
+      kb(
+        "!(match &self (, (edge $e1 10 $a $g1) (edge $e2 $a $b $g2) (edge $e3 $b $c $g3)) (Row $e1 $e2 $e3 $c))",
+      ),
+    );
+  });
+
+  it("anchored star (one center, several spokes sharing the center var)", () => {
+    sameBothWays(
+      kb(
+        "!(match &self (, (edge $e1 10 $mid $g1) (edge $e2 $mid $x $g2) (edge $e3 $mid $y $g3)) (Row $e1 $mid $x $y))",
+      ),
+    );
+  });
+
+  it("anchored on the entity-id position (position 1)", () => {
+    sameBothWays(
+      kb("!(match &self (, (edge 4 $from $to $g) (edge $e2 $to $z $g2)) (Row $from $to $z))"),
+    );
+  });
+
+  it("anchored two-hop with a ground existence-check goal in the middle", () => {
+    sameBothWays(
+      kb(
+        "!(match &self (, (edge $e1 10 $mid $g1) (edge 8 40 10 1) (edge $e2 $mid $to $g2)) (Row $e1 $e2 $to))",
+      ),
+    );
+  });
+
+  it("cycle-closing goal that stays anchored (three edges forming a triangle from a fixed start)", () => {
+    sameBothWays(
+      kb(
+        "!(match &self (, (edge $e1 10 $a $g1) (edge $e2 $a $b $g2) (edge $e3 $b 10 $g3)) (Tri $e1 $e2 $e3 $a $b))",
+      ),
+    );
+  });
+
+  it("non-ground template (a join variable is left free in the result)", () => {
+    sameBothWays(
+      kb("!(match &self (, (edge $e1 10 $mid $g1) (edge $e2 $mid $to $g2)) (Row $e1 $g2 $free))"),
+    );
+  });
+
+  it("anchored two-hop, no matches (empty result set)", () => {
+    sameBothWays(
+      kb("!(match &self (, (edge $e1 999 $mid $g1) (edge $e2 $mid $to $g2)) (Row $e1 $e2))"),
+    );
+  });
+
+  it("unanchored two-hop falls through to matchConjJoin (still identical)", () => {
+    sameBothWays(
+      kb("!(match &self (, (edge $e1 $from $mid $g1) (edge $e2 $mid $to $g2)) (Row $e1 $e2 $to))"),
+    );
+  });
+
+  it("unanchored cyclic triangle falls through to matchConjJoin (still identical)", () => {
+    sameBothWays(
+      kb(
+        "!(match &self (, (edge $e1 $x $y $g1) (edge $e2 $y $z $g2) (edge $e3 $z $x $g3)) (Tri $x $y $z))",
+      ),
+    );
+  });
+
+  it("count over an anchored two-hop (aggregate path)", () => {
+    sameBothWays(
+      kb(
+        "!(length (collapse (match &self (, (edge $e1 10 $mid $g1) (edge $e2 $mid $to $g2)) $e1)))",
+      ),
+    );
+  });
+
+  it("disconnected goals (cross product) fall through to matchConjJoin", () => {
+    sameBothWays(
+      kb("!(match &self (, (edge $e1 10 $mid $g1) (edge $e2 20 $to $g2)) (Row $e1 $e2))"),
+    );
+  });
+
+  it("a duplicate fact added between directives invalidates the routing cache", () => {
+    // evalSequential extends the env per non-bang atom, so the second query sees a duplicate `edge`
+    // fact. The duplicate-fact guard must be recomputed (a stale cache would keep routing to the
+    // nested loop, whose duplicate multiplicity differs from the WCO trie's dedup).
+    const src = [
+      EDGES,
+      "!(match &self (, (edge $e1 10 $mid $g1) (edge $e2 $mid $to $g2)) (Row $e1 $e2 $to))",
+      "(edge 1 10 20 0)", // exact duplicate of the first fact, added after the first query
+      "!(match &self (, (edge $e1 10 $mid $g1) (edge $e2 $mid $to $g2)) (Row $e1 $e2 $to))",
+    ].join("\n");
+    sameBothWays(src);
+  });
+});
+
+// Property fuzz: random conjunctions over random KBs, conjNested on vs off. The generator mixes constants and
+// a small shared variable pool so it produces both routed (anchored, connected) and unrouted
+// (unanchored, disconnected, cyclic) conjunctions, and asserts the flag never changes the answer.
+describe("experimental.conjNested random-conjunction differential (fast-check)", () => {
+  const ent = fc.integer({ min: 1, max: 8 });
+  const node = fc.integer({ min: 0, max: 4 });
+  const grp = fc.integer({ min: 0, max: 2 });
+  const varPool = ["$a", "$b", "$c", "$d"] as const;
+  const arg = (constG: fc.Arbitrary<number>): fc.Arbitrary<string> =>
+    fc.oneof(fc.constantFrom(...varPool), constG.map(String));
+  const goal = fc
+    .tuple(arg(ent), arg(node), arg(node), arg(grp))
+    .map((args) => `(edge ${args.join(" ")})`);
+  const template = "(Row $a $b $c $d)";
+
+  it("ground KB: conjNested-on is byte-identical to off, in order", () => {
+    const groundFact = fc
+      .tuple(ent, node, node, grp)
+      .map(([e, f, t, g]) => `(edge ${e} ${f} ${t} ${g})`);
+    fc.assert(
+      fc.property(
+        fc.array(groundFact, { minLength: 4, maxLength: 24 }),
+        fc.array(goal, { minLength: 2, maxLength: 3 }),
+        (facts, goals) => {
+          const src = `${facts.join("\n")}\n!(match &self (, ${goals.join(" ")}) ${template})`;
+          expect(answers(src, true).map(format)).toEqual(answers(src, false).map(format));
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+
+  // A KB with a unique entity per fact (like the DataScript benchmark) has no duplicate facts, so an anchored
+  // connected conjunction always routes to the nested loop. These two force the routed path at volume and
+  // confirm its enumeration order matches matchConjJoin's WCO.
+  const uniqueKb = fc
+    .array(fc.tuple(node, node, grp), { minLength: 3, maxLength: 30 })
+    .map((rows) => rows.map(([f, t, g], i) => `(edge ${i + 1} ${f} ${t} ${g})`).join("\n"));
+
+  it("unique-entity KB, anchored chain (forces routing): byte-identical, in order", () => {
+    fc.assert(
+      fc.property(uniqueKb, node, fc.integer({ min: 2, max: 3 }), (kbSrc, c, n) => {
+        const goals = [`(edge $e0 ${c} $m0 $g0)`];
+        for (let i = 1; i < n; i++) goals.push(`(edge $e${i} $m${i - 1} $m${i} $g${i})`);
+        const src = `${kbSrc}\n!(match &self (, ${goals.join(" ")}) (Row $e0 $m${n - 1}))`;
+        expect(answers(src, true).map(format)).toEqual(answers(src, false).map(format));
+      }),
+      { numRuns: 600 },
+    );
+  });
+
+  it("unique-entity KB, anchored star (forces routing): byte-identical, in order", () => {
+    fc.assert(
+      fc.property(uniqueKb, node, fc.integer({ min: 2, max: 3 }), (kbSrc, c, spokes) => {
+        const goals = [`(edge $e0 ${c} $mid $g0)`];
+        for (let i = 1; i <= spokes; i++) goals.push(`(edge $s${i} $mid $t${i} $h${i})`);
+        const src = `${kbSrc}\n!(match &self (, ${goals.join(" ")}) (Row $e0 $mid))`;
+        expect(answers(src, true).map(format)).toEqual(answers(src, false).map(format));
+      }),
+      { numRuns: 600 },
+    );
+  });
+
+  it("KB with non-ground facts: still byte-identical (the ground-domain guard declines to route them)", () => {
+    // A fact whose column can be a variable. A non-ground-fact functor fails conjNestedGroundDomain, so the
+    // conjunction stays on matchConjJoin whether the flag is on or off, keeping the result byte-identical. This
+    // is the regression guard for the fuzz witness (an anchored goal over `(edge $a 0 $a $c)` facts) that
+    // diverged before the guard was added. The alphaEq import stays exercised by the smoke assertion below.
+    const maybeVarNode = fc.oneof(node.map(String), fc.constant("$y"));
+    const anyFact = fc
+      .tuple(arg(ent), maybeVarNode, maybeVarNode, arg(grp))
+      .map((a) => `(edge ${a.join(" ")})`);
+    fc.assert(
+      fc.property(
+        fc.array(anyFact, { minLength: 4, maxLength: 20 }),
+        fc.array(goal, { minLength: 2, maxLength: 3 }),
+        (facts, goals) => {
+          const src = `${facts.join("\n")}\n!(match &self (, ${goals.join(" ")}) ${template})`;
+          const off = answers(src, false);
+          const on = answers(src, true);
+          expect(on.map(format)).toEqual(off.map(format));
+          for (let i = 0; i < off.length; i++) expect(alphaEq(on[i]!, off[i]!)).toBe(true);
+        },
+      ),
+      { numRuns: 500 },
+    );
+  });
+});

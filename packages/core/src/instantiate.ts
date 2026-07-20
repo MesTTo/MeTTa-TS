@@ -53,7 +53,7 @@ interface Ctx {
   readonly b: Bindings;
   readonly index: ValueLookup;
   visiting: Set<string> | null;
-  readonly templateMemo: Map<Atom, Atom>;
+  templateMemo: Map<Atom, Atom> | null;
   valueMemo: Map<Atom, Atom> | null;
   readonly intern: InternTable | undefined;
   truncations: number;
@@ -105,11 +105,12 @@ export function instantiate(b: Bindings, a: Atom, suffix = "", intern?: InternTa
   const ctx: Ctx = {
     b,
     index: buildLookup(b),
-    // `visiting` and `valueMemo` are touched only when a bound value is actually resolved (a variable
-    // chain or an expression value), which many calls never do; allocate them lazily so a call that only
-    // substitutes ground or free variables pays nothing extra over the one Map the template walk needs.
+    // `visiting`, `valueMemo`, and `templateMemo` are touched only when the walk actually reaches the
+    // structure they serve (a variable chain, an expression value, an expression template), which many
+    // calls never do; allocate all three lazily so a call that only substitutes ground or free
+    // variables, or resolves a bare variable pattern, allocates no map at all.
     visiting: null,
-    templateMemo: new Map(),
+    templateMemo: null,
     valueMemo: null,
     intern,
     truncations: 0,
@@ -144,7 +145,7 @@ function resolve(ctx: Ctx, a: Atom, suffix: string): Atom {
     return out;
   }
   if (a.kind !== "expr") return a;
-  const memo = suffix === "" ? (ctx.valueMemo ??= new Map()) : ctx.templateMemo;
+  const memo = suffix === "" ? (ctx.valueMemo ??= new Map()) : (ctx.templateMemo ??= new Map());
   const cached = memo.get(a);
   if (cached !== undefined) return cached;
   const before = ctx.truncations;

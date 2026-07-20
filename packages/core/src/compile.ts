@@ -30,7 +30,14 @@ import {
   compileJitGroup,
   jitRuntime,
 } from "./nondet-jit";
-import { type Bindings, emptyBindings, prependValRaw, hasLoop, lookupVal } from "./bindings";
+import {
+  type Bindings,
+  emptyBindings,
+  prependValRaw,
+  hasLoop,
+  hasLoopFromBase,
+  lookupVal,
+} from "./bindings";
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { instantiate } from "./instantiate";
 import { IMPURE_OPS } from "./tabling";
@@ -1259,14 +1266,25 @@ export type Skel =
 
 export interface SkelGoal {
   readonly pat: Skel;
+  /** Empty string when `match` is set: a space-match goal has no dispatched function. */
   readonly fn: string;
   readonly args: readonly Skel[];
+  /** A `(match space pattern template)` goal, served by the injected immutable matcher with the
+   *  solutions bound back onto the cells. The JIT declines any group carrying one, so only the
+   *  skeleton interpreter and the immutable engine ever see it. */
+  readonly match?: { readonly space: Skel; readonly pattern: Skel; readonly template: Skel };
 }
 
 export type SkelTail =
   | { readonly tag: "tpl"; readonly tpl: Skel }
   | { readonly tag: "empty" }
-  | { readonly tag: "call"; readonly fn: string; readonly args: readonly Skel[] };
+  | { readonly tag: "call"; readonly fn: string; readonly args: readonly Skel[] }
+  | {
+      readonly tag: "match";
+      readonly space: Skel;
+      readonly pattern: Skel;
+      readonly template: Skel;
+    };
 
 export type SkelBody =
   | { readonly tag: "seq"; readonly goals: readonly SkelGoal[]; readonly tail: SkelTail }
@@ -1323,7 +1341,19 @@ function skelBodyOf(b: NondetBody, idx: Map<string, number>): SkelBody | undefin
   }
   const goals: SkelGoal[] = [];
   for (const g of b.goals) {
-    if (g.call.tag !== "call") return undefined; // a match goal is the immutable run's job
+    if (g.call.tag === "match") {
+      goals.push({
+        pat: skelOf(g.pat, idx),
+        fn: "",
+        args: [],
+        match: {
+          space: skelOf(g.call.space, idx),
+          pattern: skelOf(g.call.pattern, idx),
+          template: skelOf(g.call.template, idx),
+        },
+      });
+      continue;
+    }
     goals.push({
       pat: skelOf(g.pat, idx),
       fn: g.call.fn,
@@ -1331,13 +1361,19 @@ function skelBodyOf(b: NondetBody, idx: Map<string, number>): SkelBody | undefin
     });
   }
   const tl = b.tail;
-  if (tl.tag === "match") return undefined;
   const tail: SkelTail =
-    tl.tag === "tpl"
-      ? { tag: "tpl", tpl: skelOf(tl.atom, idx) }
-      : tl.tag === "empty"
-        ? { tag: "empty" }
-        : { tag: "call", fn: tl.fn, args: tl.args.map((x) => skelOf(x, idx)) };
+    tl.tag === "match"
+      ? {
+          tag: "match",
+          space: skelOf(tl.space, idx),
+          pattern: skelOf(tl.pattern, idx),
+          template: skelOf(tl.template, idx),
+        }
+      : tl.tag === "tpl"
+        ? { tag: "tpl", tpl: skelOf(tl.atom, idx) }
+        : tl.tag === "empty"
+          ? { tag: "empty" }
+          : { tag: "call", fn: tl.fn, args: tl.args.map((x) => skelOf(x, idx)) };
   return { tag: "seq", goals, tail };
 }
 
@@ -1586,7 +1622,8 @@ function compileNondetGroup(
                   tail.args.map((x) => resolve(b, x, suffix)),
                 );
           for (const [atom, vb] of pairs)
-            for (const mm of merge(b, vb)) if (!hasLoop(mm)) out.push([atom, mm]);
+            // `b` is loop-free by induction over this search's checks, so the incremental form applies.
+            for (const mm of merge(b, vb)) if (!hasLoopFromBase(mm, b)) out.push([atom, mm]);
           return;
         }
         const goal = goals[gi]!;
@@ -1600,10 +1637,12 @@ function compileNondetGroup(
               );
         for (const [atom, vb] of pairs)
           for (const withVal of merge(b, vb)) {
-            if (hasLoop(withVal)) continue;
+            // `b` enters loop-free (checked on every path in), and `withVal` is checked here before it
+            // becomes the next merge's base, so both incremental calls satisfy the loop-free-base rule.
+            if (hasLoopFromBase(withVal, b)) continue;
             for (const pm of matchAtoms(pat, atom))
               for (const mm of merge(withVal, pm))
-                if (!hasLoop(mm)) solveSeq(goals, tail, gi + 1, mm, suffix, out);
+                if (!hasLoopFromBase(mm, withVal)) solveSeq(goals, tail, gi + 1, mm, suffix, out);
           }
       };
 
@@ -1658,12 +1697,14 @@ function compileNondetGroup(
   const makeSkelRun =
     (entry: string, skelsByFn: Map<string, SkelClause[]>) =>
     (
-      _envR: MinEnv,
+      envR: MinEnv,
       partAtoms: readonly Atom[],
       st: St,
-      _ops?: CompiledImpureOps,
+      ops?: CompiledImpureOps,
       fuel?: number,
     ): CompiledRunResult | undefined => {
+      const world = st.world;
+      const matchSolutionsOp = ops?.matchSolutions;
       // Match the copying runner's fixed hedge and caller-provided search allowance.
       const cap = fuel === undefined || fuel < NONDET_CALL_CAP ? NONDET_CALL_CAP : fuel;
       // The trail: bound cells in bind order; undoing to a mark pops and clears each cell's slot.
@@ -1821,6 +1862,90 @@ function compileNondetGroup(
         }
       };
 
+      // Materialize a lazy in-search term for the immutable matcher: every unbound cell (a nameless
+      // variable atom in flight) becomes a plain named variable, recorded so the solution bindings the
+      // matcher returns can be routed back onto the very cells they solve. Bound cells were already
+      // inlined by instSkel; named variables can only be the matcher's own freshenings, kept as-is.
+      let matNameC = 0;
+      const matOut = (a: Atom, map: Map<string, CellVar>, names: Map<CellVar, string>): Atom => {
+        if (a.ground) return a;
+        if (a.kind === "var") {
+          if (a.name !== "") return a;
+          const cell = a as CellVar;
+          let n = names.get(cell);
+          if (n === undefined) {
+            n = "_mq#" + String(matNameC);
+            matNameC += 1;
+            names.set(cell, n);
+            map.set(n, cell);
+          }
+          return variable(n);
+        }
+        if (a.kind !== "expr") return a;
+        const its = a.items;
+        let items: Atom[] | null = null;
+        for (let i = 0; i < its.length; i++) {
+          const r = matOut(its[i]!, map, names);
+          if (items !== null) items.push(r);
+          else if (r !== its[i]) {
+            items = its.slice(0, i);
+            items.push(r);
+          }
+        }
+        return items === null ? a : expr(items);
+      };
+      // The inverse direction: put the recorded cells back into a matcher-produced term, so later
+      // goals dereference through them and the entry extracts their answers.
+      const cellBack = (a: Atom, map: Map<string, CellVar>): Atom => {
+        if (a.ground) return a;
+        if (a.kind === "var") return map.get(a.name) ?? a;
+        if (a.kind !== "expr") return a;
+        const its = a.items;
+        let items: Atom[] | null = null;
+        for (let i = 0; i < its.length; i++) {
+          const r = cellBack(its[i]!, map);
+          if (items !== null) items.push(r);
+          else if (r !== its[i]) {
+            items = its.slice(0, i);
+            items.push(r);
+          }
+        }
+        return items === null ? a : expr(items);
+      };
+      // A space-match step: resolve the call through the cells, ask the injected immutable matcher
+      // (advancing the counter by exactly what the interpreted match would have cost), then per
+      // solution bind the pattern's cells from the solution's bindings on the trail and hand the
+      // instantiated template to `use`. Undo between solutions, exactly like a clause dispatch.
+      const runMatchSkel = (
+        spec: { readonly space: Skel; readonly pattern: Skel; readonly template: Skel },
+        frame: (CellVar | undefined)[],
+        use: (value: Atom) => void,
+      ): void => {
+        if (matchSolutionsOp === undefined) throw BAIL;
+        const map = new Map<string, CellVar>();
+        const names = new Map<CellVar, string>();
+        const space = matOut(instSkel(spec.space, frame, true), map, names);
+        const pattern = matOut(instSkel(spec.pattern, frame, true), map, names);
+        const template = matOut(instSkel(spec.template, frame, true), map, names);
+        const sol = matchSolutionsOp(envR, { counter: ctr.c, world }, space, pattern, template);
+        if (sol === undefined) throw BAIL;
+        ctr.c += sol.counterDelta;
+        for (const [value, vb] of sol.pairs) {
+          const m = cellTrail.length;
+          let ok = true;
+          for (const [name, cell] of map) {
+            const v = lookupVal(vb, name);
+            if (v === undefined) continue;
+            if (!unifyCellOccurs(cellTrail, cell, cellBack(v, map))) {
+              ok = false;
+              break;
+            }
+          }
+          if (ok) use(cellBack(value, map));
+          while (cellTrail.length > m) cellTrail.pop()!.b = undefined;
+        }
+      };
+
       const solveSeq = (
         goals: readonly SkelGoal[],
         tail: SkelTail,
@@ -1836,12 +1961,24 @@ function compileNondetGroup(
             k(instSkel(tail.tpl, frame, true));
             return;
           }
+          if (tail.tag === "match") {
+            runMatchSkel(tail, frame, k);
+            return;
+          }
           const targs: Atom[] = new Array(tail.args.length);
           for (let i = 0; i < targs.length; i++) targs[i] = instSkel(tail.args[i]!, frame, true);
           runCall(tail.fn, targs, k);
           return;
         }
         const goal = goals[gi]!;
+        if (goal.match !== undefined) {
+          runMatchSkel(goal.match, frame, (value) => {
+            const m = cellTrail.length;
+            if (unifySkel(goal.pat, frame, value)) solveSeq(goals, tail, gi + 1, frame, k);
+            while (cellTrail.length > m) cellTrail.pop()!.b = undefined;
+          });
+          return;
+        }
         const gargs: Atom[] = new Array(goal.args.length);
         for (let i = 0; i < gargs.length; i++) gargs[i] = instSkel(goal.args[i]!, frame, true);
         runCall(goal.fn, gargs, (res) => {
@@ -1934,12 +2071,15 @@ function compileNondetGroup(
   const matchFree = ![...clausesByFn.values()].some((cls) =>
     cls.some((c) => nondetBodyUsesMatch(c.body)),
   );
-  // A match-free group's clauses compile to skeletons once, here, and every run dispatches over them.
-  const skelsByFn = matchFree ? compileSkels(clausesByFn) : undefined;
+  // Every group's clauses compile to skeletons once, here, and every run dispatches over them. A group
+  // that queries spaces runs the same trail search with its match goals served by the injected
+  // immutable matcher; if that run bails, the immutable engine takes the dispatch unchanged.
+  const skelsByFn = compileSkels(clausesByFn);
   // Specialized clause code for the group: the same search as the skeleton interpreter with per-node
-  // dispatch compiled away. Under a CSP, new Function throws and compilation declines this group.
+  // dispatch compiled away. Match goals stay on the interpreter (the generated code has no bridge to
+  // the immutable matcher). Under a CSP, new Function throws and compilation declines this group.
   const jitGroup =
-    skelsByFn === undefined
+    skelsByFn === undefined || !matchFree
       ? undefined
       : compileJitGroup(skelsByFn, arityByFn, BAIL, preferDirectForModed);
 
@@ -1996,6 +2136,15 @@ function compileNondetGroup(
       );
     };
 
+  // A match-bearing group prefers the trail search but keeps the immutable engine as its runtime
+  // fallback: a BAIL inside the trail run (an unsupported guard, a matcher decline) retries the same
+  // dispatch on the engine that served these groups before, instead of dropping to the interpreter.
+  const makeSkelThenRun = (fn: string, skels: Map<string, SkelClause[]>): NondetHolder["run"] => {
+    const skelRun = makeSkelRun(fn, skels);
+    const immutableRun = makeRun(fn);
+    return (envR, partAtoms, st, ops, fuel) =>
+      skelRun(envR, partAtoms, st, ops, fuel) ?? immutableRun(envR, partAtoms, st, ops, fuel);
+  };
   const holders = new Map<string, NondetHolder>();
   for (const fn of group)
     holders.set(fn, {
@@ -2007,7 +2156,9 @@ function compileNondetGroup(
         jitGroup !== undefined
           ? makeJitRun(fn, jitGroup)
           : skelsByFn !== undefined
-            ? makeSkelRun(fn, skelsByFn)
+            ? matchFree
+              ? makeSkelRun(fn, skelsByFn)
+              : makeSkelThenRun(fn, skelsByFn)
             : makeRun(fn),
     });
   return holders;

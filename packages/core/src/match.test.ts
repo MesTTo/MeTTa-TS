@@ -3,8 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { matchAtoms, matchAtomsScoped, merge, addVarBinding } from "./match";
-import { type Bindings, lookupVal } from "./bindings";
+import fc from "fast-check";
+import { matchAtoms, matchAtomsScoped, merge, addVarBinding, addVarEquality } from "./match";
+import { type Bindings, hasLoop, hasLoopFromBase, lookupVal } from "./bindings";
 import { sym, variable, expr, gint, gfloat, atomEq, type Atom } from "./atom";
 import { applySubst } from "./substitution";
 import { bindingsToSubst } from "./instantiate";
@@ -148,5 +149,79 @@ describe("scoped matcher (matchAtomsScoped)", () => {
     );
     expect(r.length).toBe(1);
     expect(resolves(r, "y", expr([sym("h"), variable("x#7")]))).toBe(true);
+  });
+});
+
+// Equivalence gate for the incremental loop check the compiled nondet search uses: over any merge
+// output whose base is loop-free, hasLoopFromBase must answer exactly what the full hasLoop answers.
+// The generator drives every construction class: fresh value prepends, var-to-var links (eq rels and
+// var-valued vals), rebinding conflicts that route through reconcile, ground values, and chains deep
+// enough to close multi-step cycles.
+describe("hasLoopFromBase is equivalent to hasLoop on merge outputs", () => {
+  const names = ["a", "b", "c", "d", "e"] as const;
+  const valueArb: fc.Arbitrary<Atom> = fc.oneof(
+    fc.constantFrom(...names).map((n) => variable(n)),
+    fc.integer({ min: 0, max: 9 }).map((n) => gint(BigInt(n))),
+    fc
+      .tuple(fc.constantFrom(...names), fc.constantFrom(...names))
+      .map(([x, y]) => expr([sym("f"), variable(x), variable(y)])),
+    fc.constantFrom(...names).map((n) => expr([sym("g"), variable(n), gint(1n)])),
+  );
+  const relArb = fc.oneof(
+    fc.tuple(fc.constantFrom(...names), valueArb).map(([x, a]) => ({ tag: "val", x, a })),
+    fc
+      .tuple(fc.constantFrom(...names), fc.constantFrom(...names))
+      .map(([x, y]) => ({ tag: "eq", x, y })),
+  );
+  const setArb = fc.array(relArb, { minLength: 0, maxLength: 6 });
+
+  // Build a binding set through the consistent constructors, as the evaluator does, starting empty.
+  // Intermediates are filtered loop-free, mirroring the evaluator's invariant that only sets passing
+  // hasLoop are ever extended (a kept self-identity binding would otherwise drive reconcile into
+  // unbounded recursion, a state the real flows discard before it can arise).
+  const build = (rels: readonly { tag: string; x: string; a?: Atom; y?: string }[]): Bindings[] => {
+    let acc: Bindings[] = [[]];
+    for (const r of rels) {
+      const next: Bindings[] = [];
+      for (const b of acc) {
+        const ext =
+          r.tag === "val"
+            ? addVarBinding(b, r.x, r.a as Atom)
+            : addVarEquality(b, r.x, r.y as string);
+        for (const e of ext) if (!hasLoop(e)) next.push(e);
+      }
+      acc = next.slice(0, 8); // cap the branching
+    }
+    return acc;
+  };
+
+  it("property: every merge output agrees with the full scan", () => {
+    fc.assert(
+      fc.property(setArb, setArb, (baseRels, addRels) => {
+        for (const base of build(baseRels)) {
+          if (hasLoop(base)) continue; // the incremental form's precondition
+          const vbCandidates = build(addRels);
+          for (const vb of vbCandidates.slice(0, 4)) {
+            for (const m of merge(base, vb)) {
+              expect(hasLoopFromBase(m, base)).toBe(hasLoop(m));
+            }
+          }
+        }
+      }),
+      { numRuns: 800 },
+    );
+  });
+
+  it("a fresh var-to-var chain closing a cycle through the base is caught", () => {
+    // base: a ← (f b c), loop-free. vb binds b ← (g a 1): the new edge b→a closes a→b→a.
+    const base = addVarBinding([], "a", expr([sym("f"), variable("b"), variable("c")]))[0]!;
+    expect(hasLoop(base)).toBe(false);
+    for (const m of merge(
+      base,
+      addVarBinding([], "b", expr([sym("g"), variable("a"), gint(1n)]))[0]!,
+    )) {
+      expect(hasLoopFromBase(m, base)).toBe(hasLoop(m));
+      expect(hasLoopFromBase(m, base)).toBe(true);
+    }
   });
 });

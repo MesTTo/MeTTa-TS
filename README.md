@@ -316,7 +316,7 @@ On the reproducible corpus benchmark
 ([`corpus-bench.mjs`](packages/node/bench/corpus-bench.mjs) runs the PeTTa
 example corpus through both engines and checks each program’s `(test …)`
 assertions), MeTTa TS passes all 98 Hyperon-faithful shared programs and is
-**faster than PeTTa on every one**, median 1.63x, from pure TypeScript.
+**faster than PeTTa on every one**, median 1.55x, from pure TypeScript.
 
 The core list operations run in linear time. `size-atom`, `map-atom`,
 `filter-atom`, and `foldl-atom` over N elements are O(N) on a constant native
@@ -330,6 +330,43 @@ bounded-backward-chaining benchmarks are in
 [`RESULTS-listops.md`](packages/node/bench/RESULTS-listops.md). Each
 release’s notes in [`RELEASE_NOTES.md`](RELEASE_NOTES.md) describe the engine
 work behind that version’s numbers.
+
+## Compared with DataScript
+
+DataScript is the standard immutable in-browser database. The two differ first in the data model:
+
+|                      | DataScript                                         | MeTTa TS                                                                                  |
+| -------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| Data model           | Flat entity-attribute-value datoms, a triple store | Metagraph: atoms nest, so a fact can be about another fact                                |
+| Code and data        | Queries and rules sit outside the datoms           | Rules are atoms in the same space; a program can query and rewrite its own rules          |
+| Computation          | Datalog query and `pull` over relations            | Term rewriting with nondeterministic evaluation; querying and computing are one mechanism |
+| Types                | Attribute schema: cardinality, refs, uniqueness    | Optional gradual dependent types: GADTs, dependent types, types as propositions           |
+| Host code in a query | None                                               | Grounded TypeScript calls inside rules, including async I/O and concurrency               |
+
+On DataScript's own workloads (120,000 edge records, five isolated Node processes per engine,
+medians, every result cross-checked between engines before timing), MeTTa TS 1.5.0 wins every
+declarative query at both tested sizes and under uniform and skewed distributions:
+
+| Workload, 120k records, uniform | DataScript 1.7.8 | MeTTa TS |         Winner |
+| ------------------------------- | ---------------: | -------: | -------------: |
+| Source lookup, declarative      |         14.14 ms | 0.011 ms | MeTTa TS 1349x |
+| Reverse lookup, declarative     |          4.25 ms | 0.010 ms |  MeTTa TS 422x |
+| Group lookup, declarative       |         14.47 ms |  1.72 ms |  MeTTa TS 8.4x |
+| One-percent range, declarative  |         42.32 ms |  2.08 ms | MeTTa TS 20.3x |
+| Anchored two-hop join           |         26.14 ms |  0.14 ms |  MeTTa TS 184x |
+| Count all edges                 |        114.31 ms | 0.002 ms |       MeTTa TS |
+| Triangle join count             |          3101 ms |  1079 ms |  MeTTa TS 2.9x |
+| Bulk build                      |         385.9 ms | 322.6 ms | MeTTa TS 1.20x |
+| Retained heap after build       |         48.8 MiB | 36.5 MiB | MeTTa TS 1.34x |
+| Peak process RSS                |         2493 MiB | 2037 MiB | MeTTa TS 1.22x |
+| Immutable insert, 1000 records  |          43.4 ms |  11.6 ms | MeTTa TS 3.75x |
+
+DataScript keeps its direct index APIs on microsecond point reads: entity by id (~1.9x), the
+`index_range` seek (its ordered-index specialty, ~118x over MeTTa's declarative range), the
+bound-value `datoms` seeks (within about 2x and noisy between sessions), and every cold first
+call on point rows, where MeTTa TS pays JIT warmup. Every MeTTa TS number comes from the default
+configuration, and each routing path behind them is differential-gated byte-identical to the
+reference evaluator, including result order.
 
 ## Provenance
 

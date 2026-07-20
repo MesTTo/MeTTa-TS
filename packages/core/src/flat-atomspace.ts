@@ -25,6 +25,8 @@ const TERM_EXPR = 4;
 
 const CHUNK_SIZE = 16_384;
 const ABSENT = -1;
+const HASH_INT_NUMBER = 0x4e554d49;
+const HASH_FLOAT = 0x4e554d46;
 
 interface FactRange {
   readonly start: number;
@@ -74,8 +76,15 @@ function groundKey(v: Ground): string {
   }
 }
 
-function groundHash(v: Ground): number {
-  return strHash(groundKey(v));
+function numberHash(seed: number, n: number): number {
+  if (Number.isNaN(n)) return mixHash(seed, 0x7fc00000);
+  const key = Object.is(n, -0) ? 0 : n;
+  return mixHash(mixHash(seed, key | 0), (key / 0x1_0000_0000) | 0);
+}
+
+interface GroundIntern {
+  readonly leaf: number;
+  readonly hash: number;
 }
 
 export function canCompactAtom(a: Atom): boolean {
@@ -96,7 +105,7 @@ export function canCompactAtom(a: Atom): boolean {
 // before the bail stay in the table but no version's ranges cover the facts, so they are never visible.
 const NOT_COMPACT = new Error("flat-atomspace: grounded metadata is not compactable");
 
-class FlatAtomSpaceTable {
+export class FlatAtomSpaceTable {
   readonly termKind = new Int32Chunks();
   readonly termStart = new Int32Chunks();
   readonly termLen = new Int32Chunks();
@@ -118,6 +127,8 @@ class FlatAtomSpaceTable {
   private missSlot = -1;
   private missHash = 0;
   private readonly symByName = new Map<string, number>();
+  private readonly intNumberGrounds = new Map<number, number>();
+  private readonly floatGrounds = new Map<number, number>();
   private readonly groundByKey = new Map<string, number>();
   private readonly varByName = new Map<string, number>();
   private readonly termFacts = new Map<TermId, FactId[]>();
@@ -193,13 +204,8 @@ class FlatAtomSpaceTable {
         );
       case "gnd": {
         if (!canCompactAtom(atom)) throw NOT_COMPACT;
-        const key = groundKey(atom.value);
-        return this.internLeaf(
-          TERM_GND,
-          this.internGround(key, atom.value),
-          groundHash(atom.value),
-          true,
-        );
+        const ground = this.internGround(atom.value);
+        return this.internLeaf(TERM_GND, ground.leaf, ground.hash, true);
       }
       case "var":
         return this.internLeaf(
@@ -233,11 +239,10 @@ class FlatAtomSpaceTable {
       }
       case "gnd": {
         if (!canCompactAtom(atom)) return undefined;
-        const key = groundKey(atom.value);
-        const leaf = this.groundByKey.get(key);
-        return leaf === undefined
+        const ground = this.lookupGround(atom.value);
+        return ground === undefined
           ? undefined
-          : this.lookupLeaf(TERM_GND, leaf, groundHash(atom.value));
+          : this.lookupLeaf(TERM_GND, ground.leaf, ground.hash);
       }
       case "var": {
         const leaf = this.varByName.get(atom.name);
@@ -339,7 +344,45 @@ class FlatAtomSpaceTable {
     return id;
   }
 
-  private internGround(key: string, value: Ground): number {
+  private internGround(value: Ground): GroundIntern {
+    if (value.g === "int" && typeof value.n === "number")
+      return {
+        leaf: this.internNumericGround(this.intNumberGrounds, value.n, value),
+        hash: numberHash(HASH_INT_NUMBER, value.n),
+      };
+    if (value.g === "float")
+      return {
+        leaf: this.internNumericGround(this.floatGrounds, value.n, value),
+        hash: numberHash(HASH_FLOAT, value.n),
+      };
+    const key = groundKey(value);
+    return { leaf: this.internGroundByKey(key, value), hash: strHash(key) };
+  }
+
+  private lookupGround(value: Ground): GroundIntern | undefined {
+    if (value.g === "int" && typeof value.n === "number") {
+      const leaf = this.intNumberGrounds.get(value.n);
+      return leaf === undefined ? undefined : { leaf, hash: numberHash(HASH_INT_NUMBER, value.n) };
+    }
+    if (value.g === "float") {
+      const leaf = this.floatGrounds.get(value.n);
+      return leaf === undefined ? undefined : { leaf, hash: numberHash(HASH_FLOAT, value.n) };
+    }
+    const key = groundKey(value);
+    const leaf = this.groundByKey.get(key);
+    return leaf === undefined ? undefined : { leaf, hash: strHash(key) };
+  }
+
+  private internNumericGround(pool: Map<number, number>, key: number, value: Ground): number {
+    const existing = pool.get(key);
+    if (existing !== undefined) return existing;
+    const id = this.grounds.length;
+    this.grounds.push(value);
+    pool.set(key, id);
+    return id;
+  }
+
+  private internGroundByKey(key: string, value: Ground): number {
     const existing = this.groundByKey.get(key);
     if (existing !== undefined) return existing;
     const id = this.grounds.length;
@@ -372,8 +415,7 @@ class FlatAtomSpaceTable {
     for (;;) {
       const s = slots[i]!;
       if (s === 0) {
-        this.missSlot = i;
-        this.missHash = hash;
+        this.recordMiss(i, hash);
         return undefined;
       }
       const term = s - 1;
@@ -401,8 +443,6 @@ class FlatAtomSpaceTable {
     return this.pushTerm(TERM_EXPR, start, children.length, hash, ground);
   }
 
-  // The probe skeleton repeats lookupLeaf's on purpose: sharing it would take a per-call equality
-  // closure, and avoiding that allocation on the intern path is why the open table exists.
   private lookupExpr(children: readonly TermId[]): TermId | undefined {
     let hash = mixHash(0x45585052, children.length);
     for (const child of children) hash = mixHash(hash, child);
@@ -410,19 +450,15 @@ class FlatAtomSpaceTable {
     const slots = this.slots;
     const mask = slots.length - 1;
     let i = hash & mask;
-    probe: for (;;) {
-      const s = slots[i]!;
-      if (s === 0) {
-        this.missSlot = i;
-        this.missHash = hash;
-        return undefined;
-      }
-      const term = s - 1;
-      if (
+    probe: while (true) {
+      const slotValue = slots[i]!;
+      if (slotValue === 0) return this.recordMiss(i, hash);
+      const term = slotValue - 1;
+      const matchesExpr =
         this.termHash.get(term) === hash &&
         this.termKind.get(term) === TERM_EXPR &&
-        this.termLen.get(term) === children.length
-      ) {
+        this.termLen.get(term) === children.length;
+      if (matchesExpr) {
         const start = this.termStart.get(term);
         for (let j = 0; j < children.length; j++)
           if (this.termData.get(start + j) !== children[j]) {
@@ -464,6 +500,12 @@ class FlatAtomSpaceTable {
     this.slots[i] = term + 1;
     this.slotCount += 1;
     return term;
+  }
+
+  private recordMiss(slot: number, hash: number): undefined {
+    this.missSlot = slot;
+    this.missHash = hash;
+    return undefined;
   }
 
   private growSlots(): void {

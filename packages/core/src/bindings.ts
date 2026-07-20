@@ -90,8 +90,19 @@ const noSucc: readonly string[] = [];
  *  overflow, and 3-colours each variable so it is visited once: O(vars + total value size), like Hyperon's
  *  bitset walk. `atomVars` is cached by object identity, so a DAG-shared value is scanned once. */
 export function hasLoop(b: Bindings): boolean {
+  const quick = relQuickLoop(b, b.length);
+  if (quick !== undefined) return quick;
+  const vals = firstVals(b);
+  return loopReachableFrom(vals, vals.keys());
+}
+
+// The self-relation quick checks over the first `count` relations: a self-equality or self-value is a
+// loop outright (true); no non-ground value among them means no graph edge to walk (false); otherwise
+// the colour DFS must decide (undefined).
+function relQuickLoop(b: Bindings, count: number): boolean | undefined {
   let needsGraph = false;
-  for (const r of b) {
+  for (let i = 0; i < count; i++) {
+    const r = b[i]!;
     if (r.tag === "eq") {
       if (r.x === r.y) return true;
     } else {
@@ -99,20 +110,30 @@ export function hasLoop(b: Bindings): boolean {
       if (!r.a.ground) needsGraph = true;
     }
   }
-  if (!needsGraph) return false;
+  return needsGraph ? undefined : false;
+}
+
+// First (most recently prepended) value per variable, matching `lookupVal`'s precedence.
+function firstVals(b: Bindings): Map<string, Atom> {
   const vals = new Map<string, Atom>();
   for (const r of b) if (r.tag === "val" && !vals.has(r.x)) vals.set(r.x, r.a);
-  // 3-colour iterative DFS over the variable graph. A variable's successors are the distinct variables in
-  // its bound value; a grey (on the current path) revisit is a back-edge, i.e. a cycle. color: 1 = grey
-  // (on path), 2 = black (done); absent = white (unvisited).
+  return vals;
+}
+
+// 3-colour iterative DFS over the variable graph, rooted at `seeds`. A variable's successors are the
+// distinct variables in its bound value; a grey (on the current path) revisit is a back-edge, i.e. a
+// cycle. color: 1 = grey (on path), 2 = black (done); absent = white (unvisited). Seeds bound to a
+// ground value (or unbound) root nothing.
+function loopReachableFrom(vals: ReadonlyMap<string, Atom>, seeds: Iterable<string>): boolean {
   const color = new Map<string, 1 | 2>();
   const succ = (x: string): readonly string[] => {
     const v = vals.get(x);
     return v === undefined || v.ground ? noSucc : atomVars(v);
   };
   const stack: Array<{ v: string; kids: readonly string[]; i: number }> = [];
-  for (const [x, a] of vals) {
-    if (a.ground) continue;
+  for (const x of seeds) {
+    const a = vals.get(x);
+    if (a === undefined || a.ground) continue;
     if (color.get(x) === 2) continue;
     color.set(x, 1);
     stack.push({ v: x, kids: succ(x), i: 0 });
@@ -132,6 +153,41 @@ export function hasLoop(b: Bindings): boolean {
     }
   }
   return false;
+}
+
+/** `hasLoop` for a `merge` result whose base was already loop-free.
+ *
+ *  `merge` builds every output by prepending relations onto its base: `addVarBinding` prepends a value
+ *  relation only for a variable the current set leaves unbound (a bound variable either no-ops or goes
+ *  through `reconcile`, whose own extensions bottom out in the same prepend-or-no-op steps), and
+ *  `addVarEquality` prepends an equality. The base is therefore a reference-identical suffix of the
+ *  result, no prepend can shadow a base variable's first value, and the base's first-value graph embeds
+ *  unchanged in the result's. A cycle in the result must then pass through a prepended value binding,
+ *  so running the colour DFS only from the prepended variables is answer-equivalent to the full scan.
+ *  The self-relation quick checks run on the prepended prefix alone for the same reason. Anything that
+ *  is not a reference-identical suffix extension falls back to the full `hasLoop`.
+ *
+ *  Callers must pass the exact base the result was merged from, and that base must itself be loop-free;
+ *  the equivalence fuzz in match.test.ts pins this predicate to `hasLoop` over merge outputs. */
+export function hasLoopFromBase(merged: Bindings, base: Bindings): boolean {
+  const added = merged.length - base.length;
+  if (merged === base || added === 0) return false; // no-op merge: the base was loop-free
+  if (
+    added < 0 ||
+    (base.length > 0 &&
+      (merged[added] !== base[0] || merged[merged.length - 1] !== base[base.length - 1]))
+  )
+    return hasLoop(merged); // not a suffix extension of `base`: no incremental argument
+  // Quick checks over the prepended prefix only; all-ground prepends add no edges, and the base's
+  // graph is acyclic by precondition.
+  const quick = relQuickLoop(merged, added);
+  if (quick !== undefined) return quick;
+  const seeds: string[] = [];
+  for (let i = 0; i < added; i++) {
+    const r = merged[i]!;
+    if (r.tag === "val" && !r.a.ground) seeds.push(r.x);
+  }
+  return loopReachableFrom(firstVals(merged), seeds);
 }
 
 /** Bind `$x ← a`, dropping any previous value binding for `$x`. Raw: no consistency check. */

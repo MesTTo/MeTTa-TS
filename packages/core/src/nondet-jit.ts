@@ -1082,6 +1082,10 @@ function proveResultProjections(
               break;
             }
             projection = findLhsOccurrence(fields[hole]!, terminal.clause.lhsArgs);
+          } else if (terminal.tail.tag !== "call") {
+            // Match tails never reach the JIT (the caller gates them out); anything else defers.
+            pending = true;
+            continue;
           } else {
             const calleeProjection = projections.get(terminal.tail.fn)?.[hole];
             if (calleeProjection === undefined) {
@@ -1375,6 +1379,8 @@ function analyzeDeferredBody(
     const controlResults = resultFields.filter((_, index) => index !== hole);
     controlUses.push(...controlResults);
     tail = { tag: "tpl", controlResults, deferred };
+  } else if (body.tail.tag !== "call") {
+    return undefined; // match tails never reach the JIT (the caller gates them out)
   } else {
     const calleeLayout = inputLayouts.get(body.tail.fn);
     const calleeWitnessHole = inputHoleByFn.get(body.tail.fn);
@@ -1764,8 +1770,11 @@ function emitBody(
       emitResultArgs(ctx, resultLayout.shape, b.tail.tpl, lhsArgs, inputLayout, inputRefs, args);
       inner = `${kExpr}(${args.join(", ")});`;
     }
-  } else {
+  } else if (b.tail.tag === "call") {
     inner = emitCall(ctx, fnIdOf, inputLayouts, b.tail.fn, b.tail.args, kExpr);
+  } else {
+    // Match tails never reach the JIT (the caller gates them out).
+    throw new Error("unreachable: a match tail reached JIT emission");
   }
   for (let gi = b.goals.length - 1; gi >= 0; gi--) {
     const g = b.goals[gi]!;
