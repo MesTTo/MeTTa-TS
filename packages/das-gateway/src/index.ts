@@ -8,7 +8,7 @@
 // server-side and exposes request/response query over HTTP (Connect over HTTP/1.1).
 // This module defines the wire shape and async query helper; Connect server/client and live
 // `das-client` integration need running DAS. See README.
-import { type Atom, type Bindings, format, parseAll, standardTokenizer } from "@metta-ts/core";
+import { type Atom, type Bindings, format, parseAll, standardTokenizer } from "@mettascript/core";
 
 /** Gateway query payloads use MeTTa source strings on the wire. */
 export interface QueryRequest {

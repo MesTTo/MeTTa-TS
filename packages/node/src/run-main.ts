@@ -19,8 +19,8 @@ import {
   type QueryResult,
   type ReduceResult,
   type RunOptions,
-} from "@metta-ts/core";
-import type { HostInterop } from "@metta-ts/core/host";
+} from "@mettascript/core";
+import type { HostInterop } from "@mettascript/core/host";
 import { readImports } from "./file-imports";
 
 // Deep effectful MeTTa recursion can exceed V8's default call stack. Re-exec once with a larger stack,
@@ -124,7 +124,7 @@ async function runInteropToBuffer(
   modes: { readonly py: boolean; readonly prolog: boolean },
 ): Promise<string> {
   const [{ composeHostInterops }, { runSourceAsync }] = await Promise.all([
-    import("@metta-ts/core/host"),
+    import("@mettascript/core/host"),
     import("./source"),
   ]);
   const interops: HostInterop[] = [];
@@ -134,12 +134,12 @@ async function runInteropToBuffer(
   if (modes.py) {
     if (process.env.METTA_TS_FORCE_NO_PYTHONIA === "1")
       throw new Error("--py needs the pythonia backend; run: npm install pythonia");
-    let python: import("@metta-ts/py/pythonia").PythoniaLike;
+    let python: import("@mettascript/py/pythonia").PythoniaLike;
     try {
       // `as string` stops TS resolving pythonia's own types here: it is a caller-supplied optional
       // backend, not a dependency of this package. The shape we use is the pythonia subpath type.
       ({ python } = (await import("pythonia" as string)) as {
-        python: import("@metta-ts/py/pythonia").PythoniaLike;
+        python: import("@mettascript/py/pythonia").PythoniaLike;
       });
     } catch {
       throw new Error(
@@ -147,8 +147,8 @@ async function runInteropToBuffer(
       );
     }
     const [{ pyCoreAsyncOps, PY_METTA_SRC }, { pythoniaBridge }] = await Promise.all([
-      import("@metta-ts/py"),
-      import("@metta-ts/py/pythonia"),
+      import("@mettascript/py"),
+      import("@mettascript/py/pythonia"),
     ]);
     const bridge = pythoniaBridge(python);
     interops.push({
@@ -172,8 +172,8 @@ async function runInteropToBuffer(
     if (process.env.METTA_TS_FORCE_NO_SWIPL === "1")
       throw new Error("--prolog needs SWI-Prolog on PATH; install swipl");
     const [{ PROLOG_METTA_SRC, prologCoreAsyncOps }, { swiPrologBridge }] = await Promise.all([
-      import("@metta-ts/prolog"),
-      import("@metta-ts/prolog/swi-node"),
+      import("@mettascript/prolog"),
+      import("@mettascript/prolog/swi-node"),
     ]);
     const bridge = swiPrologBridge();
     interops.push({

@@ -1,5 +1,5 @@
 // SPDX-FileCopyrightText: 2026 Nil Geisweiller — chaining (https://github.com/trueagi-io/chaining)
-// SPDX-FileCopyrightText: 2026 MesTTo — MeTTa-TS adaptation
+// SPDX-FileCopyrightText: 2026 MesTTo — MeTTaScript adaptation
 //
 // SPDX-License-Identifier: GPL-3.0-only
 

@@ -13,7 +13,7 @@ import {
   instantiate,
   parse,
   standardTokenizer,
-} from "@metta-ts/core";
+} from "@mettascript/core";
 import { node, variable, expr, type Pattern } from "./query-tokens";
 import { queryPatternMatching } from "./query-client";
 

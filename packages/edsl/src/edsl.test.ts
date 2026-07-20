@@ -13,6 +13,7 @@ import {
   rule,
   If,
   Match,
+  All,
   gt,
   lt,
   eq,
@@ -438,5 +439,51 @@ describe("differential — eDSL matches the raw string API", () => {
     viaString.run("(= (fact $x) (if (> $x 0) (* $x (fact (- $x 1))) 1))");
 
     expect(viaEdsl.eval(fact(6)).map(String)).toEqual(viaString.run("!(fact 6)")[0]!.map(String));
+  });
+});
+
+describe("join queries and the All conjunction", () => {
+  it("query([p1, p2], vars) joins on the shared variable (DataScript-style :where)", () => {
+    const db = mettaDB();
+    const { parent, Tom, Bob, Ann, Liz } = names();
+    const { x, y, z } = vars();
+    db.add(parent(Tom, Bob), parent(Tom, Liz), parent(Bob, Ann));
+
+    // grandparent join: (parent Tom $y) and (parent $y $z), keyed by the requested vars
+    const rows = db.query([parent(Tom, y), parent(y, z)], { y, z });
+    expect(rows).toEqual([{ y: "Bob", z: "Ann" }]);
+
+    // an empty join (no such two-hop from Liz) returns no rows
+    expect(db.query([parent(Liz, y), parent(y, z)], { y, z })).toEqual([]);
+
+    // with no explicit vars, columns are every variable across the patterns, in first-seen order
+    const inferred = db.query([parent(x, y), parent(y, z)]);
+    expect(inferred).toEqual([{ x: "Tom", y: "Bob", z: "Ann" }]);
+  });
+
+  it("a single-pattern array query matches the single-pattern form", () => {
+    const db = mettaDB();
+    const { Likes, Ada, Coffee, Chocolate } = names();
+    const { thing } = vars();
+    db.add(Likes(Ada, Coffee), Likes(Ada, Chocolate));
+    expect(db.query([Likes(Ada, thing)], { thing })).toEqual(
+      db.query(Likes(Ada, thing), { thing }),
+    );
+  });
+
+  it("All builds a conjunctive rule body for a recursive relation", () => {
+    const db = mettaDB();
+    const { edge, twoHop, reach, A, B, C, D } = names();
+    const { x, y, z } = vars();
+    db.add(edge(A, B), edge(B, C), edge(C, D));
+
+    // exactly-two-hop reachability, via a conjunctive Match body
+    db.rule(twoHop(x), Match(All(edge(x, y), edge(y, z)), z));
+    expect(db.evalJs(twoHop(A))).toEqual(["C"]);
+
+    // transitive reachability, recursing through the relation
+    db.rule(reach(x), Match(edge(x, y), y));
+    db.rule(reach(x), Match(edge(x, y), reach(y)));
+    expect((db.evalJs(reach(A)) as string[]).sort()).toEqual(["B", "C", "D"]);
   });
 });

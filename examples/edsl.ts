@@ -7,7 +7,7 @@
 // grounded atoms automatically.
 //
 // Run it (after `pnpm build`): npx tsx examples/edsl.ts
-import { mettaDB, names, vars, If, gt, lt, add, sub, mul, m } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, lt, add, sub, mul, m } from "@mettascript/edsl";
 
 const db = mettaDB();
 

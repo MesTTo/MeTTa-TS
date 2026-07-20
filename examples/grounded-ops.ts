@@ -10,7 +10,7 @@
 // than crashing the run.
 //
 // Run it (after `pnpm build`): npx tsx examples/grounded-ops.ts
-import { MeTTa, ValueAtom, type GroundedAtom, type Atom } from "@metta-ts/hyperon";
+import { MeTTa, ValueAtom, type GroundedAtom, type Atom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 

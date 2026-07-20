@@ -3,9 +3,9 @@
 // SPDX-License-Identifier: MIT
 
 // Run it after building packages: `npx tsx examples/prolog-interop.ts`.
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPrologInterop } from "@metta-ts/prolog";
-import { swiPrologBridge } from "@metta-ts/prolog/swi-node";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPrologInterop } from "@mettascript/prolog";
+import { swiPrologBridge } from "@mettascript/prolog/swi-node";
 
 const bridge = swiPrologBridge();
 const metta = new MeTTa();

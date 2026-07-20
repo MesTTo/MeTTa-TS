@@ -1,6 +1,6 @@
 {
-  "name": "@metta-ts/hyperon",
-  "version": "1.5.0",
+  "name": "@mettascript/hyperon",
+  "version": "2.0.0",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,8 +20,8 @@
     "docs": "typedoc"
   },
   "dependencies": {
-    "@metta-ts/core": "workspace:*",
-    "@metta-ts/libraries": "workspace:*"
+    "@mettascript/core": "workspace:*",
+    "@mettascript/libraries": "workspace:*"
   },
   "author": "MesTTo",
   "engines": {
@@ -32,7 +32,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "A TypeScript class API over @metta-ts/core, modeled on Python hyperon (atoms, spaces, grounded operations).",
+  "description": "A TypeScript class API over @mettascript/core, modeled on Python hyperon (atoms, spaces, grounded operations).",
   "keywords": [
     "metta",
     "hyperon",
@@ -43,11 +43,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MesTTo/MeTTa-TS.git",
+    "url": "git+https://github.com/MesTTo/MeTTaScript.git",
     "directory": "packages/hyperon"
   },
-  "homepage": "https://github.com/MesTTo/MeTTa-TS#readme",
+  "homepage": "https://github.com/MesTTo/MeTTaScript#readme",
   "bugs": {
-    "url": "https://github.com/MesTTo/MeTTa-TS/issues"
+    "url": "https://github.com/MesTTo/MeTTaScript/issues"
   }
 }

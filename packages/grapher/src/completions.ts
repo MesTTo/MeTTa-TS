@@ -6,7 +6,7 @@
 // the space (every function you have defined and every symbol you have used) plus a curated stdlib list,
 // ranked exact, then prefix, then substring, then subsequence.
 
-import { SymbolAtom, type MeTTa } from "@metta-ts/hyperon";
+import { SymbolAtom, type MeTTa } from "@mettascript/hyperon";
 
 /** Common MeTTa special forms and grounded operations, always offered. */
 const STDLIB = [

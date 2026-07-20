@@ -5,13 +5,13 @@ SPDX-License-Identifier: MIT
 
 # Experimental features
 
-MeTTa TS ships in-progress work on a separate prerelease line before it reaches a stable release. This page explains what that line is, how to opt into it, and what it currently contains.
+MeTTaScript ships in-progress work on a separate prerelease line before it reaches a stable release. This page explains what that line is, how to opt into it, and what it currently contains.
 
 ## The two channels
 
 Every package publishes to one of two npm dist-tags:
 
-- `latest` is the stable line. A plain `npm install @metta-ts/core` installs it, and its API does not change under you within a major version. This is what you want for production.
+- `latest` is the stable line. A plain `npm install @mettascript/core` installs it, and its API does not change under you within a major version. This is what you want for production.
 - `experimental` is the prerelease line. It carries features that are complete and tested but whose public surface may still change before they land in a stable release. Its versions carry an `-experimental.N` suffix, for example `1.2.0-experimental.0`.
 
 The stable line never depends on the experimental one, so installing stable is unaffected by anything here.
@@ -21,29 +21,29 @@ The stable line never depends on the experimental one, so installing stable is u
 Opt in per package by asking for the tag:
 
 ```bash
-npm install @metta-ts/core@experimental
-npm install @metta-ts/hyperon@experimental
+npm install @mettascript/core@experimental
+npm install @mettascript/hyperon@experimental
 ```
 
 For a reproducible build, pin the exact version instead of the moving tag:
 
 ```bash
-npm install @metta-ts/core@1.2.0-experimental.0
+npm install @mettascript/core@1.2.0-experimental.0
 ```
 
 A plain install stays on stable:
 
 ```bash
-npm install @metta-ts/core          # resolves the latest tag
+npm install @mettascript/core          # resolves the latest tag
 ```
 
 ## What to expect
 
 The experimental features work and are covered by the test suite, but treat them as a preview:
 
-- The API may change between experimental versions. Read the [release notes](https://github.com/MesTTo/MeTTa-TS/releases) before upgrading, and pin an exact version if you depend on the current shape.
+- The API may change between experimental versions. Read the [release notes](https://github.com/MesTTo/MeTTaScript/releases) before upgrading, and pin an exact version if you depend on the current shape.
 - The semantics of stable MeTTa evaluation are unchanged. The experimental line adds new surfaces; it does not alter how existing programs evaluate.
-- Feedback is the point. If something is awkward or missing, open an issue on [GitHub](https://github.com/MesTTo/MeTTa-TS/issues); this line exists so that the stable shape can be informed by real use.
+- Feedback is the point. If something is awkward or missing, open an issue on [GitHub](https://github.com/MesTTo/MeTTaScript/issues); this line exists so that the stable shape can be informed by real use.
 
 ## What is in it now
 
@@ -59,8 +59,8 @@ The current experimental line (`1.2.0-experimental.0`) contains:
 The headline feature is streaming grounded operations. A normal grounded operation collects every result into an array before the evaluator sees any of them. A streaming operation hands the evaluator a generator instead, and the evaluator pulls one answer at a time. A consumer such as `once` then stops the producer rather than draining it.
 
 ```ts
-// requires @metta-ts/hyperon@experimental
-import { MeTTa, ValueAtom } from "@metta-ts/hyperon";
+// requires @mettascript/hyperon@experimental
+import { MeTTa, ValueAtom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 
@@ -84,8 +84,8 @@ metta.run("!(digits-of 305 $d)")[0].map(String); // [ '3', '0', '5' ]
 
 `registerAsyncStreamingOperation` is the asynchronous twin, for producers that await between answers (a paginated fetch, a database cursor). Its `signal` argument aborts when the evaluation is cancelled, so the producer stops requesting more as soon as the consumer stops pulling.
 
-The full protocol underneath, `registerGroundedOperationV2`, and its ownership, binding-delta, and effect rules are described in the [1.2.0-experimental.0 release notes](https://github.com/MesTTo/MeTTa-TS/releases/tag/v1.2.0-experimental.0) and in [`docs/minimal-metta-runtime.md`](https://github.com/MesTTo/MeTTa-TS/blob/experimental/docs/minimal-metta-runtime.md) on the experimental branch.
+The full protocol underneath, `registerGroundedOperationV2`, and its ownership, binding-delta, and effect rules are described in the [1.2.0-experimental.0 release notes](https://github.com/MesTTo/MeTTaScript/releases/tag/v1.2.0-experimental.0) and in [`docs/minimal-metta-runtime.md`](https://github.com/MesTTo/MeTTaScript/blob/experimental/docs/minimal-metta-runtime.md) on the experimental branch.
 
 ## Where the work happens
 
-The experimental line is built on the [`experimental` branch](https://github.com/MesTTo/MeTTa-TS/tree/experimental) of the repository, and each prerelease is cut from there. The stable site you are reading tracks `main`; the experimental branch carries the same guide plus the detailed reference for the surfaces above.
+The experimental line is built on the [`experimental` branch](https://github.com/MesTTo/MeTTaScript/tree/experimental) of the repository, and each prerelease is cut from there. The stable site you are reading tracks `main`; the experimental branch carries the same guide plus the detailed reference for the surfaces above.

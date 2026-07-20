@@ -5,24 +5,65 @@ SPDX-License-Identifier: MIT
 
 # Introduction
 
-MeTTa TS is a pure-TypeScript implementation of **MeTTa** (Meta Type Talk), the language of the OpenCog Hyperon project. MeTTa is a multi-paradigm language for computing over knowledge graphs: a program is a set of atoms living in a space, and you compute by rewriting and matching those atoms. It mixes facts, rules, functional code, and types in one self-reflective system.
+MeTTaScript is a metagraph rewriting database you use from TypeScript. You put facts into a space, query them by pattern, and compute by writing rewrite rules over the same facts. It is a pure-TypeScript library with no native addons and no required WASM, so it runs in the browser, Node, Deno, Bun, edge functions, and inside TypeScript AI agents.
 
-What makes this implementation different is where it runs. Every other MeTTa lives behind a native or WASM boundary: Rust (hyperon-experimental, MORK), Prolog (PeTTa, MeTTaLog), the JVM (JETTA), or Python (the reference bindings). The MeTTa TS engine is written in TypeScript and runs wherever TypeScript runs, with nothing to compile and nothing native to install. You can import it into a web page, a serverless function, or a TypeScript AI agent and start evaluating MeTTa immediately.
+You do not need to know the MeTTa language, OpenCog, or Hyperon to use it. Everything you store or query is an ordinary value you build from TypeScript, and the examples in these docs stay small.
 
-When you do want another host language, you opt in explicitly. Python and
-Prolog adapters plug into the same evaluator through `py-call`, `prolog-call`,
-and `import!`, but they do not create a second MeTTa mode.
+## Store facts, query them, join them
 
-For the language itself, the official home is [metta-lang.dev](https://metta-lang.dev). Start there: its [Learn MeTTa](https://metta-lang.dev/docs/learn/learn.html) tutorials are the canonical introduction, and the Learn track in these docs follows them closely.
+Here is the shape of it from TypeScript, with no MeTTa syntax. You store facts, run a single-pattern query, and join across patterns on a shared variable, which is the same query a Datalog store like DataScript runs, written as TypeScript:
+
+```ts
+import { mettaDB, names, vars } from "@mettascript/edsl";
+
+const db = mettaDB();
+const { parent, Tom, Bob, Ann } = names();
+const { x, y, z } = vars();
+
+db.add(parent(Tom, Bob), parent(Bob, Ann));
+
+// a single-pattern query returns binding rows (keys inferred from the pattern)
+db.query(parent(Tom, x)); // [{ x: "Bob" }]
+
+// a join: match two patterns that share $y, keyed by the variables you ask for
+db.query([parent(x, y), parent(y, z)], { x, z }); // [{ x: "Tom", z: "Ann" }]
+```
+
+The names come from a proxy, so the binding is the name and you never write a string twice. Query keys, arguments, and results cross the TypeScript boundary as ordinary values. If you would rather write MeTTa source directly you can, but you never have to.
+
+## What makes it a metagraph
+
+A metagraph is the most expressive of the graph data models. A graph joins two nodes with an edge, a hypergraph joins any number of nodes, and a metagraph lets links contain other links, so a fact can be about another fact. Flat rows and RDF triples cannot nest that way:
+
+```ts
+// the value of a fact is itself a fact
+db.add(Believes(Tom, parent(Bob, Ann)));
+db.query(Believes(x, parent(Bob, Ann))); // [{ x: "Tom" }]
+```
+
+On top of the store you write rules that derive new facts, and a rule can query the space, so recursive derivations a plain store cannot express are a couple of lines. Transitive reachability, every node you can get to by following edges:
+
+```ts
+import { Match } from "@mettascript/edsl";
+
+db.add(edge(A, B), edge(B, C));
+db.rule(reach(x), Match(edge(x, y), y)); // one hop
+db.rule(reach(x), Match(edge(x, y), reach(y))); // then keep going
+db.evalJs(reach(A)); // ["B", "C"]
+```
+
+Querying the space and computing with rules are the same act of pattern matching, and because rules are atoms too, a program can inspect and rewrite its own rules. Types are optional and gradual.
+
+## When to reach for it
+
+Use MeTTaScript where you would reach for an embeddable database that you query with logic rather than SQL: a local knowledge base in a web app, rules and inference in an agent, a graph you both query and transform in the same process. It covers the ground that [DataScript](/guide/use-cases) covers and adds nesting, rules, and types, and on DataScript's own declarative workloads it is faster. The [Use cases](/guide/use-cases) page compares it to DataScript and the other tools people use for this job.
+
+## The MeTTa ecosystem, if you want it
+
+MeTTaScript implements MeTTa, a language that came out of the OpenCog Hyperon project for computing over knowledge. There is a wider ecosystem of MeTTa implementations, each on a different host: Hyperon (Rust, the reference), MeTTaLog (SWI-Prolog), MORK (a high-performance Rust metagraph engine), JeTTa (the JVM), and PeTTa (Prolog). MeTTaScript is the pure-TypeScript one, and it stands on its own as a library. If you already work in that ecosystem, MeTTaScript reads and runs the same MeTTa and is validated against Hyperon's oracle corpus; if you have never heard of it, none of that is in your way.
 
 ## Two ways to read these docs
 
-If you are new to MeTTa the language, start with **[Learn MeTTa](/learn/evaluation/main-concepts)**. It teaches evaluation, pattern matching, recursion, types, and the standard library from the ground up. Every example runs in this engine, so you can follow along.
+Most people want to use MeTTaScript from TypeScript. Start with **[Getting started](/guide/getting-started)**, then **[Using MeTTaScript from TypeScript](/typescript/running-metta)**: running programs, calling your own TypeScript functions from rules, dropping TypeScript objects into the space, async evaluation, and the typed eDSL.
 
-If you already know MeTTa and want to use it from TypeScript, jump to **[Using MeTTa from TypeScript](/typescript/running-metta)**. It covers running programs, calling your own TypeScript functions as grounded operations, embedding TypeScript objects in the atomspace, async evaluation, and the typed eDSL.
-
-## What you get
-
-The core is a faithful port of hyperon-experimental's minimal interpreter, the nondeterministic stack machine, with the standard library loaded as MeTTa source on top. It passes all 270 assertions of Hyperon's oracle corpus and is cross-checked against [LeaTTa](https://github.com/MesTTo/LeaTTa), the machine-checked (Lean 4) MeTTa semantics. On top of the core you also get transactions, async evaluation, concurrency primitives, clause indexing that scales matching to millions of atoms, a JavaScript interop layer, and a typed eDSL.
-
-Ready to run your first program? Head to **[Getting started](/guide/getting-started)**.
+If you want to learn MeTTa the language itself, the **[Learn MeTTa](/learn/evaluation/main-concepts)** track teaches evaluation, pattern matching, recursion, types, and the standard library from the ground up, and every example runs in this engine. It is optional. The canonical language tutorials live at [metta-lang.dev](https://metta-lang.dev/docs/learn/learn.html).

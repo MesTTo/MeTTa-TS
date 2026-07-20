@@ -48,30 +48,102 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.0)(happy-dom@20.10.6)
 
+  compat/browser:
+    dependencies:
+      '@mettascript/browser':
+        specifier: workspace:*
+        version: link:../../packages/browser
+
+  compat/core:
+    dependencies:
+      '@mettascript/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
+  compat/das-client:
+    dependencies:
+      '@mettascript/das-client':
+        specifier: workspace:*
+        version: link:../../packages/das-client
+
+  compat/das-gateway:
+    dependencies:
+      '@mettascript/das-gateway':
+        specifier: workspace:*
+        version: link:../../packages/das-gateway
+
+  compat/debug:
+    dependencies:
+      '@mettascript/debug':
+        specifier: workspace:*
+        version: link:../../packages/debug
+
+  compat/edsl:
+    dependencies:
+      '@mettascript/edsl':
+        specifier: workspace:*
+        version: link:../../packages/edsl
+
+  compat/grapher:
+    dependencies:
+      '@mettascript/grapher':
+        specifier: workspace:*
+        version: link:../../packages/grapher
+
+  compat/hyperon:
+    dependencies:
+      '@mettascript/hyperon':
+        specifier: workspace:*
+        version: link:../../packages/hyperon
+
+  compat/libraries:
+    dependencies:
+      '@mettascript/libraries':
+        specifier: workspace:*
+        version: link:../../packages/libraries
+
+  compat/node:
+    dependencies:
+      '@mettascript/node':
+        specifier: workspace:*
+        version: link:../../packages/node
+
+  compat/prolog:
+    dependencies:
+      '@mettascript/prolog':
+        specifier: workspace:*
+        version: link:../../packages/prolog
+
+  compat/py:
+    dependencies:
+      '@mettascript/py':
+        specifier: workspace:*
+        version: link:../../packages/py
+
   examples:
     dependencies:
-      '@metta-ts/browser':
+      '@mettascript/browser':
         specifier: workspace:*
         version: link:../packages/browser
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../packages/core
-      '@metta-ts/edsl':
+      '@mettascript/edsl':
         specifier: workspace:*
         version: link:../packages/edsl
-      '@metta-ts/grapher':
+      '@mettascript/grapher':
         specifier: workspace:*
         version: link:../packages/grapher
-      '@metta-ts/hyperon':
+      '@mettascript/hyperon':
         specifier: workspace:*
         version: link:../packages/hyperon
-      '@metta-ts/node':
+      '@mettascript/node':
         specifier: workspace:*
         version: link:../packages/node
-      '@metta-ts/prolog':
+      '@mettascript/prolog':
         specifier: workspace:*
         version: link:../packages/prolog
-      '@metta-ts/py':
+      '@mettascript/py':
         specifier: workspace:*
         version: link:../packages/py
       pyodide:
@@ -105,10 +177,10 @@ importers:
 
   packages/browser:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
-      '@metta-ts/libraries':
+      '@mettascript/libraries':
         specifier: workspace:*
         version: link:../libraries
 
@@ -126,7 +198,7 @@ importers:
       '@grpc/grpc-js':
         specifier: ^1.14.4
         version: 1.14.4
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -136,25 +208,25 @@ importers:
 
   packages/das-gateway:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
 
   packages/debug:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
 
   packages/edsl:
     dependencies:
-      '@metta-ts/hyperon':
+      '@mettascript/hyperon':
         specifier: workspace:*
         version: link:../hyperon
 
   packages/grapher:
     dependencies:
-      '@metta-ts/hyperon':
+      '@mettascript/hyperon':
         specifier: workspace:*
         version: link:../hyperon
     devDependencies:
@@ -167,38 +239,38 @@ importers:
 
   packages/hyperon:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
-      '@metta-ts/libraries':
+      '@mettascript/libraries':
         specifier: workspace:*
         version: link:../libraries
 
   packages/libraries:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
 
   packages/node:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
-      '@metta-ts/debug':
+      '@mettascript/debug':
         specifier: workspace:*
         version: link:../debug
-      '@metta-ts/libraries':
+      '@mettascript/libraries':
         specifier: workspace:*
         version: link:../libraries
-      '@metta-ts/prolog':
+      '@mettascript/prolog':
         specifier: workspace:*
         version: link:../prolog
-      '@metta-ts/py':
+      '@mettascript/py':
         specifier: workspace:*
         version: link:../py
     devDependencies:
-      '@metta-ts/grapher':
+      '@mettascript/grapher':
         specifier: workspace:*
         version: link:../grapher
       pythonia:
@@ -210,10 +282,10 @@ importers:
 
   packages/prolog:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
-      '@metta-ts/hyperon':
+      '@mettascript/hyperon':
         specifier: workspace:*
         version: link:../hyperon
     devDependencies:
@@ -223,10 +295,10 @@ importers:
 
   packages/py:
     dependencies:
-      '@metta-ts/core':
+      '@mettascript/core':
         specifier: workspace:*
         version: link:../core
-      '@metta-ts/hyperon':
+      '@mettascript/hyperon':
         specifier: workspace:*
         version: link:../hyperon
     devDependencies:
@@ -244,10 +316,10 @@ importers:
     dependencies:
       '@metta-ts/core':
         specifier: workspace:*
-        version: link:../packages/core
+        version: link:../compat/core
       '@metta-ts/grapher':
         specifier: workspace:*
-        version: link:../packages/grapher
+        version: link:../compat/grapher
       codejar:
         specifier: ^4.2.0
         version: 4.3.0
@@ -255,6 +327,12 @@ importers:
         specifier: ^1.0.3
         version: 1.0.3
     devDependencies:
+      '@shikijs/themes':
+        specifier: ^2.5.0
+        version: 2.5.0
+      '@shikijs/types':
+        specifier: ^2.5.0
+        version: 2.5.0
       vitepress:
         specifier: ^1.6.3
         version: 1.6.4(@algolia/client-search@5.55.1)(@types/node@22.20.0)(postcss@8.5.15)(search-insights@2.17.3)(typescript@5.9.3)

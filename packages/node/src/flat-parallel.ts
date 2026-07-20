@@ -11,7 +11,7 @@
 // via the in-memory argument index. Best fit: full scans and unbound-head patterns over millions of atoms.
 import { Worker } from "node:worker_threads";
 import { availableParallelism } from "node:os";
-import { type Atom, type FlatKB, encodePattern, decodeAt } from "@metta-ts/core";
+import { type Atom, type FlatKB, encodePattern, decodeAt } from "@mettascript/core";
 
 // Worker code: pure integer matching over the shared token array. Atom decoding needs the interner,
 // which stays on the main thread. Offsets are claimed via an Atomics work-stealing counter.

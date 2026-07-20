@@ -1,9 +1,9 @@
-# @metta-ts/py
+# @mettascript/py
 
-Python interop for MeTTa TS. It gives a MeTTa program PeTTa's `py-call`
+Python interop for MeTTaScript. It gives a MeTTa program PeTTa's `py-call`
 surface and Hyperon's `py-atom` family, over the same TypeScript engine. The
-root package is runtime-agnostic: use `@metta-ts/py/pythonia` for Node CPython
-or `@metta-ts/py/pyodide` for browsers. A normal MeTTa run never loads Python.
+root package is runtime-agnostic: use `@mettascript/py/pythonia` for Node CPython
+or `@mettascript/py/pyodide` for browsers. A normal MeTTa run never loads Python.
 
 The Python ops are asynchronous, because a call crosses a process boundary, so you run programs with `runAsync`.
 
@@ -12,15 +12,15 @@ The Python ops are asynchronous, because a call crosses a process boundary, so y
 ## Install
 
 ```bash
-npm install @metta-ts/py pythonia
+npm install @mettascript/py pythonia
 ```
 
 ## Wiring it up
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPyInterop } from "@metta-ts/py";
-import { pythoniaBridge } from "@metta-ts/py/pythonia";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPyInterop } from "@mettascript/py";
+import { pythoniaBridge } from "@mettascript/py/pythonia";
 import { python } from "pythonia";
 
 const metta = new MeTTa();
@@ -88,13 +88,13 @@ Three things diverge from PeTTa on purpose, and `py-atom` follows these too rath
 
 ## Browser Pyodide
 
-Use `@metta-ts/py/pyodide` when Python should run in the browser through
+Use `@mettascript/py/pyodide` when Python should run in the browser through
 Pyodide. The root package stays runtime-agnostic; importing the Pyodide subpath
 is the opt-in that loads the Pyodide package.
 
 ```ts
-import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
-import { createPyodideInterop } from "@metta-ts/py/pyodide";
+import { createBrowserRunner, createBrowserTextLoader } from "@mettascript/browser/host";
+import { createPyodideInterop } from "@mettascript/py/pyodide";
 
 const files = new Map([["math.py", "def add(a, b):\n    return a + b\n"]]);
 const loadText = createBrowserTextLoader({ files, baseUrl: import.meta.url });

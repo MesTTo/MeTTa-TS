@@ -7,7 +7,7 @@
  * variable-to-atom frame; a {@link BindingsSet} is the set of frames produced by a match. They wrap the
  * core's immutable binding relations behind a small mutable API.
  */
-import * as core from "@metta-ts/core";
+import * as core from "@mettascript/core";
 import { Atom, V, VariableAtom } from "./atoms";
 
 /** One frame of variable-to-atom associations. */

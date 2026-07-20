@@ -3,22 +3,22 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/node and @metta-ts/browser
+# @mettascript/node and @mettascript/browser
 
-The two platform entry points. Both re-export everything from [`@metta-ts/core`](/reference/core) and add platform-specific pieces.
+The two platform entry points. Both re-export everything from [`@mettascript/core`](/reference/core) and add platform-specific pieces.
 
-## @metta-ts/node
+## @mettascript/node
 
 ```bash
-npm install @metta-ts/node          # library
-npm install -g @metta-ts/node       # the metta CLI on your PATH
+npm install @mettascript/node          # library
+npm install -g @mettascript/node       # the metta CLI on your PATH
 ```
 
 ### CLI
 
 ```bash
 metta run path/to/program.metta
-npx -p @metta-ts/node metta run path/to/program.metta   # without a global install
+npx -p @mettascript/node metta run path/to/program.metta   # without a global install
 ```
 
 Runs a `.metta` file, resolving `import!` relative to the file's directory, and prints each `!`-query's results.
@@ -34,7 +34,7 @@ With those flags, `.py` and `.pl` files imported through `import!` are handled
 by the matching host adapter. Without the flags, the CLI never loads Python,
 Prolog, or their optional dependencies.
 
-`@metta-ts/node` also installs `metta debug`, a headless debugger for the same runner. It supports `run`, `eval`, and `why`; `why` attaches the core trace bus and reports grounded reducers, higher-order specialization, overflow cut points, reduction count, and result. See [Debugging and traces](/tools/metta-debug).
+`@mettascript/node` also installs `metta debug`, a headless debugger for the same runner. It supports `run`, `eval`, and `why`; `why` attaches the core trace bus and reports grounded reducers, higher-order specialization, overflow cut points, reduction count, and result. See [Debugging and traces](/tools/metta-debug).
 
 ### API
 
@@ -50,10 +50,10 @@ class ParallelFlatMatcher {
 
 `runFile` runs a file from disk. `readImports` pre-reads the `import!` targets a program references, resolving names against `baseDir`. `ParallelFlatMatcher` scans a [`FlatKB`](/reference/core#the-flat-knowledge-base) across `worker_threads` over a `SharedArrayBuffer`; build it once, reuse the warm pool, and `close()` when done. It is for large, non-selective, small-result scans only (see [scaling](/advanced/scaling)).
 
-## @metta-ts/browser
+## @mettascript/browser
 
 ```bash
-npm install @metta-ts/browser
+npm install @mettascript/browser
 ```
 
 ```ts
@@ -67,12 +67,12 @@ in-memory virtual file system (`files` maps a module name to its MeTTa source).
 TypeScript, so it runs in any browser with no native addon and no required
 WASM, which is exactly what powers the [playground](/playground).
 
-For optional host runtimes, use `@metta-ts/browser/host`:
+For optional host runtimes, use `@mettascript/browser/host`:
 
 ```ts
-import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
-import { createPyodideInterop } from "@metta-ts/py/pyodide";
-import { createSwiWasmInterop } from "@metta-ts/prolog/swi-wasm";
+import { createBrowserRunner, createBrowserTextLoader } from "@mettascript/browser/host";
+import { createPyodideInterop } from "@mettascript/py/pyodide";
+import { createSwiWasmInterop } from "@mettascript/prolog/swi-wasm";
 
 const files = new Map([
   ["math.py", "def add(a, b):\n    return a + b\n"],

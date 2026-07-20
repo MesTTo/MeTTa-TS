@@ -128,7 +128,7 @@ export function makeParEvalImpl(
   fuel: number,
   options: ParEvalOptions = {},
 ): (rulesSrc: string, branchSrcs: string[], firstOnly: boolean) => (string[] | null)[] {
-  const corePath = createRequire(import.meta.url).resolve("@metta-ts/core");
+  const corePath = createRequire(import.meta.url).resolve("@mettascript/core");
   return (rulesSrc, branchSrcs, firstOnly) =>
     evalBranchesParallel(corePath, rulesSrc, branchSrcs, firstOnly, fuel, options);
 }

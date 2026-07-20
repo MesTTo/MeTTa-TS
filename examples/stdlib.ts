@@ -6,7 +6,7 @@
 // console output ops. This shows a few of them together.
 //
 // Run it (after `pnpm build`): npx tsx examples/stdlib.ts
-import { runProgram, format } from "@metta-ts/core";
+import { runProgram, format } from "@mettascript/core";
 
 const results = runProgram(`
   ; arithmetic and comparison are grounded operations

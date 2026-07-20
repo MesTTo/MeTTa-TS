@@ -4,7 +4,7 @@
 
 // Pure eDSL builders for the optional Python host interop surface. These
 // construct the same MeTTa atoms that the Python runtime package registers.
-import { E, S, type Atom, type ExpressionAtom } from "@metta-ts/hyperon";
+import { E, S, type Atom, type ExpressionAtom } from "@mettascript/hyperon";
 import { ground, type Term } from "./term";
 
 function symbolOrTerm(name: string | Term): Atom {

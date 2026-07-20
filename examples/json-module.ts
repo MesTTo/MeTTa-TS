@@ -6,7 +6,7 @@
 // experimental JSON support.
 //
 // Run it (after `pnpm build`): npx tsx examples/json-module.ts
-import { MeTTa, registerJsonModule } from "@metta-ts/hyperon";
+import { MeTTa, registerJsonModule } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 registerJsonModule(m);

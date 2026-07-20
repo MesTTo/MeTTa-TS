@@ -1,0 +1,55 @@
+{
+  "name": "@metta-ts/browser",
+  "version": "2.0.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
+    "./hyperpose-worker": {
+      "types": "./dist/hyperpose-worker.d.ts",
+      "default": "./dist/hyperpose-worker.js"
+    },
+    "./source": {
+      "types": "./dist/source.d.ts",
+      "default": "./dist/source.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts src/host.ts src/hyperpose-worker.ts src/source.ts --format esm --dts --clean"
+  },
+  "dependencies": {
+    "@mettascript/browser": "workspace:*"
+  },
+  "author": "MesTTo",
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false,
+  "module": "./dist/index.js",
+  "publishConfig": {
+    "access": "public"
+  },
+  "description": "Compatibility shim for @mettascript/browser.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MesTTo/MeTTaScript.git",
+    "directory": "packages/browser"
+  },
+  "homepage": "https://github.com/MesTTo/MeTTaScript#readme",
+  "bugs": {
+    "url": "https://github.com/MesTTo/MeTTaScript/issues"
+  }
+}

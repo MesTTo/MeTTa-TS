@@ -4,7 +4,7 @@
 
 // A Space backed by a Distributed AtomSpace. Implements the same `Space` interface as `InMemorySpace`,
 // delegating every operation to a `DasTransport`.
-import { type Atom, type Bindings, type Space } from "@metta-ts/core";
+import { type Atom, type Bindings, type Space } from "@mettascript/core";
 import { type DasTransport } from "./transport";
 
 export class DasSpace implements Space {

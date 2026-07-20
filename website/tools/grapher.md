@@ -115,10 +115,10 @@ Nodes form a cycle-guarded graph, so a node can feed several parents and no cycl
 
 ## Using it from TypeScript
 
-The package is [`@metta-ts/grapher`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/grapher). The quickest way in is the fluent `grapher()` driver, in the same style as the [eDSL](/edsl/overview):
+The package is [`@mettascript/grapher`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/grapher). The quickest way in is the fluent `grapher()` driver, in the same style as the [eDSL](/edsl/overview):
 
 ```ts
-import { grapher } from "@metta-ts/grapher";
+import { grapher } from "@mettascript/grapher";
 
 const view = grapher("#app")
   .load("(= (double $x) (* $x 2))\n(double 21)")
@@ -138,8 +138,8 @@ advance it.
 Because the view runs on atoms, anything that produces atoms feeds it, including the eDSL. Build the program with combinators and hand the atoms over:
 
 ```ts
-import { grapher } from "@metta-ts/grapher";
-import { rule, names, vars, If, gt, mul, sub } from "@metta-ts/edsl";
+import { grapher } from "@mettascript/grapher";
+import { rule, names, vars, If, gt, mul, sub } from "@mettascript/edsl";
 
 const { fact } = names();
 const { n } = vars();
@@ -170,7 +170,7 @@ const blob = await grapher("#app")
 ```
 
 To create the same animation from `node app.js`, use the DOM-free
-[`@metta-ts/grapher/node` tutorial](/tools/grapher-node-gif). It returns a
+[`@mettascript/grapher/node` tutorial](/tools/grapher-node-gif). It returns a
 `Uint8Array` that can be written to a file or sent in an HTTP response.
 
 ### The full instance
@@ -178,7 +178,7 @@ To create the same animation from `node app.js`, use the DOM-free
 For everything else, use the class directly:
 
 ```ts
-import { MeTTaGrapher } from "@metta-ts/grapher";
+import { MeTTaGrapher } from "@mettascript/grapher";
 
 const editor = new MeTTaGrapher(document.getElementById("app")!, {
   source: "(+ 10 (* 25 2))",

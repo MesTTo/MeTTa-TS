@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { format, runProgram, setHostEffectsEnabled } from "@metta-ts/core";
+import { format, runProgram, setHostEffectsEnabled } from "@mettascript/core";
 import type { BranchWorkerRequest, BranchWorkerResponse } from "./hyperpose-protocol";
 
 interface WorkerScope {

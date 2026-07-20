@@ -3,18 +3,18 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/py
+# @mettascript/py
 
-Optional Python interop for MeTTa TS. It gives a MeTTa program PeTTa's `py-call` surface and Hyperon's `py-atom` family, over a Python bridge that you provide. Use `@metta-ts/py/pythonia` in Node, or `@metta-ts/py/pyodide` in the browser. A normal run never loads Python, and every Python operation is async.
+Optional Python interop for MeTTaScript. It gives a MeTTa program PeTTa's `py-call` surface and Hyperon's `py-atom` family, over a Python bridge that you provide. Use `@mettascript/py/pythonia` in Node, or `@mettascript/py/pyodide` in the browser. A normal run never loads Python, and every Python operation is async.
 
 ```bash
-npm install @metta-ts/py pythonia
+npm install @mettascript/py pythonia
 ```
 
 For the browser adapter, install Pyodide beside it:
 
 ```bash
-npm install @metta-ts/py pyodide
+npm install @mettascript/py pyodide
 ```
 
 ## Registering Python interop
@@ -55,14 +55,14 @@ class PyObjectValue extends ValueObject
 ## Runtime adapters
 
 ```ts
-// @metta-ts/py/pythonia
+// @mettascript/py/pythonia
 interface PythoniaLike {
   (name: string): Promise<unknown>;
   exit(): void;
 }
-function pythoniaBridge(python: PythoniaLike): PyBridge
+function pythoniaBridge(python: PythoniaLike): PyBridge;
 
-// @metta-ts/py/pyodide
+// @mettascript/py/pyodide
 interface PyodideBridgeOptions {
   readonly loadText?: HostTextLoader;
   readonly baseUrl?: string | URL;
@@ -75,33 +75,33 @@ interface PyodideInteropOptions extends PyodideBridgeOptions {
   readonly packages?: readonly string[];
   readonly micropip?: readonly string[];
 }
-function pyodideBridge(pyodide: PyodideAPI, options?: PyodideBridgeOptions): PyBridge
-function createPyodideInterop(options?: PyodideInteropOptions): Promise<HostInterop>
+function pyodideBridge(pyodide: PyodideAPI, options?: PyodideBridgeOptions): PyBridge;
+function createPyodideInterop(options?: PyodideInteropOptions): Promise<HostInterop>;
 ```
 
-`pythoniaBridge` wraps the caller's `python` export from `pythonia`. `pyodideBridge` wraps an already loaded Pyodide runtime. `createPyodideInterop` builds a browser `HostInterop` object for `@metta-ts/browser/host`, including `.py` file imports through the provided text loader.
+`pythoniaBridge` wraps the caller's `python` export from `pythonia`. `pyodideBridge` wraps an already loaded Pyodide runtime. `createPyodideInterop` builds a browser `HostInterop` object for `@mettascript/browser/host`, including `.py` file imports through the provided text loader.
 
 ## MeTTa surface
 
-| form | does |
-| --- | --- |
-| `py-call` | calls a Python builtin, `module.fn`, or `.method` on a live handle |
-| `py-import` | imports a module name or local `.py` file through the bridge |
-| `py-eval` | evaluates a Python expression string through Python `eval` |
-| `py-str` | folds a MeTTa expression list into one Python string |
-| `py-atom` | resolves a dotted Python path into an atom, callable when the target is callable |
-| `py-dot` | reads an attribute from a live Python object |
-| `py-list` / `py-tuple` / `py-dict` | builds Python collections as live handles |
-| `py-chain` | applies Python `operator.or_` across a list of bridge values |
+| form                               | does                                                                             |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| `py-call`                          | calls a Python builtin, `module.fn`, or `.method` on a live handle               |
+| `py-import`                        | imports a module name or local `.py` file through the bridge                     |
+| `py-eval`                          | evaluates a Python expression string through Python `eval`                       |
+| `py-str`                           | folds a MeTTa expression list into one Python string                             |
+| `py-atom`                          | resolves a dotted Python path into an atom, callable when the target is callable |
+| `py-dot`                           | reads an attribute from a live Python object                                     |
+| `py-list` / `py-tuple` / `py-dict` | builds Python collections as live handles                                        |
+| `py-chain`                         | applies Python `operator.or_` across a list of bridge values                     |
 
 `py-call` dispatches by the head of its argument. A bare name calls a Python builtin, a dotted name calls a module function, and a name beginning with `.` calls a method on the first argument.
 
 ## Example
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPyInterop } from "@metta-ts/py";
-import { pythoniaBridge } from "@metta-ts/py/pythonia";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPyInterop } from "@mettascript/py";
+import { pythoniaBridge } from "@mettascript/py/pythonia";
 import { python } from "pythonia";
 
 const metta = new MeTTa();

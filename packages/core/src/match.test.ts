@@ -224,4 +224,25 @@ describe("hasLoopFromBase is equivalent to hasLoop on merge outputs", () => {
       expect(hasLoopFromBase(m, base)).toBe(true);
     }
   });
+
+  it("a reconcile cascade whose value pairs alias in a ring terminates (seed 1357977064)", () => {
+    // The shrunk fuzz witness for the reconcile stack overflow. base: e ← (g a 1), d ← (g b 1); vb:
+    // a ← (g e 1), b ← $d, a = b. Replaying vb's a = b reconciles (g e 1) against $d and the derived
+    // pairs ping-pong around the alias ring while every per-variable occurs check stays false. The
+    // rational-tree guard closes the revisited pair, the merge returns, and the closed set carries the
+    // a↔e value cycle, so the ordinary loop filter discards it like any cyclic solution.
+    const g = (n: string): Atom => expr([sym("g"), variable(n), gint(1n)]);
+    const base = addVarBinding(addVarBinding([], "d", g("b"))[0]!, "e", g("a"))[0]!;
+    expect(hasLoop(base)).toBe(false);
+    let vb = addVarEquality([], "a", "b")[0]!;
+    vb = addVarBinding(vb, "b", variable("d"))[0]!;
+    vb = addVarBinding(vb, "a", g("e"))[0]!;
+    expect(hasLoop(vb)).toBe(false);
+    const outs = merge(base, vb); // diverged with a native RangeError before the guard
+    expect(outs.length).toBeGreaterThan(0);
+    for (const m of outs) {
+      expect(hasLoopFromBase(m, base)).toBe(hasLoop(m));
+      expect(hasLoop(m)).toBe(true);
+    }
+  });
 });

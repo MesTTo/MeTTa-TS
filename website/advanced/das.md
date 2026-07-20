@@ -5,20 +5,20 @@ SPDX-License-Identifier: MIT
 
 # Distributed AtomSpace
 
-The spaces you have seen so far are in-memory. SingularityNET's **Distributed AtomSpace (DAS)** is a remote, shared atomspace with its own query engine. MeTTa TS can query a DAS as an asynchronous space, so a live external knowledge base behaves like any other space in your program.
+The spaces you have seen so far are in-memory. SingularityNET's **Distributed AtomSpace (DAS)** is a remote, shared atomspace with its own query engine. MeTTaScript can query a DAS as an asynchronous space, so a live external knowledge base behaves like any other space in your program.
 
 This is optional and lives in two packages:
 
-- `@metta-ts/das-client` connects to a DAS and runs pattern-matching queries.
-- `@metta-ts/das-gateway` is a transport-agnostic bridge so a browser can reach a DAS over HTTP (Connect), since a browser cannot open the raw connection itself.
+- `@mettascript/das-client` connects to a DAS and runs pattern-matching queries.
+- `@mettascript/das-gateway` is a transport-agnostic bridge so a browser can reach a DAS over HTTP (Connect), since a browser cannot open the raw connection itself.
 
 ## Querying a DAS
 
 A DAS query is network I/O, so it is asynchronous. An `AsyncSpace` exposes `queryAsync(pattern)`, and `matchAsync` is the async analogue of `(match space pattern template)`: it queries the space and instantiates a template under each binding.
 
 ```ts
-import { DasLiveSpace, matchAsync } from "@metta-ts/das-client";
-import { sym, expr, variable } from "@metta-ts/core";
+import { DasLiveSpace, matchAsync } from "@mettascript/das-client";
+import { sym, expr, variable } from "@mettascript/core";
 
 const A = (...xs) => expr(xs);
 
@@ -34,7 +34,7 @@ console.log(results.map(String));
 
 ## Standing up a local DAS
 
-To query a real cluster, stand one up with SingularityNET's `das-cli` (Docker-based) and load some atoms. The full, verified steps are in the `@metta-ts/das-client` package README; in short:
+To query a real cluster, stand one up with SingularityNET's `das-cli` (Docker-based) and load some atoms. The full, verified steps are in the `@mettascript/das-client` package README; in short:
 
 ```bash
 das-cli db start                    # Redis + MongoDB
@@ -50,11 +50,11 @@ Then point a `DasLiveSpace` at `127.0.0.1:40002`. Two things to know:
 
 ## Reaching a DAS from the browser
 
-A browser cannot speak the DAS wire protocol directly, so `@metta-ts/das-gateway` sits in front of a `das-client` server-side and exposes the query over an injected transport (Connect, which works over HTTP). You provide the transport; the gateway encodes the pattern, sends it, and decodes the bindings:
+A browser cannot speak the DAS wire protocol directly, so `@mettascript/das-gateway` sits in front of a `das-client` server-side and exposes the query over an injected transport (Connect, which works over HTTP). You provide the transport; the gateway encodes the pattern, sends it, and decodes the bindings:
 
 ```ts
-import { queryDas, type GatewayTransport } from "@metta-ts/das-gateway";
-import { parse, standardTokenizer } from "@metta-ts/core";
+import { queryDas, type GatewayTransport } from "@mettascript/das-gateway";
+import { parse, standardTokenizer } from "@mettascript/core";
 
 const transport: GatewayTransport = {
   /* query(request) => Promise<QueryResponse>, e.g. a Connect client */

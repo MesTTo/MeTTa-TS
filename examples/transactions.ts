@@ -6,7 +6,7 @@
 // success, and roll back on a thrown Error atom or zero results.
 //
 // Run it (after `pnpm build`): npx tsx examples/transactions.ts
-import { runProgram, format } from "@metta-ts/core";
+import { runProgram, format } from "@mettascript/core";
 
 const last = (src: string): string[] => runProgram(src).at(-1)!.results.map(format);
 

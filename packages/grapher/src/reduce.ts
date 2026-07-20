@@ -14,7 +14,7 @@
 // result list, so nothing is injected into the program (no `collapse` wrapper) and the engine is untouched.
 // A deterministic trace stays one term wide, exactly as a linear trace.
 
-import { E, S, ExpressionAtom, type Atom, type MeTTa } from "@metta-ts/hyperon";
+import { E, S, ExpressionAtom, type Atom, type MeTTa } from "@mettascript/hyperon";
 
 type LazyCache = Map<string, Set<number>>;
 

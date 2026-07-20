@@ -6,7 +6,7 @@
 // move between a nondeterministic stream and a single collected tuple.
 //
 // Run it (after `pnpm build`): npx tsx examples/nondeterminism.ts
-import { runProgram, format } from "@metta-ts/core";
+import { runProgram, format } from "@mettascript/core";
 
 const results = runProgram(`
   ; two rules for the same head -> two results

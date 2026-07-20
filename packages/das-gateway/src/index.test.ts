@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { sym, variable, expr, format, instantiate, atomEq } from "@metta-ts/core";
+import { sym, variable, expr, format, instantiate, atomEq } from "@mettascript/core";
 import { encodePattern, decodeBindings, queryDas, type GatewayTransport } from "./index";
 
 describe("das-gateway wire format", () => {

@@ -3,18 +3,18 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/prolog
+# @mettascript/prolog
 
-Optional Prolog interop for MeTTa TS. It gives a MeTTa program PeTTa-compatible predicate calls through a Prolog bridge that you provide. Use `@metta-ts/prolog/swi-node` for a local `swipl` executable, or `@metta-ts/prolog/swi-wasm` in the browser. A normal run never loads Prolog, and every Prolog operation is async.
+Optional Prolog interop for MeTTaScript. It gives a MeTTa program PeTTa-compatible predicate calls through a Prolog bridge that you provide. Use `@mettascript/prolog/swi-node` for a local `swipl` executable, or `@mettascript/prolog/swi-wasm` in the browser. A normal run never loads Prolog, and every Prolog operation is async.
 
 ```bash
-npm install @metta-ts/prolog
+npm install @mettascript/prolog
 ```
 
 For the browser adapter, install SWI-WASM beside it:
 
 ```bash
-npm install @metta-ts/prolog swipl-wasm
+npm install @mettascript/prolog swipl-wasm
 ```
 
 ## Registering Prolog interop
@@ -52,13 +52,17 @@ type PrologTermJson =
   | { readonly type: "float"; readonly value: number }
   | { readonly type: "string"; readonly value: string }
   | { readonly type: "var"; readonly name: string }
-  | { readonly type: "compound"; readonly functor: string; readonly args: readonly PrologTermJson[] };
+  | {
+      readonly type: "compound";
+      readonly functor: string;
+      readonly args: readonly PrologTermJson[];
+    };
 
-function atomToPrologTerm(atom: Atom): PrologTermJson
-function prologTermToAtom(term: PrologTermJson): Atom
-type PrologEffect = AsyncOperationEffect
-type PrologOperationResult = AsyncOperationResult
-type PrologOperationReturn = AsyncOperationReturn
+function atomToPrologTerm(atom: Atom): PrologTermJson;
+function prologTermToAtom(term: PrologTermJson): Atom;
+type PrologEffect = AsyncOperationEffect;
+type PrologOperationResult = AsyncOperationResult;
+type PrologOperationReturn = AsyncOperationReturn;
 ```
 
 `atomToPrologTerm` encodes symbols, variables, grounded numbers and strings, and expressions as Prolog JSON terms. `prologTermToAtom` decodes solved goals back into Hyperon atoms.
@@ -66,14 +70,14 @@ type PrologOperationReturn = AsyncOperationReturn
 ## Runtime adapters
 
 ```ts
-// @metta-ts/prolog/swi-node
+// @mettascript/prolog/swi-node
 interface SwiPrologBridgeOptions {
   readonly executable?: string;
 }
 class SwiPrologBridge implements PrologBridge
 function swiPrologBridge(opts?: SwiPrologBridgeOptions): SwiPrologBridge
 
-// @metta-ts/prolog/swi-wasm
+// @mettascript/prolog/swi-wasm
 interface SwiWasmBridgeOptions {
   readonly loadText?: HostTextLoader;
   readonly baseUrl?: string | URL;
@@ -90,28 +94,28 @@ function swiWasmBridge(prolog: SwiWasmRuntime, options?: SwiWasmBridgeOptions): 
 function createSwiWasmInterop(options?: SwiWasmInteropOptions): Promise<HostInterop>
 ```
 
-`swiPrologBridge` starts a small JSON server under `swipl`. `swiWasmBridge` wraps an already loaded SWI-WASM runtime. `createSwiWasmInterop` builds a browser `HostInterop` object for `@metta-ts/browser/host`, including `.pl` file imports through the provided text loader.
+`swiPrologBridge` starts a small JSON server under `swipl`. `swiWasmBridge` wraps an already loaded SWI-WASM runtime. `createSwiWasmInterop` builds a browser `HostInterop` object for `@mettascript/browser/host`, including `.pl` file imports through the provided text loader.
 
 ## MeTTa surface
 
-| form | does |
-| --- | --- |
-| `prolog-call` | queries Prolog and returns each solved goal |
-| `prolog-match` | queries Prolog, binds the solved goal, then returns a template |
-| `Predicate` | wraps a goal for the PeTTa-compatible predicate helpers |
-| `callPredicate` | returns `True` for each successful Prolog solution |
-| `assertaPredicate` / `assertzPredicate` | adds a fact or rule to the Prolog database |
-| `retractPredicate` | retracts the first matching Prolog fact or rule |
-| `prolog-consult` | consults a Prolog source file |
-| `import_prolog_function` | imports a predicate as a MeTTa function whose last Prolog argument is the result |
-| `import_prolog_functions_from_file` | consults a file, then imports named predicates as functions |
+| form                                    | does                                                                             |
+| --------------------------------------- | -------------------------------------------------------------------------------- |
+| `prolog-call`                           | queries Prolog and returns each solved goal                                      |
+| `prolog-match`                          | queries Prolog, binds the solved goal, then returns a template                   |
+| `Predicate`                             | wraps a goal for the PeTTa-compatible predicate helpers                          |
+| `callPredicate`                         | returns `True` for each successful Prolog solution                               |
+| `assertaPredicate` / `assertzPredicate` | adds a fact or rule to the Prolog database                                       |
+| `retractPredicate`                      | retracts the first matching Prolog fact or rule                                  |
+| `prolog-consult`                        | consults a Prolog source file                                                    |
+| `import_prolog_function`                | imports a predicate as a MeTTa function whose last Prolog argument is the result |
+| `import_prolog_functions_from_file`     | consults a file, then imports named predicates as functions                      |
 
 ## Example
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPrologInterop } from "@metta-ts/prolog";
-import { swiPrologBridge } from "@metta-ts/prolog/swi-node";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPrologInterop } from "@mettascript/prolog";
+import { swiPrologBridge } from "@mettascript/prolog/swi-node";
 
 const bridge = swiPrologBridge();
 const metta = new MeTTa();

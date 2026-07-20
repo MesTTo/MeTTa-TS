@@ -44,12 +44,12 @@ export async function runGraphMain(argv: string[]): Promise<void> {
   const view = parseView(values.view);
   const src = readFileSync(resolve(file), "utf8");
 
-  let renderReductionGif: typeof import("@metta-ts/grapher/node").renderReductionGif;
+  let renderReductionGif: typeof import("@mettascript/grapher/node").renderReductionGif;
   try {
-    ({ renderReductionGif } = await import("@metta-ts/grapher/node"));
+    ({ renderReductionGif } = await import("@mettascript/grapher/node"));
   } catch (e) {
     throw new Error(
-      "metta graph needs @metta-ts/grapher and its renderers; install them with: npm install @metta-ts/grapher gifenc sharp",
+      "metta graph needs @mettascript/grapher and its renderers; install them with: npm install @mettascript/grapher gifenc sharp",
       { cause: e },
     );
   }

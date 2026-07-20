@@ -5,7 +5,7 @@
 // Pattern matching: querying stored facts for variable bindings, and matching with repeated variables.
 //
 // Run it (after `pnpm build`): npx tsx examples/matching.ts
-import { MeTTa, S, V, E } from "@metta-ts/hyperon";
+import { MeTTa, S, V, E } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 for (const [a, b] of [["Tom", "Bob"], ["Pam", "Bob"], ["Tom", "Liz"]])

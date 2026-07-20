@@ -3,9 +3,9 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/prolog
+# @mettascript/prolog
 
-`@metta-ts/prolog` lets a MeTTa program call a host Prolog runtime through the
+`@mettascript/prolog` lets a MeTTa program call a host Prolog runtime through the
 PeTTa-compatible `Predicate`, `callPredicate`, `assertzPredicate`,
 `retractPredicate`, `prolog-call`, and `import_prolog_function` surface.
 
@@ -14,13 +14,13 @@ want to use.
 
 ## Node SWI-Prolog
 
-`@metta-ts/prolog/swi-node` talks to the `swipl` executable over a small JSON
+`@mettascript/prolog/swi-node` talks to the `swipl` executable over a small JSON
 server. The CLI uses this when you pass `--prolog`.
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPrologInterop } from "@metta-ts/prolog";
-import { swiPrologBridge } from "@metta-ts/prolog/swi-node";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPrologInterop } from "@mettascript/prolog";
+import { swiPrologBridge } from "@mettascript/prolog/swi-node";
 
 const bridge = swiPrologBridge();
 const metta = new MeTTa();
@@ -36,13 +36,13 @@ await bridge.dispose();
 
 ## Browser SWI-Prolog WASM
 
-`@metta-ts/prolog/swi-wasm` runs the same MeTTa surface over `swipl-wasm`.
+`@mettascript/prolog/swi-wasm` runs the same MeTTa surface over `swipl-wasm`.
 Files are loaded through the host text loader, written into SWI's virtual
 filesystem, and consulted with SWI's normal `consult/1`.
 
 ```ts
-import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
-import { createSwiWasmInterop } from "@metta-ts/prolog/swi-wasm";
+import { createBrowserRunner, createBrowserTextLoader } from "@mettascript/browser/host";
+import { createSwiWasmInterop } from "@mettascript/prolog/swi-wasm";
 
 const files = new Map([["facts.pl", "edge(alice, bob).\nedge(alice, mars).\n"]]);
 const loadText = createBrowserTextLoader({ files, baseUrl: import.meta.url });
@@ -57,7 +57,7 @@ const results = await runner.run(`
 await runner.dispose();
 ```
 
-For browser bundlers, install `swipl-wasm` next to `@metta-ts/prolog` and serve
+For browser bundlers, install `swipl-wasm` next to `@mettascript/prolog` and serve
 its WASM assets according to the `swipl-wasm` package documentation, or use its
 single-file bundle setup. For interactive pages, run the browser runner and
 SWI-WASM inside a Web Worker.
@@ -74,7 +74,7 @@ of PeTTa's evaluator:
 !(edge alice)                                ; bob
 ```
 
-MeTTa TS keeps Hyperon semantics. It does not switch into a PeTTa execution
+MeTTaScript keeps Hyperon semantics. It does not switch into a PeTTa execution
 mode, and it does not compile all MeTTa rules to Prolog. A later
 PeTTa-compatibility layer can expose PeTTa's `process_metta_string` path
 explicitly, but normal `.pl` imports and predicate calls already work through

@@ -16,9 +16,9 @@ import {
   S,
   atomToJs,
   registerJsonModule,
+  ExpressionAtom,
   type Atom,
-  type ExpressionAtom,
-} from "@metta-ts/hyperon";
+} from "@mettascript/hyperon";
 import { ground, patternVars, type Term, type Var, type VarValue } from "./term";
 import { rule, decl, assertEqual } from "./forms";
 import { parseSource } from "./template";
@@ -27,6 +27,22 @@ import { type SourceRow } from "./source-vars";
 /** One typed binding row from {@link MettaDB.query} with explicit vars: each requested variable mapped
  *  to its JS value. */
 export type Row<V extends Record<string, Var>> = { [K in keyof V]: VarValue<V[K]> };
+
+// A head symbol for join-query result rows; internal, and unlikely to collide with a user functor.
+const JOIN_ROW = "edsl.join-row";
+
+// Every distinct variable across the join patterns, in first-seen order: the default row columns.
+function joinVars(patterns: readonly Atom[]): Var[] {
+  const seen = new Set<string>();
+  const out: Var[] = [];
+  for (const pattern of patterns)
+    for (const v of patternVars(pattern))
+      if (!seen.has(v.name())) {
+        seen.add(v.name());
+        out.push(v);
+      }
+  return out;
+}
 
 /** Any function, used as the permissive default for names outside a schema. */
 type AnyFn = (...args: never[]) => unknown;
@@ -114,11 +130,14 @@ export class MettaDB<S = Record<never, never>> {
    *  row keys are inferred from the pattern's free variables and the values come back as plain JS
    *  (typed `unknown`); pass an explicit `vars` map to get statically-typed values. */
   query(pattern: Term): Array<Record<string, unknown>>;
+  query(patterns: Term[]): Array<Record<string, unknown>>;
   query<V extends Record<string, Var>>(pattern: Term, vars: V): Array<Row<V>>;
+  query<V extends Record<string, Var>>(patterns: Term[], vars: V): Array<Row<V>>;
   query<V extends Record<string, Var>>(
-    pattern: Term,
+    pattern: Term | Term[],
     vars?: V,
   ): Array<Row<V>> | Array<Record<string, unknown>> {
+    if (Array.isArray(pattern)) return this.join(pattern, vars);
     const pat = ground(pattern);
     const set = this.metta.space().query(pat);
     const cols: Record<string, Var> =
@@ -129,6 +148,34 @@ export class MettaDB<S = Record<never, never>> {
         const bound = frame.resolve(cols[key]!);
         row[key] = bound === undefined ? undefined : atomToJs(bound);
       }
+      return row as Row<V>;
+    });
+  }
+
+  /** A join query: match a conjunction of patterns over the stored atoms and return one row per joined
+   *  solution, keyed by the requested variables (or, with no `vars`, by every variable across the
+   *  patterns, in first-seen order). This is the DataScript-style `:where` join written in TypeScript:
+   *  `db.query([edge(A, x), edge(x, y)], { x, y })`. Where the single-pattern {@link query} does a
+   *  structural space match, a join runs through the evaluator's conjunctive `match`, so a variable
+   *  shared between patterns constrains them together. */
+  private join<V extends Record<string, Var>>(
+    patterns: Term[],
+    vars?: V,
+  ): Array<Row<V>> | Array<Record<string, unknown>> {
+    const pats = patterns.map(ground);
+    const cols: Record<string, Var> =
+      vars ?? Object.fromEntries(joinVars(pats).map((v) => [v.name(), v]));
+    const keys = Object.keys(cols);
+    const conjunction = E(S(","), ...pats);
+    const template = E(S(JOIN_ROW), ...keys.map((k) => cols[k]!));
+    const results = this.metta.evaluateAtom(E(S("match"), S("&self"), conjunction, template));
+    return results.map((result) => {
+      const items = result instanceof ExpressionAtom ? result.children() : [];
+      const row: Record<string, unknown> = {};
+      keys.forEach((key, i) => {
+        const bound = items[i + 1];
+        row[key] = bound === undefined ? undefined : atomToJs(bound);
+      });
       return row as Row<V>;
     });
   }

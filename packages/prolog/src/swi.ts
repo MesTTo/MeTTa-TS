@@ -6,7 +6,7 @@ import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:chil
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Atom } from "@metta-ts/hyperon";
+import type { Atom } from "@mettascript/hyperon";
 import {
   atomToPrologTerm,
   prologTermToAtom,

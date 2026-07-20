@@ -1,8 +1,8 @@
-# @metta-ts/hyperon
+# @mettascript/hyperon
 
 A TypeScript class API for MeTTa atoms, spaces, and a runner, modeled on Hyperon's `hyperon.atoms`
 and `hyperon.base`. Where the Python package wraps a Rust core over FFI, this one wraps the immutable
-terms of [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core) in classes. It runs anywhere TypeScript runs, with no native
+terms of [`@mettascript/core`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/core) in classes. It runs anywhere TypeScript runs, with no native
 addon and no WASM.
 
 Hyperon's Python method names are kept as aliases next to the idiomatic TypeScript ones, so code
@@ -14,13 +14,13 @@ ported from `hyperon` reads naturally: `get_name()` sits beside `name()`, `get_c
 You build atoms with the short constructors `S`, `V`, `E`, `G`, and `ValueAtom`:
 
 ```ts
-import { S, V, E, ValueAtom } from "@metta-ts/hyperon";
+import { S, V, E, ValueAtom } from "@mettascript/hyperon";
 
-S("parent");                       // a symbol
-V("x");                            // a variable, prints as $x
-E(S("parent"), S("tom"), V("c"));  // an expression (parent tom $c)
-ValueAtom(42);                     // a grounded number
-ValueAtom("hi");                   // a grounded string, prints as "hi"
+S("parent"); // a symbol
+V("x"); // a variable, prints as $x
+E(S("parent"), S("tom"), V("c")); // an expression (parent tom $c)
+ValueAtom(42); // a grounded number
+ValueAtom("hi"); // a grounded string, prints as "hi"
 ```
 
 Every atom answers `metatype()`, `equals(other)`, `toString()`, `iterate()` (depth-first), and
@@ -32,10 +32,9 @@ Every atom answers `metatype()`, `equals(other)`, `toString()`, `iterate()` (dep
 `matchAtom` returns a `BindingsSet`, a set of binding frames. An empty set means no match.
 
 ```ts
-import { S, V, E, ValueAtom } from "@metta-ts/hyperon";
+import { S, V, E, ValueAtom } from "@mettascript/hyperon";
 
-const set = E(S("point"), V("x"), V("y"))
-  .matchAtom(E(S("point"), ValueAtom(1), ValueAtom(2)));
+const set = E(S("point"), V("x"), V("y")).matchAtom(E(S("point"), ValueAtom(1), ValueAtom(2)));
 
 const frame = set.frames[0];
 frame.resolve(V("x"))?.toString(); // "1"
@@ -50,17 +49,16 @@ A `Bindings` frame records associations with `addVarBinding(v, atom)`, reads the
 A `GroundingSpace` holds atoms. You add, query, and substitute:
 
 ```ts
-import { GroundingSpace, S, V, E } from "@metta-ts/hyperon";
+import { GroundingSpace, S, V, E } from "@mettascript/hyperon";
 
 const sp = new GroundingSpace();
 sp.addAtom(E(S("parent"), S("tom"), S("bob")));
 sp.addAtom(E(S("parent"), S("tom"), S("liz")));
 
-sp.subst(E(S("parent"), S("tom"), V("c")), V("c"))
-  .map((a) => a.toString());       // ["bob", "liz"]
+sp.subst(E(S("parent"), S("tom"), V("c")), V("c")).map((a) => a.toString()); // ["bob", "liz"]
 ```
 
-For a Distributed AtomSpace backend, see [`@metta-ts/das-client`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-client), whose `DasLiveSpace`
+For a Distributed AtomSpace backend, see [`@mettascript/das-client`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/das-client), whose `DasLiveSpace`
 is the async analogue (a remote query is a network round-trip).
 
 ## Running MeTTa
@@ -69,19 +67,19 @@ The `MeTTa` runner evaluates programs and keeps its knowledge base across `run` 
 Non-bang atoms extend the knowledge base; each `!`-query returns its results.
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
+import { MeTTa } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 m.run("(= (color) red)\n(= (color) green)");
 m.run("!(color)")[0].map((a) => a.toString()); // ["red", "green"]
-m.run("!(+ 1 2)")[0].map((a) => a.toString());  // ["3"]
+m.run("!(+ 1 2)")[0].map((a) => a.toString()); // ["3"]
 ```
 
 `registerOperation(name, fn)` adds a grounded operation callable from
 MeTTa source; the function takes the argument atoms and returns the result atoms:
 
 ```ts
-import { MeTTa, ValueAtom, GroundedAtom } from "@metta-ts/hyperon";
+import { MeTTa, ValueAtom, GroundedAtom } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 m.registerOperation("double", (args) => {
@@ -94,7 +92,7 @@ m.run("!(double 21)")[0].map((a) => a.toString()); // ["42"]
 `registerToken(regex, constr)` registers a custom token, `space()` exposes the knowledge base, and
 `getAtomTypes(atom)` returns the types the runner infers for an atom.
 
-An experimental pull-based variant, `registerStreamingOperation` (and its async twin), yields answers one at a time so a consumer such as `once` stops the producer rather than draining it. It ships on the `experimental` npm tag; see [Experimental features](https://mestto.github.io/MeTTa-TS/guide/experimental).
+An experimental pull-based variant, `registerStreamingOperation` (and its async twin), yields answers one at a time so a consumer such as `once` stops the producer rather than draining it. It ships on the `experimental` npm tag; see [Experimental features](https://mestto.github.io/MeTTaScript/guide/experimental).
 
 The runner's `space()` is live: an atom added through it reaches the evaluator
 exactly as a non-bang atom in `run` does, querying it sees what the evaluator sees, and removing an
@@ -103,7 +101,7 @@ atom retracts it from evaluation.
 ```ts
 const m = new MeTTa();
 m.space().addAtom(parseRule("(= (greeting) hello)")); // reaches evaluation
-m.run("!(greeting)")[0].map((a) => a.toString());     // ["hello"]
+m.run("!(greeting)")[0].map((a) => a.toString()); // ["hello"]
 ```
 
 ## Grounded objects
@@ -125,26 +123,26 @@ Two grounded-operation modules from hyperon-experimental ship as opt-in registra
 The JSON module gives you `dict-space`, `get-keys`, `get-value`, `json-decode`, and `json-encode`:
 
 ```ts
-import { MeTTa, registerJsonModule } from "@metta-ts/hyperon";
+import { MeTTa, registerJsonModule } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 registerJsonModule(m);
-m.run('!(json-decode "[1, 2, 3]")')[0].map((a) => a.toString());          // ["(1 2 3)"]
-m.run('(= (d) (dict-space ((a 1) (b 2))))');
-m.run("!(get-value (d) a)")[0].map((a) => a.toString());                  // ["1"]
+m.run('!(json-decode "[1, 2, 3]")')[0].map((a) => a.toString()); // ["(1 2 3)"]
+m.run("(= (d) (dict-space ((a 1) (b 2))))");
+m.run("!(get-value (d) a)")[0].map((a) => a.toString()); // ["1"]
 ```
 
 The module catalog gives you `catalog-clear!`, `catalog-list!`, and `catalog-update!` over a
 `ModuleCatalog` you populate yourself (the dependency-free analogue of Hyperon's remote catalogs):
 
 ```ts
-import { MeTTa, ModuleCatalog, registerCatalogModule } from "@metta-ts/hyperon";
+import { MeTTa, ModuleCatalog, registerCatalogModule } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 const catalog = new ModuleCatalog();
 catalog.register("local", ["mod-a", "mod-b"]);
 registerCatalogModule(m, catalog);
-m.run("!(catalog-list! all)");   // returns (); records into catalog.listing
+m.run("!(catalog-list! all)"); // returns (); records into catalog.listing
 ```
 
 ## JavaScript interop
@@ -154,15 +152,15 @@ engine is TypeScript, so there is no bridge: a grounded atom can hold a JS funct
 runs it directly. `registerJsInterop(m)` exposes that (opt-in, since it can call arbitrary global JS):
 
 ```ts
-import { MeTTa, registerJsInterop } from "@metta-ts/hyperon";
+import { MeTTa, registerJsInterop } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 registerJsInterop(m);
-m.run(`!((js-atom "Math.abs") -5)`)[0];                    // 5
-m.run(`!((js-atom "Math.max") 3 7 2)`)[0];                 // 7
-m.run(`!((js-dot "hello world" "toUpperCase"))`)[0];       // "HELLO WORLD"
-m.run(`!((js-dot (js-list (5 1 3)) "join") "-")`)[0];      // "5-1-3"
-m.run(`!(js-dot (js-dict (("a" 1) ("b" 2))) "b")`)[0];     // 2
+m.run(`!((js-atom "Math.abs") -5)`)[0]; // 5
+m.run(`!((js-atom "Math.max") 3 7 2)`)[0]; // 7
+m.run(`!((js-dot "hello world" "toUpperCase"))`)[0]; // "HELLO WORLD"
+m.run(`!((js-dot (js-list (5 1 3)) "join") "-")`)[0]; // "5-1-3"
+m.run(`!(js-dot (js-dict (("a" 1) ("b" 2))) "b")`)[0]; // 2
 ```
 
 `js-atom` resolves a dotted path from `globalThis` into a grounded atom (an executable one if it is a
@@ -174,9 +172,11 @@ atom is callable in-language. That is also what makes `registerAtom` with an `Op
 Python's `bind! abs (py-atom ...)`:
 
 ```ts
-m.registerAtom("dbl", OperationAtom("dbl", (a) =>
-  [ValueAtom((a as GroundedAtom).object().content as number * 2)]));
-m.run("!(dbl 21)")[0];                                     // 42
+m.registerAtom(
+  "dbl",
+  OperationAtom("dbl", (a) => [ValueAtom(((a as GroundedAtom).object().content as number) * 2)]),
+);
+m.run("!(dbl 21)")[0]; // 42
 ```
 
 A grounded operation that throws surfaces as a MeTTa `(Error ...)` atom (an error the program can
@@ -185,4 +185,4 @@ still inspect) rather than crashing the run. `evaluateAtom(atom)` evaluates a si
 
 ## Docs
 
-API docs are generated with TypeDoc from the TSDoc comments: `pnpm --filter @metta-ts/hyperon docs`.
+API docs are generated with TypeDoc from the TSDoc comments: `pnpm --filter @mettascript/hyperon docs`.

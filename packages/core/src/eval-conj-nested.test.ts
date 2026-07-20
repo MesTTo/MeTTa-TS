@@ -3,12 +3,17 @@
 // SPDX-License-Identifier: MIT
 
 // Differential gate for experimental.conjNested (matchPlan -> matchConj for anchored-acyclic conjunctions).
-// The source-ordered nested loop must produce the SAME solutions in the SAME order as matchConjJoin's WCO for
-// every routed shape, and leave unrouted shapes (unanchored/cyclic) untouched. Every case asserts the flag-on
-// results are byte-identical to the flag-off reference (`.map(format)` equal, ordered), across ground and
-// adversarial inputs: anchored two-hop and chains, stars, duplicates, ground existence checks, cycle-closing
-// goals, entity-id anchors, and non-ground templates. The unanchored two-hop and the cyclic triangle exercise
-// the fall-through to matchConjJoin.
+// The source-ordered nested loop must produce the SAME solution multiset (same atoms, same multiplicity) as
+// matchConjJoin's WCO for every routed shape, and leave unrouted shapes (unanchored/cyclic) untouched. MeTTa
+// does not fix an enumeration order for query results: MOPS carries the workspace as a multiset, and the
+// hyperon-experimental spec leaves the space-query order unspecified (its own trie order already differs
+// from this engine's posting order on single patterns). The two strategies genuinely enumerate differently
+// on shapes whose anchor bucket is not grouped by the join variable — the pinned witnesses below — so the
+// adversarial ground-KB fuzz asserts the multiset. Shapes where the routed loop provably follows the WCO's
+// order (every goal carries a unique-entity variable, the DataScript benchmark shape) stay asserted
+// byte-identical in order. Cases cover anchored two-hop and chains, stars, duplicates, ground existence
+// checks, cycle-closing goals, entity-id anchors, and non-ground templates; the unanchored two-hop and the
+// cyclic triangle exercise the fall-through to matchConjJoin.
 
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
@@ -160,7 +165,10 @@ describe("experimental.conjNested random-conjunction differential (fast-check)",
     .map((args) => `(edge ${args.join(" ")})`);
   const template = "(Row $a $b $c $d)";
 
-  it("ground KB: conjNested-on is byte-identical to off, in order", () => {
+  // This generator anchors goals by repeating constants (an entity value occurs on several facts), so the
+  // anchor bucket is not grouped by the join variable and the nested loop's posting order can interleave
+  // differently from the WCO's variable-major order. The spec criterion is the solution multiset.
+  it("ground KB: conjNested-on returns the same solution multiset as off", () => {
     const groundFact = fc
       .tuple(ent, node, node, grp)
       .map(([e, f, t, g]) => `(edge ${e} ${f} ${t} ${g})`);
@@ -170,16 +178,54 @@ describe("experimental.conjNested random-conjunction differential (fast-check)",
         fc.array(goal, { minLength: 2, maxLength: 3 }),
         (facts, goals) => {
           const src = `${facts.join("\n")}\n!(match &self (, ${goals.join(" ")}) ${template})`;
-          expect(answers(src, true).map(format)).toEqual(answers(src, false).map(format));
+          const on = answers(src, true).map(format);
+          const off = answers(src, false).map(format);
+          expect([...on].sort()).toEqual([...off].sort());
         },
       ),
       { numRuns: 500 },
     );
   });
 
+  // The two shrunk fuzz witnesses, pinned. Both diverge in enumeration order only: the multiset is
+  // identical, and each path is deterministic run to run.
+  const witness = (facts: readonly string[], goals: readonly string[]): void => {
+    const src = `${facts.join("\n")}\n!(match &self (, ${goals.join(" ")}) ${template})`;
+    const on = answers(src, true).map(format);
+    const off = answers(src, false).map(format);
+    expect([...on].sort()).toEqual([...off].sort());
+    expect(answers(src, true).map(format)).toEqual(on);
+    expect(answers(src, false).map(format)).toEqual(off);
+  };
+
+  it("witness: join key repeated inside a goal (order-only divergence, same multiset)", () => {
+    witness(
+      ["(edge 1 0 0 0)", "(edge 1 0 0 1)", "(edge 2 0 0 0)", "(edge 1 0 2 0)", "(edge 1 0 1 0)"],
+      ["(edge $c $d 0 $d)", "(edge $a $d $b $d)"],
+    );
+  });
+
+  it("witness: anchor bucket not grouped by the join variable (order-only divergence, same multiset)", () => {
+    witness(
+      [
+        "(edge 4 2 0 0)",
+        "(edge 4 0 0 1)",
+        "(edge 5 0 1 1)",
+        "(edge 4 2 0 1)",
+        "(edge 1 0 0 0)",
+        "(edge 1 0 0 1)",
+        "(edge 1 0 0 2)",
+        "(edge 1 1 0 0)",
+      ],
+      ["(edge 4 $b $c $a)", "(edge 5 $d $a 1)"],
+    );
+  });
+
   // A KB with a unique entity per fact (like the DataScript benchmark) has no duplicate facts, so an anchored
   // connected conjunction always routes to the nested loop. These two force the routed path at volume and
-  // confirm its enumeration order matches matchConjJoin's WCO.
+  // confirm its enumeration order matches matchConjJoin's WCO — guaranteed for this shape because every goal
+  // carries the unique entity column as a variable, so each goal's solutions are in bijection with its facts
+  // and the WCO trie's first-seen order coincides with the index's posting order.
   const uniqueKb = fc
     .array(fc.tuple(node, node, grp), { minLength: 3, maxLength: 30 })
     .map((rows) => rows.map(([f, t, g], i) => `(edge ${i + 1} ${f} ${t} ${g})`).join("\n"));

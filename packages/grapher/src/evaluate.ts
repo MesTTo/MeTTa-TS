@@ -6,7 +6,7 @@
 // canvas: you build a program visually, evaluate it, and read the result beneath the node. The async form
 // awaits any async grounded operations reached during evaluation.
 
-import { MeTTa, atomIsError, type Atom } from "@metta-ts/hyperon";
+import { MeTTa, atomIsError, type Atom } from "@mettascript/hyperon";
 import type { Graph } from "./model";
 import { composeAtom, graphToAtoms } from "./atom";
 

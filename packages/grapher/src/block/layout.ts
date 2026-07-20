@@ -19,7 +19,7 @@ import {
   SymbolAtom,
   GroundedAtom,
   type Atom,
-} from "@metta-ts/hyperon";
+} from "@mettascript/hyperon";
 import type { BlockSettings } from "./settings";
 import type { ProfileRow } from "./geometry";
 import { glyphColor, blockColors } from "./color";

@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { emptyExpr, type Atom } from "@metta-ts/core";
-import { type HostInterop, type HostTextLoader } from "@metta-ts/core/host";
+import { emptyExpr, type Atom } from "@mettascript/core";
+import { type HostInterop, type HostTextLoader } from "@mettascript/core/host";
 import { loadPyodide as defaultLoadPyodide, type PyodideAPI } from "pyodide";
 import { PY_METTA_SRC, pyCoreAsyncOps, type PyBridge, type PyHandle, type PyValue } from "./py";
 

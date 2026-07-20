@@ -99,7 +99,7 @@ Two rules, a base case and a recursive case:
 Every exercise above can be written with the [typed eDSL](/edsl/overview) instead of source strings. Factorial, for example:
 
 ```ts
-import { mettaDB, names, vars, If, gt, mul, sub } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, mul, sub } from "@mettascript/edsl";
 
 const db = mettaDB();
 const { fact } = names();

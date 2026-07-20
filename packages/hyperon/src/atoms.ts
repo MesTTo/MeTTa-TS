@@ -8,7 +8,7 @@
  * or FFI. Python aliases (`get_name`, `get_metatype`, ...) sit beside idiomatic names (`name`,
  * `metatype`, ...) for ported code.
  */
-import * as core from "@metta-ts/core";
+import * as core from "@mettascript/core";
 import { Bindings, BindingsSet } from "./bindings";
 
 /** The kind of an atom: `Symbol`, `Variable`, `Expression`, or `Grounded`. */

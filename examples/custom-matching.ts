@@ -6,8 +6,8 @@
 // matcher calls into it. Here a Range value matches any integer within its bounds.
 //
 // Run it (after `pnpm build`): npx tsx examples/custom-matching.ts
-import { MeTTa, G, MatchableObject, type Atom, type GroundedAtom } from "@metta-ts/hyperon";
-import { sym as coreSym, gint, matchAtoms } from "@metta-ts/core";
+import { MeTTa, G, MatchableObject, type Atom, type GroundedAtom } from "@mettascript/hyperon";
+import { sym as coreSym, gint, matchAtoms } from "@mettascript/core";
 
 class Range extends MatchableObject {
   constructor(

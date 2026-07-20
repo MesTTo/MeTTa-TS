@@ -7,7 +7,7 @@
 // section. These are async, so use runProgramAsync.
 //
 // Run it (after `pnpm build`): npx tsx examples/concurrency.ts
-import { runProgramAsync, format, gint, type AsyncGroundFn } from "@metta-ts/core";
+import { runProgramAsync, format, gint, type AsyncGroundFn } from "@mettascript/core";
 
 // `aw n` resolves to n after an n-millisecond delay, so timing is observable.
 const aw: AsyncGroundFn = async (args) => {

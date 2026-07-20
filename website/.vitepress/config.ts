@@ -2,35 +2,108 @@
 //
 // SPDX-License-Identifier: MIT
 
+import { readFileSync } from "node:fs";
+import githubDark from "@shikijs/themes/github-dark";
+import githubLight from "@shikijs/themes/github-light";
+import type { LanguageRegistration } from "@shikijs/types";
 import { defineConfig } from "vitepress";
 
-// The MeTTa TS documentation site. Structure mirrors metta-lang.dev/docs/learn: a Learn track for the
+// The MeTTaScript documentation site. Structure mirrors metta-lang.dev/docs/learn: a Learn track for the
 // MeTTa language itself, plus TypeScript-specific tracks (using MeTTa from TypeScript, the typed eDSL,
 // and advanced topics) since this implementation runs in the same language you embed it in.
+
+// Syntax highlighting matches the MeTTa-LSP editor: the same TextMate grammar the extension ships, plus an
+// explicit colour per MeTTa scope layered onto the GitHub themes. A `metta -> scheme` alias could not
+// tokenize `!(...)`, `import!`, `&self`, or `$variables`, so library code came out nearly colourless.
+type TokenColor = { readonly scope: string; readonly settings: { readonly foreground: string } };
+type TextMateTheme = typeof githubLight & { readonly tokenColors?: readonly unknown[] };
+
+const mettaLanguage: LanguageRegistration = {
+  ...(JSON.parse(
+    readFileSync(new URL("./metta.tmLanguage.json", import.meta.url), "utf8"),
+  ) as LanguageRegistration),
+  name: "metta",
+  displayName: "MeTTa",
+  scopeName: "source.metta",
+};
+
+// Colours ported from the MeTTa-LSP docs site so fences read the same as the editor.
+const mettaLightTokenColors: readonly TokenColor[] = [
+  { scope: "comment.line.semicolon.metta", settings: { foreground: "#6a737d" } },
+  {
+    scope: "string.quoted.double.metta,string.quoted.single.metta",
+    settings: { foreground: "#032f62" },
+  },
+  { scope: "constant.character.escape.metta", settings: { foreground: "#005cc5" } },
+  {
+    scope: "constant.numeric.float.metta,constant.numeric.integer.metta",
+    settings: { foreground: "#005cc5" },
+  },
+  { scope: "keyword.other.documentation.metta", settings: { foreground: "#6f42c1" } },
+  { scope: "variable.other.metta,variable.language.metta", settings: { foreground: "#e36209" } },
+  { scope: "support.type.builtin.metta", settings: { foreground: "#6f42c1" } },
+  { scope: "keyword.control.metta,keyword.operator.metta", settings: { foreground: "#d73a49" } },
+  {
+    scope: "punctuation.section.parens.begin.metta,punctuation.section.parens.end.metta",
+    settings: { foreground: "#22863a" },
+  },
+];
+
+const mettaDarkTokenColors: readonly TokenColor[] = [
+  { scope: "comment.line.semicolon.metta", settings: { foreground: "#8b949e" } },
+  {
+    scope: "string.quoted.double.metta,string.quoted.single.metta",
+    settings: { foreground: "#a5d6ff" },
+  },
+  { scope: "constant.character.escape.metta", settings: { foreground: "#79c0ff" } },
+  {
+    scope: "constant.numeric.float.metta,constant.numeric.integer.metta",
+    settings: { foreground: "#79c0ff" },
+  },
+  { scope: "keyword.other.documentation.metta", settings: { foreground: "#d2a8ff" } },
+  { scope: "variable.other.metta,variable.language.metta", settings: { foreground: "#ffa657" } },
+  { scope: "support.type.builtin.metta", settings: { foreground: "#d2a8ff" } },
+  { scope: "keyword.control.metta,keyword.operator.metta", settings: { foreground: "#ff7b72" } },
+  {
+    scope: "punctuation.section.parens.begin.metta,punctuation.section.parens.end.metta",
+    settings: { foreground: "#7ee787" },
+  },
+];
+
+function withMettaTokenColors(
+  theme: TextMateTheme,
+  name: string,
+  tokenColors: readonly TokenColor[],
+): TextMateTheme {
+  return { ...theme, name, tokenColors: [...(theme.tokenColors ?? []), ...tokenColors] };
+}
+
+const mettaLightTheme = withMettaTokenColors(githubLight, "metta-light", mettaLightTokenColors);
+const mettaDarkTheme = withMettaTokenColors(githubDark, "metta-dark", mettaDarkTokenColors);
 export default defineConfig({
-  title: "MeTTa TS",
-  description: "A pure-TypeScript implementation of MeTTa, the OpenCog Hyperon language.",
-  // Served as a project page at https://mestto.github.io/MeTTa-TS/.
-  base: "/MeTTa-TS/",
+  title: "MeTTaScript",
+  description: "MeTTaScript is a pure-TypeScript metagraph rewriting database.",
+  // Served as a project page at https://mestto.github.io/MeTTaScript/.
+  base: "/MeTTaScript/",
   cleanUrls: true,
   markdown: {
-    // MeTTa is Scheme-like; highlight ```metta blocks with the Scheme grammar.
-    languageAlias: { metta: "scheme" },
-    // Match metta-lang.dev: the GitHub Light/Dark themes.
-    theme: { light: "github-light", dark: "github-dark" },
+    // The MeTTa-LSP TextMate grammar and its per-scope colours, so ```metta fences read like the editor.
+    languages: [mettaLanguage],
+    theme: { light: mettaLightTheme, dark: mettaDarkTheme },
   },
   themeConfig: {
     nav: [
       { text: "Guide", link: "/guide/introduction" },
-      { text: "Learn MeTTa", link: "/learn/evaluation/main-concepts" },
+      { text: "Use cases", link: "/guide/use-cases" },
       { text: "TypeScript", link: "/typescript/running-metta" },
+      { text: "Learn MeTTa", link: "/learn/evaluation/main-concepts" },
       { text: "eDSL", link: "/edsl/overview" },
       { text: "Tools", link: "/tools/cli" },
       { text: "Advanced", link: "/advanced/concurrency" },
       { text: "Experimental", link: "/guide/experimental" },
       { text: "Reference", link: "/reference/packages" },
       { text: "Playground", link: "/playground" },
-      { text: "GitHub", link: "https://github.com/MesTTo/MeTTa-TS" },
+      { text: "GitHub", link: "https://github.com/MesTTo/MeTTaScript" },
     ],
     sidebar: [
       {
@@ -38,6 +111,7 @@ export default defineConfig({
         items: [
           { text: "Introduction", link: "/guide/introduction" },
           { text: "Getting started", link: "/guide/getting-started" },
+          { text: "Use cases", link: "/guide/use-cases" },
           { text: "Playground", link: "/playground" },
         ],
       },
@@ -113,24 +187,24 @@ export default defineConfig({
         collapsed: false,
         items: [
           { text: "Packages overview", link: "/reference/packages" },
-          { text: "@metta-ts/core", link: "/reference/core" },
-          { text: "@metta-ts/hyperon", link: "/reference/hyperon" },
-          { text: "@metta-ts/edsl", link: "/reference/edsl" },
-          { text: "@metta-ts/node and browser", link: "/reference/node-browser" },
-          { text: "@metta-ts/grapher", link: "/reference/grapher" },
-          { text: "@metta-ts/py", link: "/reference/py" },
-          { text: "@metta-ts/prolog", link: "/reference/prolog" },
-          { text: "@metta-ts/libraries", link: "/reference/libraries" },
-          { text: "@metta-ts/debug", link: "/reference/debug" },
-          { text: "@metta-ts/das-client and das-gateway", link: "/reference/das" },
+          { text: "@mettascript/core", link: "/reference/core" },
+          { text: "@mettascript/hyperon", link: "/reference/hyperon" },
+          { text: "@mettascript/edsl", link: "/reference/edsl" },
+          { text: "@mettascript/node and browser", link: "/reference/node-browser" },
+          { text: "@mettascript/grapher", link: "/reference/grapher" },
+          { text: "@mettascript/py", link: "/reference/py" },
+          { text: "@mettascript/prolog", link: "/reference/prolog" },
+          { text: "@mettascript/libraries", link: "/reference/libraries" },
+          { text: "@mettascript/debug", link: "/reference/debug" },
+          { text: "@mettascript/das-client and das-gateway", link: "/reference/das" },
         ],
       },
     ],
-    socialLinks: [{ icon: "github", link: "https://github.com/MesTTo/MeTTa-TS" }],
+    socialLinks: [{ icon: "github", link: "https://github.com/MesTTo/MeTTaScript" }],
     search: { provider: "local" },
     footer: {
       message: "Released under the MIT License.",
-      copyright: "MeTTa TS",
+      copyright: "MeTTaScript",
     },
   },
 });

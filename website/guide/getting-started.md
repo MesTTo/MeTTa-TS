@@ -5,21 +5,23 @@ SPDX-License-Identifier: MIT
 
 # Getting started
 
-Let us install MeTTa TS and run a first program three ways: from a MeTTa file, from a TypeScript string, and through the class API.
+Let us install MeTTaScript and run a first program three ways: from a MeTTa file, from a TypeScript string, and through the class API.
 
 ## Install
 
-The interpreter lives in `@metta-ts/core` and works in any JavaScript runtime:
+The interpreter lives in `@mettascript/core` and works in any JavaScript runtime:
+
+The packages are published under `@mettascript/*`; the previous `@metta-ts/*` names remain as aliases, so existing installs keep working.
 
 ```bash
-npm install @metta-ts/core
-# or: pnpm add @metta-ts/core  /  yarn add @metta-ts/core
+npm install @mettascript/core
+# or: pnpm add @mettascript/core  /  yarn add @mettascript/core
 ```
 
-For the command-line runner, install `@metta-ts/node`:
+For the command-line runner, install `@mettascript/node`:
 
 ```bash
-npm install -g @metta-ts/node
+npm install -g @mettascript/node
 ```
 
 ### Experimental channel
@@ -27,10 +29,10 @@ npm install -g @metta-ts/node
 A prerelease line ships ahead of stable on the `experimental` npm dist-tag, with the in-progress Minimal MeTTa runtime and the Grounded V2 operation protocol (owned, pull-based grounded answer streams with per-answer binding deltas and effects, and `MeTTa.registerStreamingOperation`). Opt in with the tag:
 
 ```bash
-npm install @metta-ts/core@experimental
+npm install @mettascript/core@experimental
 ```
 
-A plain `npm install @metta-ts/core` stays on the stable `latest` tag. The experimental surface may still change before it reaches a stable release. See [Experimental features](/guide/experimental) for what the channel contains and how to use it.
+A plain `npm install @mettascript/core` stays on the stable `latest` tag. The experimental surface may still change before it reaches a stable release. See [Experimental features](/guide/experimental) for what the channel contains and how to use it.
 
 ## Your first program
 
@@ -53,7 +55,7 @@ metta run hello.metta
 
 You will see the result of the one `!`-query:
 
-```
+```text
 [(Hello World)]
 ```
 
@@ -64,7 +66,7 @@ A MeTTa script is read atom by atom. Atoms without a leading `!` are added to th
 The same program, evaluated from TypeScript with `runProgram`:
 
 ```ts
-import { runProgram, format } from "@metta-ts/core";
+import { runProgram, format } from "@mettascript/core";
 
 const results = runProgram(`
   (= (greet $name) (Hello $name))
@@ -81,10 +83,10 @@ for (const { query, results: rs } of results) {
 
 ## Run through the class API
 
-If you prefer an object you can hold and feed incrementally, use the `MeTTa` runner from `@metta-ts/hyperon`:
+If you prefer an object you can hold and feed incrementally, use the `MeTTa` runner from `@mettascript/hyperon`:
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
+import { MeTTa } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 metta.run("(= (greet $name) (Hello $name))"); // add a rule
@@ -93,10 +95,10 @@ console.log(metta.run("!(greet World)")[0].map(String)); // [ '(Hello World)' ]
 
 ## Write MeTTa in typed TypeScript
 
-If you would rather not write MeTTa as strings, `@metta-ts/edsl` builds the same atoms from typed TypeScript:
+If you would rather not write MeTTa as strings, `@mettascript/edsl` builds the same atoms from typed TypeScript:
 
 ```ts
-import { mettaDB, names, vars, If, gt, mul, sub } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, mul, sub } from "@mettascript/edsl";
 
 const db = mettaDB();
 const { fact } = names();

@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { sym, variable, expr, gfloat, gint, instantiate, atomEq } from "@metta-ts/core";
+import { sym, variable, expr, gfloat, gint, instantiate, atomEq } from "@mettascript/core";
 import { DasSpace } from "./das-space";
 import { MockTransport } from "./transport";
 

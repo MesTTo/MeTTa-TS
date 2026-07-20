@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect, afterAll } from "vitest";
-import { FlatKB, sym, variable, expr, gint, format, type Atom } from "@metta-ts/core";
+import { FlatKB, sym, variable, expr, gint, format, type Atom } from "@mettascript/core";
 import { ParallelFlatMatcher } from "./flat-parallel";
 
 const A = (...items: Atom[]): Atom => expr(items);

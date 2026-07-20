@@ -5,7 +5,7 @@
 // Pure eDSL builders for the optional Prolog host interop surface. Strings in
 // goal arrays are Prolog atoms; pass `ground("text")` when a Prolog string is
 // required instead.
-import { E, S, type Atom, type ExpressionAtom } from "@metta-ts/hyperon";
+import { E, S, type Atom, type ExpressionAtom } from "@mettascript/hyperon";
 import { ground, type Term } from "./term";
 
 export type PrologGoal = Term | readonly Term[];

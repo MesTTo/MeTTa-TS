@@ -1,4 +1,4 @@
-# MeTTa-TS ⟷ PeTTa parity
+# MeTTaScript ⟷ PeTTa parity
 
 Goal: pass and outrun PeTTa on the example corpus while staying byte-identical to LeaTTa
 `MettaHyperonFull` for core semantics. Re-benchmark after each change. Hyperon conformance remains a
@@ -7,8 +7,8 @@ regression surface, not the authority when it disagrees with LeaTTa.
 ## Status (`corpus-bench --engine=both`)
 
 105 examples plus 44 host-FFI / PeTTa-execution-model cases marked N/A in the latest full run. PeTTa passed
-104 examples, MeTTa-TS passed 98, both passed 98, and MeTTa-TS was faster on all 98 shared passing files.
-Median speedup was 1.82x, geomean 1.85x, with both-pass totals of PeTTa 28.8s and MeTTa-TS 15.9s. The
+104 examples, MeTTaScript passed 98, both passed 98, and MeTTaScript was faster on all 98 shared passing files.
+Median speedup was 1.82x, geomean 1.85x, with both-pass totals of PeTTa 28.8s and MeTTaScript 15.9s. The
 remaining split is semantic or host-surface parity: PLN/NARS lib ports, PeTTa-only execution-model examples,
 and `matespace`/`matespace2`, whose constants are not established as Hyperon expected values for the current
 no-barrier files. The Hyperon-valid workload is `matespacefast`.
@@ -18,7 +18,7 @@ no-barrier files. The Hyperon-valid workload is `matespacefast`.
 - Corpus `bench/corpus-mettats/`: the PeTTa examples adapted to LeaTTa conventions, attributed to PeTTa (MIT).
 - Engine bugs fixed (genuine, not adaptations): `sealed`/`|->` body laziness; grounded-op type declarations;
   alpha-unique-atom; occurs check on rebind reconciliation (nilbc); `add-atom`/`remove-atom` store unreduced
-  + `add-reducts` reduces; compile tuple-memo key; parser string round-trip; `if` return type `$t`.
+  - `add-reducts` reduces; compile tuple-memo key; parser string round-trip; `if` return type `$t`.
 - Perf (oracle byte-identical): O(1)-stack reduce trampoline; Set-based binding path; deferred rhs
   freshening + candidate pre-filter; `getTypes` memo; persistent ground-fact exact-match index (peano
   15.4s→3.7s); count-without-materialise + O(1) worklist (permutations un-timed-out); runtime-rule tabling
@@ -65,7 +65,7 @@ no-barrier files. The Hyperon-valid workload is `matespacefast`.
    in Hyperon style, not just a lib port.
 2. **Perf outliers and PeTTa execution-model cases.** The last confirmed crossings were permutations via
    the conjunctive worst-case-optimal collapse-count;
-   nilbc via the compiled nondeterministic let*-chain search (709ms vs 761ms, alpha-equivalent
+   nilbc via the compiled nondeterministic let\*-chain search (709ms vs 761ms, alpha-equivalent
    fresh naming); peano via the compiled add-atom saturation loop, the add-if-absent idiom as one
    exact-membership probe and the single-branch case-over-match as a snapshot-and-thread loop
    (306ms vs 1588ms, byte-identical). **tilepuzzle now PASSES and beats PeTTa**: 426ms vs
@@ -82,7 +82,7 @@ no-barrier files. The Hyperon-valid workload is `matespacefast`.
      byte-identical to the materialising log. Named spaces and static env atoms still use their existing
      indexes; custom grounded matchers fall back to the materialising log.
    - **CPU floor and semantic split.** matespace uses `&self` (already indexed), so it is not the
-     named-space bug. The current no-barrier MeTTa-TS slices grow as `matespace K0=2, K1=4, K2=30, K3=690`
+     named-space bug. The current no-barrier MeTTaScript slices grow as `matespace K0=2, K1=4, K2=30, K3=690`
      and `matespace2 K0=1, K1=4, K2=39, K3=42588`; both K4 probes timed out under a 30s cap, and
      `expandK 4` alone times out. `case (once (match ...))` now compiles, so `mate` compiles in
      `matespace`/`matespace2` and `rewriteK` compiles in `matespace2`; the real CLI slice improved
@@ -116,4 +116,4 @@ no-barrier files. The Hyperon-valid workload is `matespacefast`.
 - Bool literals `True`/`False`; collapse is a comma tuple; floats render full IEEE.
 - Math returns Float: pow/sqrt/log/min-atom/max-atom, and trunc/ceil/floor/round on float input.
 - `==` is `(-> $t $t Bool)`; Hyperon has no `!=`.
-- Keep MeTTa-TS LeaTTa-correct; never bend the engine to a PeTTa-ism.
+- Keep MeTTaScript LeaTTa-correct; never bend the engine to a PeTTa-ism.

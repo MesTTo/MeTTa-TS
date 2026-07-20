@@ -20,7 +20,7 @@
  * Do not declare a MeTTa type for `py-call`: an `Atom`-typed parameter would stop argument
  * reduction and break nested composition (`py-str` relies on inner `py-call`s reducing first).
  */
-import type { AsyncGroundFn } from "@metta-ts/core";
+import type { AsyncGroundFn } from "@mettascript/core";
 import {
   Atom,
   ExpressionAtom,
@@ -34,7 +34,7 @@ import {
   S,
   E,
   MeTTa,
-} from "@metta-ts/hyperon";
+} from "@mettascript/hyperon";
 
 /** Opaque live Python object reference held by the bridge. Never inspected here. */
 export type PyHandle = object;

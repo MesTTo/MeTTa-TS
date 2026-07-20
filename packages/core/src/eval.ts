@@ -619,7 +619,10 @@ export interface MinEnv {
    *  first goal is anchored by a ground argument and whose later goals are connected over a ground,
    *  duplicate-free candidate domain runs through the source-ordered binding-aware nested loop (matchConj),
    *  which probes the argument index per bound join variable instead of materializing every goal's full
-   *  relation for matchConjJoin's WCO. Differential-gated to matchConjJoin (same solutions, same order).
+   *  relation for matchConjJoin's WCO. Differential-gated to matchConjJoin: same solution multiset and
+   *  multiplicity. Enumeration order can interleave differently when the anchor bucket is not grouped by
+   *  the join variable (MeTTa leaves query order unspecified — the MOPS workspace is a multiset); on
+   *  unique-entity-per-goal shapes the orders coincide, asserted by the differential suite.
    *  Cyclic, unanchored, non-ground-fact, or duplicate-fact conjunctions stay on matchConjJoin. */
   useConjNested?: boolean;
   /** Ordered numeric single-column range matching (`experimental.rangeIndex`, on by default): a single
@@ -3448,12 +3451,15 @@ function conjNestedGroundDomain(env: MinEnv, w: World): boolean {
 // not the whole functor), every goal's functor has only ground facts, and every later goal shares a variable
 // with the goals before it. Then each later goal is matched with its join variables already bound, so matchConj
 // probes the argument index per solution rather than scanning the whole functor, and matchConjJoin's per-goal
-// full-relation materialization (the 120k-row build the two-hop pays) never happens. The enumeration order
-// matches matchConjJoin for this shape: the nested loop binds variables in the same first-seen order the WCO
-// uses, and drives them from the same anchored goal the WCO picks as its smallest cursor. An unanchored first
-// goal (the all-variable goals of the cyclic triangle among them), a non-ground-fact functor, or a
-// disconnected goal fails a test and stays on matchConjJoin, whose variable-at-a-time intersection is
-// worst-case optimal for the cyclic case. Differential-gated behind experimental.conjNested.
+// full-relation materialization (the 120k-row build the two-hop pays) never happens. Routing preserves the
+// solution multiset and multiplicity (the duplicate-free and ground-domain guards make freshening and dedup
+// invisible). Enumeration order coincides with the WCO's when every goal carries a unique-entity variable
+// (the DataScript shapes) but can interleave differently when the anchor bucket is not grouped by the join
+// variable — MeTTa does not fix a query enumeration order (the MOPS workspace is a multiset), and the
+// eval-conj-nested witnesses pin both classes. An unanchored first goal (the all-variable goals of the
+// cyclic triangle among them), a non-ground-fact functor, or a disconnected goal fails a test and stays on
+// matchConjJoin, whose variable-at-a-time intersection is worst-case optimal for the cyclic case.
+// Differential-gated behind experimental.conjNested.
 function anchoredAcyclicSourceOrder(
   env: MinEnv,
   w: World,

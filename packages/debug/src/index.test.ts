@@ -9,7 +9,7 @@ import {
   runProgram,
   standardTokenizer,
   type TraceEvent,
-} from "@metta-ts/core";
+} from "@mettascript/core";
 import { assembleQuery, collectTrace, explainCall, summarize, type TraceRunner } from "./index";
 
 const sequentialRunner: TraceRunner = (program, fuel, imports, opts) =>
@@ -26,7 +26,7 @@ const QUEUE_SOURCE = `
   (= (LimitSize $L $size)
      (top-k-by-atom Score $size $L))`;
 
-describe("@metta-ts/debug", () => {
+describe("@mettascript/debug", () => {
   it("summarizes trace events with grounded counts and stable lists", () => {
     const events: TraceEvent[] = [
       { kind: "reduce", atom: "(main)" },

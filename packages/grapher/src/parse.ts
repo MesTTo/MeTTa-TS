@@ -6,7 +6,7 @@
 // bridge leans on `parseLeaf` to reconstruct a leaf from its source token, so `42` becomes a grounded
 // number, `$x` a variable, and `foo` a symbol, exactly as the reader would produce them.
 
-import { SExprParser, standardTokenizer, type Atom, type Tokenizer } from "@metta-ts/hyperon";
+import { SExprParser, standardTokenizer, type Atom, type Tokenizer } from "@mettascript/hyperon";
 
 let sharedTokenizer: Tokenizer | undefined;
 const tokenizer = (): Tokenizer => (sharedTokenizer ??= standardTokenizer());

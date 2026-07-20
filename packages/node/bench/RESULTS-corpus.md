@@ -3,113 +3,113 @@
 Wall-clock per example as a black-box subprocess (each engine's runtime startup included).
 `speedup` = PeTTa / MeTTa-TS over examples both engines pass. `*` marks a non-pass run.
 
-- examples: 105, both pass: 98, speedup median 1.55x, geomean 1.61x
-- timeout 60s, runs 3 (min), MeTTa-TS --max-steps 100000000
+- examples: 105, both pass: 98, speedup median 1.49x, geomean 1.55x
+- timeout 60s, runs 5 (min), MeTTa-TS --max-steps 100000000
 
 | example | PeTTa (ms) | MeTTa-TS (ms) | speedup | result |
 |---|--:|--:|--:|---|
-| and_or | 154 | 100 | 1.54x | pass |
-| atomops | 153 | 99 | 1.54x | pass |
-| builin_types | 163 | 98 | 1.67x | pass |
-| callquoteevalreduce2 | 145 | 101 | 1.44x | pass |
-| case | 159 | 102 | 1.56x | pass |
-| case2 | 141 | 106 | 1.33x | pass |
-| caseempty | 169 | 109 | 1.55x | pass |
-| chain | 156 | 113 | 1.39x | pass |
-| collapse | 184 | 101 | 1.82x | pass |
-| comments | 163 | 103 | 1.58x | pass |
-| constanthead | 171 | 104 | 1.64x | pass |
-| curry | 147 | 114 | 1.29x | pass |
-| cut | 166 | 109 | 1.52x | pass |
-| empty | 175 | 108 | 1.61x | pass |
-| eval | 171 | 118 | 1.45x | pass |
-| factorial | 161 | 103 | 1.56x | pass |
-| fib | 452 | 105 | 4.29x | pass |
-| fibadd | 471 | 111 | 4.25x | pass |
-| fibsmart | 151 | 105 | 1.44x | pass |
-| fibsmartimport | 176 | 108 | 1.63x | pass |
-| foldall | 150 | 130 | 1.16x | pass |
-| foldallmatch | 165 | 120 | 1.37x | pass |
-| foldallspacecount | 172 | 112 | 1.53x | pass |
-| forall | 165 | 129 | 1.28x | pass |
-| functiontypes | 167 | 106 | 1.57x | pass |
-| greedy_chess | 15795\* (timeout) | 1448\* (ran) | - | timeout/ran |
-| he_assert | 171 | 110 | 1.56x | pass |
-| he_atomspace | 173 | 102 | 1.69x | pass |
-| he_equalreduct | 172 | 104 | 1.65x | pass |
-| he_error | 169 | 103 | 1.64x | pass |
-| he_evaluation | 171 | 112 | 1.53x | pass |
-| he_math | 162 | 112 | 1.44x | pass |
-| he_minimalmetta | 1851 | 1218 | 1.52x | pass |
-| he_quoting | 178 | 109 | 1.64x | pass |
-| he_types | 156 | 114 | 1.36x | pass |
-| holfunctions | 155 | 115 | 1.35x | pass |
-| hyperpose_primes | 1125 | 1065 | 1.06x | pass |
-| identity | 200 | 109 | 1.84x | pass |
-| if | 148 | 104 | 1.42x | pass |
-| if2 | 178 | 111 | 1.60x | pass |
-| if3 | 169 | 105 | 1.60x | pass |
-| if4 | 172 | 104 | 1.65x | pass |
-| ifcasenondet | 164 | 110 | 1.49x | pass |
-| is_alpha_member_test | 181 | 117 | 1.55x | pass |
-| iter | 181 | 114 | 1.59x | pass |
-| lambda | 150 | 129 | 1.16x | pass |
-| let_superpose_if_case | 178 | 112 | 1.60x | pass |
-| letext | 145 | 111 | 1.30x | pass |
-| letlet | 175 | 116 | 1.50x | pass |
-| letstar | 178 | 111 | 1.61x | pass |
-| listhead | 180 | 111 | 1.62x | pass |
-| matchnested | 182 | 116 | 1.58x | pass |
-| matchnested2 | 181 | 117 | 1.55x | pass |
-| matchsingle | 179 | 109 | 1.65x | pass |
-| matchtypes | 158 | 113 | 1.40x | pass |
-| matespacefast | 4292 | 3337 | 1.29x | pass |
-| math | 153 | 99 | 1.54x | pass |
-| meta_types | 178 | 98 | 1.81x | pass |
-| metta4_prog | 168 | 103 | 1.64x | pass |
-| multicall | 167 | 104 | 1.61x | pass |
-| multiset_operations | 172 | 101 | 1.70x | pass |
-| mutex_and_transaction | 161 | 113 | 1.43x | pass |
-| myinterpreter | 162 | 111 | 1.46x | pass |
-| nars_direct | 164 | 103\* (fail) | - | pass/fail |
-| nars_tuffy | 230 | 108\* (fail) | - | pass/fail |
-| nilbc | 737 | 478 | 1.54x | pass |
-| once | 155 | 103 | 1.50x | pass |
-| parametric_types | 169 | 103 | 1.64x | pass |
-| parse | 165 | 101 | 1.64x | pass |
-| patrick_iterate_fib | 167 | 111 | 1.51x | pass |
-| patrick_iterate_quad | 318 | 178 | 1.79x | pass |
-| peano | 1543 | 297 | 5.19x | pass |
-| peanofast | 496 | 118 | 4.20x | pass |
-| permutations | 823 | 541 | 1.52x | pass |
-| pln_direct | 179 | 112\* (fail) | - | pass/fail |
-| pln_roman | 236 | 143\* (fail) | - | pass/fail |
-| pln_tuffy | 190 | 110\* (fail) | - | pass/fail |
-| plntest | 158 | 108 | 1.46x | pass |
-| plntestdirect | 170 | 354\* (ran) | - | pass/ran |
-| recursive_types | 165 | 102 | 1.62x | pass |
-| recursive_types2 | 170 | 101 | 1.69x | pass |
-| repr | 167 | 94 | 1.78x | pass |
-| selfprog | 167 | 102 | 1.64x | pass |
-| smartdispatch | 167 | 111 | 1.50x | pass |
-| spacefunction | 161 | 99 | 1.63x | pass |
-| spaces | 168 | 104 | 1.62x | pass |
-| spaces2 | 146 | 110 | 1.33x | pass |
-| spaces3 | 143 | 104 | 1.38x | pass |
-| specializecyclic | 147 | 104 | 1.41x | pass |
-| state | 149 | 98 | 1.52x | pass |
-| streamops | 169 | 104 | 1.62x | pass |
-| string | 163 | 97 | 1.67x | pass |
-| supercollapse | 164 | 109 | 1.50x | pass |
-| superpose_nested | 162 | 106 | 1.52x | pass |
-| superpose_primes | 177 | 109 | 1.62x | pass |
-| tabling_fib | 168 | 103 | 1.62x | pass |
-| test_alpha_unique_atom | 157 | 110 | 1.42x | pass |
-| test_string_comments | 159 | 103 | 1.54x | pass |
-| tests | 170 | 106 | 1.60x | pass |
-| tilepuzzle | 1663 | 424 | 3.92x | pass |
-| translatorrule_fib | 145 | 104 | 1.39x | pass |
-| twostage | 148 | 104 | 1.43x | pass |
-| types | 161 | 112 | 1.43x | pass |
-| types_dependent | 147 | 106 | 1.38x | pass |
-| xor | 179 | 104 | 1.72x | pass |
+| and_or | 147 | 105 | 1.40x | pass |
+| atomops | 149 | 109 | 1.36x | pass |
+| builin_types | 171 | 99 | 1.74x | pass |
+| callquoteevalreduce2 | 144 | 108 | 1.33x | pass |
+| case | 155 | 100 | 1.55x | pass |
+| case2 | 154 | 96 | 1.61x | pass |
+| caseempty | 144 | 104 | 1.39x | pass |
+| chain | 144 | 95 | 1.52x | pass |
+| collapse | 146 | 93 | 1.56x | pass |
+| comments | 151 | 96 | 1.57x | pass |
+| constanthead | 152 | 104 | 1.46x | pass |
+| curry | 149 | 118 | 1.26x | pass |
+| cut | 153 | 106 | 1.44x | pass |
+| empty | 146 | 104 | 1.41x | pass |
+| eval | 180 | 117 | 1.54x | pass |
+| factorial | 149 | 103 | 1.45x | pass |
+| fib | 425 | 103 | 4.10x | pass |
+| fibadd | 435 | 149 | 2.92x | pass |
+| fibsmart | 145 | 101 | 1.43x | pass |
+| fibsmartimport | 166 | 112 | 1.48x | pass |
+| foldall | 149 | 128 | 1.16x | pass |
+| foldallmatch | 170 | 114 | 1.49x | pass |
+| foldallspacecount | 148 | 108 | 1.38x | pass |
+| forall | 147 | 131 | 1.11x | pass |
+| functiontypes | 150 | 106 | 1.42x | pass |
+| greedy_chess | 16000\* (timeout) | 1422\* (ran) | - | timeout/ran |
+| he_assert | 151 | 102 | 1.48x | pass |
+| he_atomspace | 137 | 92 | 1.48x | pass |
+| he_equalreduct | 139 | 96 | 1.45x | pass |
+| he_error | 140 | 93 | 1.50x | pass |
+| he_evaluation | 141 | 98 | 1.43x | pass |
+| he_math | 142 | 94 | 1.51x | pass |
+| he_minimalmetta | 1742 | 1130 | 1.54x | pass |
+| he_quoting | 149 | 127 | 1.17x | pass |
+| he_types | 180 | 103 | 1.75x | pass |
+| holfunctions | 154 | 117 | 1.32x | pass |
+| hyperpose_primes | 1094 | 1071 | 1.02x | pass |
+| identity | 149 | 96 | 1.56x | pass |
+| if | 152 | 98 | 1.55x | pass |
+| if2 | 175 | 107 | 1.64x | pass |
+| if3 | 147 | 99 | 1.49x | pass |
+| if4 | 165 | 101 | 1.63x | pass |
+| ifcasenondet | 170 | 103 | 1.65x | pass |
+| is_alpha_member_test | 158 | 117 | 1.35x | pass |
+| iter | 152 | 105 | 1.45x | pass |
+| lambda | 157 | 123 | 1.28x | pass |
+| let_superpose_if_case | 151 | 106 | 1.43x | pass |
+| letext | 145 | 104 | 1.39x | pass |
+| letlet | 140 | 103 | 1.35x | pass |
+| letstar | 149 | 103 | 1.46x | pass |
+| listhead | 174 | 102 | 1.71x | pass |
+| matchnested | 162 | 103 | 1.57x | pass |
+| matchnested2 | 143 | 104 | 1.38x | pass |
+| matchsingle | 161 | 100 | 1.62x | pass |
+| matchtypes | 142 | 98 | 1.45x | pass |
+| matespacefast | 4181 | 3307 | 1.26x | pass |
+| math | 142 | 97 | 1.46x | pass |
+| meta_types | 161 | 96 | 1.68x | pass |
+| metta4_prog | 155 | 100 | 1.55x | pass |
+| multicall | 150 | 105 | 1.43x | pass |
+| multiset_operations | 161 | 94 | 1.71x | pass |
+| mutex_and_transaction | 162 | 109 | 1.50x | pass |
+| myinterpreter | 165 | 99 | 1.66x | pass |
+| nars_direct | 163 | 100\* (fail) | - | pass/fail |
+| nars_tuffy | 237 | 110\* (fail) | - | pass/fail |
+| nilbc | 765 | 467 | 1.64x | pass |
+| once | 158 | 103 | 1.53x | pass |
+| parametric_types | 144 | 98 | 1.47x | pass |
+| parse | 153 | 108 | 1.41x | pass |
+| patrick_iterate_fib | 153 | 98 | 1.57x | pass |
+| patrick_iterate_quad | 313 | 169 | 1.85x | pass |
+| peano | 1583 | 310 | 5.11x | pass |
+| peanofast | 510 | 120 | 4.24x | pass |
+| permutations | 832 | 559 | 1.49x | pass |
+| pln_direct | 164 | 108\* (fail) | - | pass/fail |
+| pln_roman | 201 | 104\* (fail) | - | pass/fail |
+| pln_tuffy | 158 | 107\* (fail) | - | pass/fail |
+| plntest | 143 | 111 | 1.29x | pass |
+| plntestdirect | 146 | 359\* (ran) | - | pass/ran |
+| recursive_types | 148 | 103 | 1.43x | pass |
+| recursive_types2 | 152 | 98 | 1.55x | pass |
+| repr | 141 | 93 | 1.51x | pass |
+| selfprog | 148 | 100 | 1.49x | pass |
+| smartdispatch | 154 | 101 | 1.53x | pass |
+| spacefunction | 145 | 98 | 1.48x | pass |
+| spaces | 148 | 101 | 1.47x | pass |
+| spaces2 | 149 | 104 | 1.43x | pass |
+| spaces3 | 160 | 105 | 1.52x | pass |
+| specializecyclic | 172 | 102 | 1.69x | pass |
+| state | 166 | 96 | 1.72x | pass |
+| streamops | 165 | 106 | 1.56x | pass |
+| string | 172 | 95 | 1.81x | pass |
+| supercollapse | 173 | 104 | 1.67x | pass |
+| superpose_nested | 150 | 101 | 1.48x | pass |
+| superpose_primes | 166 | 104 | 1.59x | pass |
+| tabling_fib | 152 | 100 | 1.53x | pass |
+| test_alpha_unique_atom | 152 | 105 | 1.44x | pass |
+| test_string_comments | 146 | 127 | 1.15x | pass |
+| tests | 155 | 106 | 1.46x | pass |
+| tilepuzzle | 1543 | 401 | 3.85x | pass |
+| translatorrule_fib | 146 | 99 | 1.47x | pass |
+| twostage | 143 | 100 | 1.43x | pass |
+| types | 159 | 106 | 1.49x | pass |
+| types_dependent | 142 | 100 | 1.42x | pass |
+| xor | 152 | 100 | 1.52x | pass |

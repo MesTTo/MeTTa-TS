@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Standard libraries
 
-MeTTa TS ships a set of ready-made libraries you can pull into a program. They are ports of the libraries from [PeTTa](https://github.com/patham9/PeTTa), the SWI-Prolog implementation of MeTTa, re-expressed to run on this Hyperon-faithful engine: the algorithms are the same, but the code uses this engine's own primitives rather than PeTTa's Prolog-specific ones.
+MeTTaScript ships a set of ready-made libraries you can pull into a program. They are ports of the libraries from [PeTTa](https://github.com/patham9/PeTTa), the SWI-Prolog implementation of MeTTa, re-expressed to run on this Hyperon-faithful engine: the algorithms are the same, but the code uses this engine's own primitives rather than PeTTa's Prolog-specific ones.
 
 ## Importing a library
 
@@ -168,4 +168,4 @@ Those are the same numbers PeTTa's own PLN produces for the same inputs.
 
 ## What is not here, and why
 
-A few of PeTTa's libraries are deliberately left out. `he` (Hyperon-experimental compatibility shims) and `builtin_types` (operator type declarations) duplicate things this engine already provides natively, so importing them would only clash. The `import`, `zar`, and `tabling` libraries are Prolog-interop layers, `mm2` targets the MORK backend, and `llm` calls out to a language-model API. Those are host-integration boundaries, and this engine reaches the same capabilities through [`@metta-ts/prolog`](/typescript/prolog-interop), its own automatic tabling, and [`@metta-ts/py`](/typescript/python-interop) rather than a MeTTa port.
+A few of PeTTa's libraries are deliberately left out. `he` (Hyperon-experimental compatibility shims) and `builtin_types` (operator type declarations) duplicate things this engine already provides natively, so importing them would only clash. The `import`, `zar`, and `tabling` libraries are Prolog-interop layers, `mm2` targets the MORK backend, and `llm` calls out to a language-model API. Those are host-integration boundaries, and this engine reaches the same capabilities through [`@mettascript/prolog`](/typescript/prolog-interop), its own automatic tabling, and [`@mettascript/py`](/typescript/python-interop) rather than a MeTTa port.

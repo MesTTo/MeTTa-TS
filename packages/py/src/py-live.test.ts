@@ -6,7 +6,7 @@
 // One bridge for the whole suite (pythonia's subprocess is a module-level singleton; per-test
 // dispose+recreate would churn it and invalidate the root ffid).
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { MeTTa } from "@metta-ts/hyperon";
+import { MeTTa } from "@mettascript/hyperon";
 import { registerPyInterop, type PyBridge } from "./index";
 import { makePythoniaBridge } from "./live-bridge";
 

@@ -6,7 +6,7 @@
 // and wires the renderer and the controller together. Construct it with a container element; drive it with
 // load/loadSource/save/toSource/evaluate/tidy, and subscribe with onChange.
 
-import { MeTTa, ExpressionAtom, E, type Atom } from "@metta-ts/hyperon";
+import { MeTTa, ExpressionAtom, E, type Atom } from "@mettascript/hyperon";
 import { Graph, type GraphNode } from "./model";
 import { Renderer, CANVAS_BG, type NodeLabel, type RenderState } from "./render";
 import { Controller, type ControllerHost } from "./controller";

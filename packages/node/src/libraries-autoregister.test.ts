@@ -7,7 +7,7 @@
 // bare @metta-ts/core does not resolve the libraries (see core's extensions.test.ts), but node does.
 
 import { describe, expect, it } from "vitest";
-import { format } from "@metta-ts/core";
+import { format } from "@mettascript/core";
 import { runSource } from "./source";
 
 describe("node auto-registers the standard libraries", () => {

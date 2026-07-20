@@ -3,17 +3,17 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/debug
+# @mettascript/debug
 
-`@metta-ts/debug` contains the host-free debugger engine used by `metta-debug`
+`@mettascript/debug` contains the host-free debugger engine used by `metta-debug`
 and embedders such as language servers.
 
 The package does not read files, register global output sinks, or import Node
 APIs. Callers provide the exact runner they already use.
 
 ```ts
-import { explainCall } from "@metta-ts/debug";
-import { runProgram } from "@metta-ts/core";
+import { explainCall } from "@mettascript/debug";
+import { runProgram } from "@mettascript/core";
 
 const report = explainCall(runProgram, "(= (double $x) (* $x 2))", "(double 21)");
 

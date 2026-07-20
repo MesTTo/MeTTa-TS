@@ -6,8 +6,8 @@
 // no FFI. `js-atom` resolves a global, `js-dot` calls a method, `js-list`/`js-dict` build JS values.
 //
 // Run it (after `pnpm build`): npx tsx examples/js-interop.ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerJsInterop } from "@metta-ts/hyperon";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerJsInterop } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 registerJsInterop(m);

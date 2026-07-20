@@ -14,8 +14,8 @@ represented.
 Priority order for this branch is LeaTTa first, LeaTTa source second, Hyperon Experimental and the
 conformance corpus as regression evidence third, and PeTTa for compatibility and optimization ideas.
 PeTTa is not a semantic authority. This file records the decisions we have checked against LeaTTa, the
-open MeTTa-TS gaps that still need alignment, and how LeaTTa's "Improvements over Hyperon" list maps
-onto MeTTa-TS.
+open MeTTaScript gaps that still need alignment, and how LeaTTa's "Improvements over Hyperon" list maps
+onto MeTTaScript.
 
 ## Running the binary
 
@@ -39,37 +39,37 @@ reduces a MeTTaIL term. Two usage notes:
 - Results are wrapped in `[...]`; multiple nondeterministic results are comma-joined inside, e.g.
   `!(superpose (1 2 3))` prints `[1, 2, 3]`.
 - A collapsed / tuple Expression is printed with a leading `,`: `!(collapse (match &self (foo $x) $x))`
-  prints `[(, 1 2 3 1)]`. MeTTa-TS now uses the same visible comma-tuple convention for collapsed
+  prints `[(, 1 2 3 1)]`. MeTTaScript now uses the same visible comma-tuple convention for collapsed
   nondeterministic bags.
 - The empty collapsed bag prints as `(,)`. The unit atom still prints as `()`.
 
 ## Open semantic target: arity no-reduce
 
-LeaTTa checks argument *types* but not argument *count*. A typed function or grounded op applied to the
-wrong number of arguments is left unreduced instead of erroring. Older MeTTa-TS behavior and some
+LeaTTa checks argument _types_ but not argument _count_. A typed function or grounded op applied to the
+wrong number of arguments is left unreduced instead of erroring. Older MeTTaScript behavior and some
 Hyperon conformance YAML files expect `IncorrectNumberOfArguments`. Under the current authority order,
 those cases are implementation targets for a later LeaTTa-alignment slice unless a more specific
 LeaTTa source rule says otherwise.
 
-| Input | LeaTTa | Current MeTTa-TS / Hyperon-style behavior |
-| --- | --- | --- |
-| `(if True 1)` | `(if True 1)` (unreduced) | `(Error (if True 1) IncorrectNumberOfArguments)` |
-| `(+ 1)` | `(+ 1)` (unreduced) | `(partial + (1))` |
-| `(+ 1 2 3)` | `(+ 1 2 3)` (unreduced) | `(Error (+ 1 2 3) IncorrectNumberOfArguments)` |
-| `(if 5 a b)` | `(Error (if 5 a b) (BadArgType 1 Bool Number))` | same |
+| Input         | LeaTTa                                          | Current MeTTaScript / Hyperon-style behavior     |
+| ------------- | ----------------------------------------------- | ------------------------------------------------ |
+| `(if True 1)` | `(if True 1)` (unreduced)                       | `(Error (if True 1) IncorrectNumberOfArguments)` |
+| `(+ 1)`       | `(+ 1)` (unreduced)                             | `(partial + (1))`                                |
+| `(+ 1 2 3)`   | `(+ 1 2 3)` (unreduced)                         | `(Error (+ 1 2 3) IncorrectNumberOfArguments)`   |
+| `(if 5 a b)`  | `(Error (if 5 a b) (BadArgType 1 Bool Number))` | same                                             |
 
-The last row shows the contrast: a *type* mismatch on the right number of arguments is caught by both
+The last row shows the contrast: a _type_ mismatch on the right number of arguments is caught by both
 (`BadArgType`), while count mismatch is a no-reduce case in LeaTTa.
 
 ## Decisions already adopted
 
-Each of these was settled by running LeaTTa and is now a MeTTa-TS contract.
+Each of these was settled by running LeaTTa and is now a MeTTaScript contract.
 
 - **`superpose` evaluates its tuple argument as a cross-product.** `!(collapse (superpose ((1 (superpose
-  (a b))) (2 (superpose (c d))))))` gives `{a,b}x{c,d}` flattened, and `!(collapse (superpose (4
-  (empty))))` is empty because `{4}x{}` is empty. This is why the corpus files `mettaset` and
+(a b))) (2 (superpose (c d))))))` gives `{a,b}x{c,d}` flattened, and `!(collapse (superpose (4
+(empty))))` is empty because `{4}x{}` is empty. This is why the corpus files `mettaset` and
   `metta4_streams` are excluded: they rely on PeTTa unioning the tuple elements instead, so PeTTa's
-  `range` built from `(superpose ($K (range (+ $K 1) $N)))` streams `1..N` while Hyperon/LeaTTa/MeTTa-TS
+  `range` built from `(superpose ($K (range (+ $K 1) $N)))` streams `1..N` while Hyperon/LeaTTa/MeTTaScript
   yield nothing once the `(empty)` base case empties the product. Same root as the `spaces2` note.
 - **Argument type errors agree** (`BadArgType` on `(if 5 a b)`, `get-type` results, `(== 1 1.0)` = `False`).
 - **Unresolved symbolic numeric arguments no-reduce.** `!(> 4 (+ ln 2))` and `!(> 4 (+ $x 2))` remain
@@ -84,43 +84,43 @@ Each of these was settled by running LeaTTa and is now a MeTTa-TS contract.
 - **Return-type-`Atom` inertness.** A function declared `(: f (-> Number Atom))` has its result left
   inert: `(f 1)` with `(= (f $x) (g $x))` stays `(g 1)`, it is not reduced to `(g 1)`'s value, whereas
   the same body under a `Number` return type evaluates through. This is LeaTTa improvement #1 (below),
-  and MeTTa-TS already implements it.
+  and MeTTaScript already implements it.
 - **First-argument indexing is sound, with no same-head undercounting** (LeaTTa improvement #9 / Hyperon
   open issues 1079, 1076). A space of `(foo 1) (foo 2) (foo 3) (foo 1)` queried by `(foo $x)` returns
   all four including the duplicate; exact ground duplicates are counted with correct multiplicity; and a
   ground query against a space that also holds a variable-headed atom correctly returns both matches
   (the index fast path is bypassed when any head-less atom is present). Covered by `index-match.test.ts`.
 
-## The "Improvements over Hyperon" list, mapped to MeTTa-TS
+## The "Improvements over Hyperon" list, mapped to MeTTaScript
 
 LeaTTa's book appendix (`book/Docs/Appendices.lean`, section "Improvements over Hyperon") lists nine
 points where Hyperon's `interpreter.rs` carries a self-described hack, a hotfix, or an open bug, and
-LeaTTa replaces it with a declarative construct. Assessed against MeTTa-TS:
+LeaTTa replaces it with a declarative construct. Assessed against MeTTaScript:
 
-1. **`is_evaluated()` mutable bit (hack) -> static return-type gating.** Already satisfied: MeTTa-TS
+1. **`is_evaluated()` mutable bit (hack) -> static return-type gating.** Already satisfied: MeTTaScript
    treats a function's result as inert iff its declared return type is `Atom` (verified above), with no
    mutable per-atom bit. Our `evaluatedAtoms` WeakSet is a separate ground-term memo for the Peano
    O(n^2) case, not the inertness rule.
-2. **`is_variable_op` hotfix -> total variable-headed guard.** N/A as a defect: MeTTa-TS dispatches
+2. **`is_variable_op` hotfix -> total variable-headed guard.** N/A as a defect: MeTTaScript dispatches
    variable-headed expressions through the matcher directly.
 3. **Tuple-vs-function dispatch decided twice (issues 235, 458) -> decided once from the signature.**
-   MeTTa-TS decides from the operator's signature / argMask in one place.
+   MeTTaScript decides from the operator's signature / argMask in one place.
 4. **`Rc<RefCell>` shared mutability -> pure immutable stack.** N/A by construction: the TS core is
    already a pure persistent World with copy-on-write, so the borrow-panic class cannot occur.
-5. **Global `make_unique` counter -> threaded gensym.** Implementation hygiene; MeTTa-TS freshens
+5. **Global `make_unique` counter -> threaded gensym.** Implementation hygiene; MeTTaScript freshens
    through the binding machinery, not a process-global.
 6. **Unbounded interpreter loop -> fuel-bounded driver.** Already satisfied: `interpretLoopG` /
    `mettaEvalG` carry `fuel` and degrade to a `StackOverflow` atom.
 7. **Fragile cross-call binding threading (issues 127, 715, 290, 530, 911) -> pure state transformer.**
    N/A as a defect: bindings are threaded as immutable values; `resolveAtomFix` does the transitive
    resolution.
-8. **Stubbed alpha-equivalence -> real alpha-equivalence.** MeTTa-TS passes the alpha corpus
+8. **Stubbed alpha-equivalence -> real alpha-equivalence.** MeTTaScript passes the alpha corpus
    (`is_alpha_member_test`, `test_alpha_unique_atom`); not a stub here.
 9. **`Space::visit` undercounting same-head atoms (issues 1079, 1076, open) -> sound first-argument
    indexing.** Directly relevant to the index added for the Peano fix; verified sound above and in
    `index-match.test.ts`.
 
-The points are either already true of MeTTa-TS (1, 6, 8, 9) or describe Hyperon-internal Rust hygiene
+The points are either already true of MeTTaScript (1, 6, 8, 9) or describe Hyperon-internal Rust hygiene
 that a pure-functional TS core avoids by construction (2, 3, 4, 5, 7). None require a change.
 
 ## Note on `HYPERON_IMPROVEMENTS.md`
@@ -128,4 +128,4 @@ that a pure-functional TS core avoids by construction (2, 3, 4, 5, 7). None requ
 `MeTTaIL/HYPERON_IMPROVEMENTS.md` in the LeaTTa tree, despite the filename, is about the MeTTaIL Scala
 tool (theory-presentation elaboration for Rholang: `updateDef`, `replaceCats`, `check_interpret`), not
 the MeTTa evaluator. Its five findings are bugs in that tool's sort-renaming and static checks and do
-not transfer to MeTTa-TS. The MeTTa-evaluator improvements are the nine in the book appendix above.
+not transfer to MeTTaScript. The MeTTa-evaluator improvements are the nine in the book appendix above.

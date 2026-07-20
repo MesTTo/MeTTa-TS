@@ -8,7 +8,7 @@ SPDX-License-Identifier: MIT
 A grounded operation is a TypeScript function the MeTTa evaluator can call by name. It is how you extend the language: arithmetic, I/O, and your own domain logic all enter MeTTa as grounded operations. Register one with `registerOperation` on a `MeTTa` runner.
 
 ```ts
-import { MeTTa, ValueAtom, type GroundedAtom, type Atom } from "@metta-ts/hyperon";
+import { MeTTa, ValueAtom, type GroundedAtom, type Atom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 metta.registerOperation("double", (args: Atom[]) => {
@@ -40,7 +40,7 @@ metta.run("!(checked-sqrt -1)"); // [ (Error (checked-sqrt -1) negative input) ]
 Sometimes the right behavior on the wrong argument is not an error but "this rule does not apply, let another one try". That is MeTTa's multiple dispatch. Throw `IncorrectArgumentError` to leave the expression unevaluated instead of producing an error atom:
 
 ```ts
-import { IncorrectArgumentError } from "@metta-ts/hyperon";
+import { IncorrectArgumentError } from "@mettascript/hyperon";
 
 metta.registerOperation("only-positive", (args: Atom[]) => {
   const n = (args[0] as GroundedAtom).jsValue<number>();

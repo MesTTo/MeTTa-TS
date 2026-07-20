@@ -5,12 +5,12 @@ SPDX-License-Identifier: MIT
 
 # Python interop
 
-MeTTa TS runs entirely in TypeScript. When you also want a MeTTa program to
+MeTTaScript runs entirely in TypeScript. When you also want a MeTTa program to
 reach into Python, calling `numpy`, a model client, or any function in an
-installed package, the `@metta-ts/py` package gives you PeTTa's `py-call`
+installed package, the `@mettascript/py` package gives you PeTTa's `py-call`
 surface and Hyperon's `py-atom` family on top of the same engine. The root
-package is runtime-agnostic: use `@metta-ts/py/pythonia` for Node CPython or
-`@metta-ts/py/pyodide` for browsers.
+package is runtime-agnostic: use `@mettascript/py/pythonia` for Node CPython or
+`@mettascript/py/pyodide` for browsers.
 
 This is opt-in, and it can execute arbitrary Python: `py-eval` hands a string to Python's `eval`, and any resolved callable runs real Python. Enable it only for MeTTa source you trust, never for input from an untrusted user.
 
@@ -24,15 +24,15 @@ Python bridge yourself. The Node reference bridge wraps
 Install the package and a bridge backend:
 
 ```sh
-npm install @metta-ts/py pythonia
+npm install @mettascript/py pythonia
 ```
 
 Then build a bridge, register the ops, and run:
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPyInterop } from "@metta-ts/py";
-import { pythoniaBridge } from "@metta-ts/py/pythonia";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPyInterop } from "@mettascript/py";
+import { pythoniaBridge } from "@mettascript/py/pythonia";
 import { python } from "pythonia";
 
 const metta = new MeTTa();
@@ -155,13 +155,13 @@ You need `pythonia` installed and `python3` on your path. Without `--py`, the CL
 
 ## In the browser
 
-Use `@metta-ts/py/pyodide` when Python should run in the browser through
-Pyodide. The normal `@metta-ts/py` import stays runtime-agnostic. The Pyodide
+Use `@mettascript/py/pyodide` when Python should run in the browser through
+Pyodide. The normal `@mettascript/py` import stays runtime-agnostic. The Pyodide
 runtime is only pulled in when you import the Pyodide subpath.
 
 ```ts
-import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
-import { createPyodideInterop } from "@metta-ts/py/pyodide";
+import { createBrowserRunner, createBrowserTextLoader } from "@mettascript/browser/host";
+import { createPyodideInterop } from "@mettascript/py/pyodide";
 
 const files = new Map([["math.py", "def add(a, b):\n    return a + b\n"]]);
 const loadText = createBrowserTextLoader({ files, baseUrl: import.meta.url });

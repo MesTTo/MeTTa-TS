@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { format } from "@metta-ts/core";
-import { createBrowserRunner } from "@metta-ts/browser/host";
+import { format } from "@mettascript/core";
+import { createBrowserRunner } from "@mettascript/browser/host";
 
 export async function runPureBrowserEntry(): Promise<string[]> {
   const runner = createBrowserRunner();

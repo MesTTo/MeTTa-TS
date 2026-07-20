@@ -6,7 +6,7 @@
 // ill-typed applications, and get-type / metatypes let a program inspect itself.
 //
 // Run it (after `pnpm build`): npx tsx examples/types.ts
-import { runProgram, format } from "@metta-ts/core";
+import { runProgram, format } from "@mettascript/core";
 
 const results = runProgram(`
   ; a data type and two constructors

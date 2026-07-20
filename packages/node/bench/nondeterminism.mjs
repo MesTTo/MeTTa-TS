@@ -51,7 +51,7 @@ if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
 if (!existsSync(cliPath)) {
   console.error(`Missing MeTTa TS CLI: ${cliPath}`);
   console.error(
-    "Build it first with: pnpm -r --filter @metta-ts/core --filter @metta-ts/node build",
+    "Build it first with: pnpm -r --filter @mettascript/core --filter @mettascript/node build",
   );
   process.exit(2);
 }

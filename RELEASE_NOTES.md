@@ -1,8 +1,100 @@
-# MeTTa TS 1.5.0
+# MeTTaScript 2.0.0
 
-MeTTa TS 1.5.0 is an engine release. Declarative queries over large fact bases route through new
+MeTTaScript 2.0.0 is a rename. The project was MeTTa TS; it is now MeTTaScript. On the conformance
+oracle and the PeTTa corpus it reproduces 1.5.0 exactly; the one engine change is a crash fix, a
+unification that could recurse forever now terminates, and it leaves every terminating program's
+output identical, so upgrading from 1.5.0 is safe. Two things are genuinely new around the rename:
+the typed eDSL can now join across patterns, and the documentation is rewritten for people who want a
+metagraph rewriting database in TypeScript without first learning MeTTa.
+
+## Two npm scopes, one library
+
+The packages moved to the `@mettascript` scope, and the old `@metta-ts` names keep working. Each
+`@metta-ts/x` package is now a thin re-export of `@mettascript/x`, so both installs resolve to the
+same code:
+
+```bash
+npm install @mettascript/core   # the canonical name
+npm install @metta-ts/core       # still works, re-exports the above
+```
+
+Existing imports do not break. New code should use `@mettascript`.
+
+## Joins in the eDSL
+
+The typed eDSL matched one pattern at a time. It now joins across patterns on shared variables, the
+query DataScript is built around, written as TypeScript:
+
+```ts
+import { mettaDB, names, vars } from "@mettascript/edsl";
+
+const db = mettaDB();
+const { parent } = names();
+const { x, y, z } = vars();
+db.add(parent("Tom", "Bob"), parent("Bob", "Ann"));
+
+// join two patterns that share $y
+db.query([parent(x, y), parent(y, z)], { x, z }); // [{ x: "Tom", z: "Ann" }]
+```
+
+`All(...patterns)` is the conjunction form for rule bodies, so `Match(All(edge(x, y), edge(y, z)), z)`
+is a two-hop rule. The single-pattern `query` is unchanged.
+
+## Documentation
+
+The docs open by saying what MeTTaScript is, a metagraph rewriting database you use from TypeScript,
+and lead with TypeScript and eDSL examples that earn the comparison to DataScript: joins, facts about
+facts, and reachability rules. A new Use cases page compares it to DataScript, the other Datalog
+stores, TinyBase, and Prolog in the browser. The MeTTa language track is still there for anyone who
+wants it, no longer a prerequisite.
+
+Code blocks now highlight with the MeTTa-LSP grammar instead of a Scheme alias, so `!(...)`,
+`import!`, `&self`, and `$variables` are coloured the way the editor colours them.
+
+## Fixes
+
+A unification whose rebind cascade aliases value pairs in a ring, for example binding sets carrying
+`e ← (g $a 1)`, `d ← (g $b 1)`, `a ← (g $e 1)`, `b ← $d` when the alias `a = b` is added, recursed
+forever in binding reconciliation and crashed with a native stack overflow. The reconciler now
+grey-marks each value pair for the duration of its reconciliation and closes a revisited pair as
+success, the standard rational-tree treatment, so the merge terminates and the resulting cyclic
+solution is discarded by the ordinary variable-loop filter. Observable behaviour on this class
+matches Hyperon 0.2.10, checked directly, and no terminating program changes output: the guard can
+only fire on inputs that previously recursed forever. Found by the randomized property suite in CI.
+
+## Verification
+
+The engine matches 1.5.0 exactly except for the reconciliation termination fix above: the core
+source otherwise changed only in package names, and the differential suites, the 23-file oracle, and
+the PeTTa corpus all reproduce 1.5.0's output. A fuzz seed also surfaced an order-only interleaving
+difference between the conjunction router and its worst-case-optimal reference on shapes whose
+enumeration order MeTTa's semantics leaves unspecified; the solution multisets are identical, and
+the differential suite now asserts that criterion there and pins both witness shapes (70,000 fuzz
+cases across ten seeds pass, plus 27,500 for the reconciliation fix). The full workspace gate is
+green: 1,336 tests across 134 files plus the 23-file byte-identical oracle, typecheck, lint, and
+format, with the full suite repeated under fresh property seeds. The PeTTa corpus gate holds:
+MeTTaScript is faster than PeTTa on all 98 shared corpus examples both engines pass, median 1.49x,
+geomean 1.55x, no shared row slower than PeTTa, and no example changed pass status from 1.5.0
+(minimum of five runs each on SWI-Prolog 9.2.9, measured on the shipping engine). The documentation
+site builds. Both npm scopes install and resolve to one implementation, checked by a test asserting
+reference equality.
+
+## Packages
+
+All public packages use version `2.0.0`, under both scopes:
+
+```bash
+npm install @mettascript/core@2.0.0
+npm install -g @mettascript/node@2.0.0
+```
+
+The `@metta-ts` names publish the same version and re-export the `@mettascript` packages.
+
+# MeTTaScript 1.5.0
+
+MeTTaScript 1.5.0 is an engine release. Declarative queries over large fact bases route through new
 evaluation paths, each proven byte-identical to the reference path by a differential suite and on
-by default with no configuration. On DataScript's own browser-database workloads, MeTTa TS now
+by default with no configuration. On DataScript's own browser-database workloads, MeTTaScript now
 wins every declarative query at both tested sizes and distributions; the README carries the
 comparison table.
 
@@ -55,20 +147,20 @@ bridge, and peano rises to 5.19x. The full workspace gate is green: 940 core tes
 files, including the seven differential suites, the 23-file byte-identical oracle, typecheck,
 lint, and format.
 
-# MeTTa TS 1.4.0
+# MeTTaScript 1.4.0
 
-MeTTa TS 1.4.0 replaces the two command-line tools with one `metta` command and
+MeTTaScript 1.4.0 replaces the two command-line tools with one `metta` command and
 documents every package.
 
 ## The metta CLI
 
-`@metta-ts/node` now installs a single `metta` command with subcommands:
+`@mettascript/node` now installs a single `metta` command with subcommands:
 
 - `metta run <file.metta>` runs a program, and `metta <file.metta>` is shorthand for it.
 - `metta check <file.metta>` runs the static analyzer.
 - `metta debug (--file <p> | --source '<m>') <why|eval|run>` is the engine debugger.
 - `metta graph <file.metta> -o out.gif` renders the reduction as an animated GIF through
-  `@metta-ts/grapher`, which is loaded only when you use the command.
+  `@mettascript/grapher`, which is loaded only when you use the command.
 
 The earlier `metta-ts` and `metta-debug` commands stay as aliases, so existing scripts keep
 working. Note that the Python Hyperon package also installs a `metta` executable, so if both
@@ -76,12 +168,12 @@ are on your PATH they shadow each other; the `metta-ts` alias reaches this runne
 
 ## Documentation
 
-The API reference now covers all twelve packages, with new pages for `@metta-ts/py`,
-`@metta-ts/prolog`, `@metta-ts/libraries`, `@metta-ts/debug`, and the Distributed AtomSpace
+The API reference now covers all twelve packages, with new pages for `@mettascript/py`,
+`@mettascript/prolog`, `@mettascript/libraries`, `@mettascript/debug`, and the Distributed AtomSpace
 packages. The debugger and traces page moved out of the visual-editor section into a Tools
 section next to the CLI and MeTTaGrapher.
 
-The README and the repository description now open by saying what MeTTa TS is, a metagraph
+The README and the repository description now open by saying what MeTTaScript is, a metagraph
 rewriting database in pure TypeScript, instead of assuming you already know OpenCog Hyperon.
 
 ## Verification
@@ -91,9 +183,9 @@ runs 1228 tests plus the 23-file byte-identical oracle, and the documentation si
 no dead links. The `metta-ts` and `metta-debug` aliases are covered by tests asserting they
 stay byte-identical to `metta run` and `metta debug`.
 
-# MeTTa TS 1.3.1
+# MeTTaScript 1.3.1
 
-MeTTa TS 1.3.1 fixes the type checker's arity check for overloaded operations. An
+MeTTaScript 1.3.1 fixes the type checker's arity check for overloaded operations. An
 operation declared with several signatures is now accepted whenever a call matches
 any of them, not only the last-declared one.
 
@@ -122,45 +214,45 @@ MeTTa LSP surfaced on valid documentation.
 All public packages use version `1.3.1`:
 
 ```bash
-npm install @metta-ts/core@1.3.1
-npm install -g @metta-ts/node@1.3.1
+npm install @mettascript/core@1.3.1
+npm install -g @mettascript/node@1.3.1
 ```
 
-# MeTTa TS 1.3.0
+# MeTTaScript 1.3.0
 
-MeTTa TS 1.3.0 moves the standard libraries and the debugger engine out of the
+MeTTaScript 1.3.0 moves the standard libraries and the debugger engine out of the
 core into their own packages. The interpreter behaves exactly as in 1.2.0: the
 conformance oracle is byte-identical and every library returns the same results.
 This is a structural release, so there are no new language features.
 
-## `@metta-ts/libraries`
+## `@mettascript/libraries`
 
 The eight standard libraries (`vector`, `roman`, `combinatorics`, `patrick`,
-`datastructures`, `spaces`, `nars`, `pln`) moved out of `@metta-ts/core` into a
-new `@metta-ts/libraries` package, one folder and one `.metta` file per library,
+`datastructures`, `spaces`, `nars`, `pln`) moved out of `@mettascript/core` into a
+new `@mettascript/libraries` package, one folder and one `.metta` file per library,
 so the engine no longer ships library source it does not run.
 
-`@metta-ts/node`, `@metta-ts/hyperon`, and `@metta-ts/browser` depend on the new
+`@mettascript/node`, `@mettascript/hyperon`, and `@mettascript/browser` depend on the new
 package and register it when they load, so `(import! &self pln)` and the other
 library imports keep working with no change. The one behavior change is that bare
-`@metta-ts/core` no longer resolves the libraries on its own. A program run
+`@mettascript/core` no longer resolves the libraries on its own. A program run
 through `runProgram` from core alone registers them first:
 
 ```ts
-import { registerLibraries } from "@metta-ts/libraries";
+import { registerLibraries } from "@mettascript/libraries";
 registerLibraries();
 ```
 
 The libraries are ports of Patrick Hammer's PeTTa `lib/lib_*.metta` set, with
 `roman` from Roman Treutlein's PeTTa prelude; the extraction now credits them.
 
-## `@metta-ts/debug`
+## `@mettascript/debug`
 
-The `metta-debug` engine moved into a new `@metta-ts/debug` package. It holds the
+The `metta-debug` engine moved into a new `@mettascript/debug` package. It holds the
 execution-trace summary behind `why` and the `explainCall`, `collectTrace`, and
-`summarize` helpers, depends only on `@metta-ts/core`, and uses no Node APIs, so
+`summarize` helpers, depends only on `@mettascript/core`, and uses no Node APIs, so
 an editor or tool can drive it directly. The `metta-debug` command still ships in
-`@metta-ts/node` and works exactly as before, now a thin wrapper over the shared
+`@mettascript/node` and works exactly as before, now a thin wrapper over the shared
 engine.
 
 ## Verification
@@ -179,20 +271,20 @@ Checked on Linux with Node and pnpm.
 All public packages use version `1.3.0`:
 
 ```bash
-npm install @metta-ts/core@1.3.0
-npm install -g @metta-ts/node@1.3.0
+npm install @mettascript/core@1.3.0
+npm install -g @mettascript/node@1.3.0
 ```
 
 The standard libraries and the debugger engine are available on their own:
 
 ```bash
-npm install @metta-ts/libraries@1.3.0
-npm install @metta-ts/debug@1.3.0
+npm install @mettascript/libraries@1.3.0
+npm install @mettascript/debug@1.3.0
 ```
 
-# MeTTa TS 1.2.0
+# MeTTaScript 1.2.0
 
-MeTTa TS 1.2.0 adds eight importable standard libraries and makes the core list
+MeTTaScript 1.2.0 adds eight importable standard libraries and makes the core list
 operations run in linear time. Both changes keep the conformance oracle
 byte-identical: the libraries stay off the prelude, and the faster list
 operations return results equal to the prelude recursion up to variable renaming.
@@ -230,18 +322,18 @@ A five-run minimum-time subprocess benchmark against PeTTa on SWI-Prolog, at
 N=100000 and including process startup, with a one-clause user function per
 element:
 
-| Operation     |  PeTTa | MeTTa TS | Speedup |
-| ------------- | -----: | -------: | ------: |
-| `size-atom`   | 887 ms |   170 ms |   5.23x |
-| `map-atom`    | 999 ms |   348 ms |   2.87x |
-| `filter-atom` | 966 ms |   360 ms |   2.68x |
-| `foldl-atom`  | 999 ms |   346 ms |   2.89x |
+| Operation     |  PeTTa | MeTTaScript | Speedup |
+| ------------- | -----: | ----------: | ------: |
+| `size-atom`   | 887 ms |      170 ms |   5.23x |
+| `map-atom`    | 999 ms |      348 ms |   2.87x |
+| `filter-atom` | 966 ms |      360 ms |   2.68x |
+| `foldl-atom`  | 999 ms |      346 ms |   2.89x |
 
 ## Trace bus and metta-debug
 
 The core exposes an optional trace bus: pass a `trace` sink to a run and the
 evaluator reports its reduce, rule-selection, grounded-dispatch, and
-specialization decisions, with no cost when no sink is set. The `@metta-ts/node`
+specialization decisions, with no cost when no sink is set. The `@mettascript/node`
 package adds a `metta-debug` command that runs a call under that sink and prints
 those decisions, so a depth or dispatch question is a one-command diagnosis.
 
@@ -266,20 +358,20 @@ Checked on Linux with Node and pnpm.
 All public packages use version `1.2.0`:
 
 ```bash
-npm install @metta-ts/core@1.2.0
-npm install -g @metta-ts/node@1.2.0
+npm install @mettascript/core@1.2.0
+npm install -g @mettascript/node@1.2.0
 ```
 
 Optional host packages use the same version:
 
 ```bash
-npm install @metta-ts/py@1.2.0 pythonia
-npm install @metta-ts/prolog@1.2.0
+npm install @mettascript/py@1.2.0 pythonia
+npm install @mettascript/prolog@1.2.0
 ```
 
-# MeTTa TS 1.1.7
+# MeTTaScript 1.1.7
 
-MeTTa TS 1.1.7 fixes a unification soundness bug in grounded substitution.
+MeTTaScript 1.1.7 fixes a unification soundness bug in grounded substitution.
 
 ## Substitution resolves to a fixpoint
 
@@ -312,13 +404,13 @@ in constant time with bounded memory.
 All public packages use version `1.1.7`:
 
 ```bash
-npm install @metta-ts/core@1.1.7
-npm install -g @metta-ts/node@1.1.7
+npm install @mettascript/core@1.1.7
+npm install -g @mettascript/node@1.1.7
 ```
 
-# MeTTa TS 1.1.6
+# MeTTaScript 1.1.6
 
-MeTTa TS 1.1.6 reduces the cold and loaded cost of compiled nondeterministic
+MeTTaScript 1.1.6 reduces the cold and loaded cost of compiled nondeterministic
 proof search. It also adds Hyperon-style structural inequality to the core and
 TypeScript EDSL.
 
@@ -360,20 +452,20 @@ The cold `jarr` comparison was also repeated on three Node majors:
 
 The clean 15-run subprocess comparison on an AMD Ryzen 9 9950X used PeTTa
 `6f5639a` on SWI-Prolog 9.2.9. Times include process startup and use the normal
-MeTTa TS evaluator:
+MeTTaScript evaluator:
 
-| Program      |     PeTTa | MeTTa TS | Speedup |
-| ------------ | --------: | -------: | ------: |
-| BFC `jarr`   |  136.5 ms | 113.6 ms |   1.20x |
-| BFC `loowoz` | 2466.3 ms | 743.6 ms |   3.32x |
+| Program      |     PeTTa | MeTTaScript | Speedup |
+| ------------ | --------: | ----------: | ------: |
+| BFC `jarr`   |  136.5 ms |    113.6 ms |   1.20x |
+| BFC `loowoz` | 2466.3 ms |    743.6 ms |   3.32x |
 
-Maximum sampled MeTTa TS process-tree RSS was 91.4 MiB for `jarr` and 100.0
+Maximum sampled MeTTaScript process-tree RSS was 91.4 MiB for `jarr` and 100.0
 MiB for `loowoz`. The benchmark validates both `jarr` proofs and all three
 `loowoz` proofs in exact order.
 
 ## Inequality
 
-MeTTa TS now provides `!=` as a core grounded operation. It is the Boolean
+MeTTaScript now provides `!=` as a core grounded operation. It is the Boolean
 complement of Hyperon's structural `==` for non-error operands, including
 integer/float promotion and NaN behavior. Both operators use the same
 `(-> $t $t Bool)` type, arity checks, argument evaluation, and error
@@ -401,20 +493,20 @@ The release candidate was checked on Linux with Node 22 and pnpm 11.
 All public packages use version `1.1.6`:
 
 ```bash
-npm install @metta-ts/core@1.1.6
-npm install -g @metta-ts/node@1.1.6
+npm install @mettascript/core@1.1.6
+npm install -g @mettascript/node@1.1.6
 ```
 
 Optional host packages use the same version:
 
 ```bash
-npm install @metta-ts/py@1.1.6 pythonia
-npm install @metta-ts/prolog@1.1.6
+npm install @mettascript/py@1.1.6 pythonia
+npm install @mettascript/prolog@1.1.6
 ```
 
-# MeTTa TS 1.1.5
+# MeTTaScript 1.1.5
 
-MeTTa TS 1.1.5 adds a programmatic reduction-GIF API for plain Node.js. It
+MeTTaScript 1.1.5 adds a programmatic reduction-GIF API for plain Node.js. It
 uses the same MeTTa reduction trace and SVG frame builders as MeTTaGrapher in
 the browser, then rasterizes those frames with Sharp and encodes them with
 `gifenc`.
@@ -442,12 +534,12 @@ every proof in order. Fifteen-run subprocess medians on an AMD Ryzen 9 9950X,
 including startup, were measured with Node 22.22.1 and PeTTa `6b7f52f` on
 SWI-Prolog 9.3.33:
 
-| Program      |     PeTTa | MeTTa TS | Speedup |
-| ------------ | --------: | -------: | ------: |
-| BFC `jarr`   |  134.6 ms | 125.6 ms |   1.07x |
-| BFC `loowoz` | 2441.2 ms | 872.8 ms |   2.80x |
+| Program      |     PeTTa | MeTTaScript | Speedup |
+| ------------ | --------: | ----------: | ------: |
+| BFC `jarr`   |  134.6 ms |    125.6 ms |   1.07x |
+| BFC `loowoz` | 2441.2 ms |    872.8 ms |   2.80x |
 
-Maximum sampled MeTTa TS process-tree RSS was 86.5 MiB for `jarr` and 108.9
+Maximum sampled MeTTaScript process-tree RSS was 86.5 MiB for `jarr` and 108.9
 MiB for `loowoz`. The previous `loowoz` interpreter and table path exceeded
 2.6 GiB without finishing a 60-second diagnostic run.
 
@@ -467,15 +559,15 @@ unchanged.
 Install the grapher and its optional Node rendering packages:
 
 ```bash
-npm install @metta-ts/grapher@1.1.5 sharp gifenc
+npm install @mettascript/grapher@1.1.5 sharp gifenc
 ```
 
-Call the new `@metta-ts/grapher/node` entry point without mounting an editor or
+Call the new `@mettascript/grapher/node` entry point without mounting an editor or
 creating a DOM:
 
 ```js
 import { writeFile } from "node:fs/promises";
-import { renderReductionGif } from "@metta-ts/grapher/node";
+import { renderReductionGif } from "@mettascript/grapher/node";
 
 const gif = await renderReductionGif("(+ 10 (* 25 2))", {
   view: "blocks",
@@ -569,15 +661,15 @@ The release was checked on Linux with Node 22 and pnpm 11.
 All public packages use version `1.1.5`:
 
 ```bash
-npm install @metta-ts/core@1.1.5
-npm install -g @metta-ts/node@1.1.5
+npm install @mettascript/core@1.1.5
+npm install -g @mettascript/node@1.1.5
 ```
 
 Optional host packages use the same version:
 
 ```bash
-npm install @metta-ts/py@1.1.5 pythonia
-npm install @metta-ts/prolog@1.1.5
+npm install @mettascript/py@1.1.5 pythonia
+npm install @mettascript/prolog@1.1.5
 ```
 
 ## Provenance

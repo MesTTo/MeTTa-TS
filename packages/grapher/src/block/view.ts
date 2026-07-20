@@ -10,7 +10,7 @@
 // reduces a term one step in place, with a history so you can step back. In read-only mode it just frames
 // the atoms it is given, which is how the facade drives a step-through playthrough through this view.
 
-import { S, type Atom, type MeTTa } from "@metta-ts/hyperon";
+import { S, type Atom, type MeTTa } from "@mettascript/hyperon";
 import { parseLeaf } from "../parse";
 import { makeSettings, SITE_PALETTE, type BlockSettings, type BlockPalette } from "./settings";
 import { placeProgram, type BlockBox } from "./layout";

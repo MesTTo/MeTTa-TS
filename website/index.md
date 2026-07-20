@@ -4,36 +4,36 @@
 layout: home
 
 hero:
-  name: MeTTa
-  text: MeTTa, in pure TypeScript
-  tagline: A faithful implementation of the OpenCog Hyperon language that runs in the browser, Node, Deno, Bun, edge functions, and TypeScript AI agents. No native addons, no required WASM.
+  name: MeTTaScript
+  text: A metagraph rewriting database in TypeScript
+  tagline: Store facts in a space, query them by pattern, and compute with rewrite rules. A pure-TypeScript library for the browser, Node, Deno, Bun, and edge. No native addons, no MeTTa knowledge required.
   image:
     src: /search.gif
-    alt: MeTTaGrapher playing a generate-and-test search, where candidate selections fan out, are tested, and prune to the answers
+    alt: A generate-and-test search played as a graph, where candidate answers fan out, are tested, and prune to the results
   actions:
     - theme: brand
       text: Get started
       link: /guide/getting-started
     - theme: alt
-      text: Learn MeTTa
-      link: /learn/evaluation/main-concepts
+      text: Use cases
+      link: /guide/use-cases
     - theme: alt
       text: GitHub
-      link: https://github.com/MesTTo/MeTTa-TS
+      link: https://github.com/MesTTo/MeTTaScript
 
 features:
-  - title: Run it anywhere
-    details: One core ESM bundle, ~23 KB gzipped. No native addon, no required WASM, no Rust. Import it in a web page, a serverless handler, or an agent loop and go.
-  - title: Faithful semantics
-    details: A port of hyperon-experimental's minimal interpreter, validated 270/270 against Hyperon's oracle corpus and cross-checked against the Lean-verified LeaTTa semantics.
+  - title: Use it from TypeScript
+    details: Store facts, query by pattern, and write rules with a typed eDSL, entirely in TypeScript. Query keys, arguments, and results cross the boundary as ordinary values. You never have to learn a new language.
+  - title: A more powerful data model
+    details: A metagraph, not a table. Atoms nest, so a fact can be about another fact, and rules and types live in the same space as the data. One pattern-matching mechanism both queries and computes.
+  - title: Faster than DataScript
+    details: On DataScript's own declarative workloads MeTTaScript wins every query at 120k records, up to 1349x, while building faster and holding less heap. See the use-cases page for the full comparison.
+  - title: Runs anywhere
+    details: One core ESM bundle, about 23 KB gzipped. No native addon, no required WASM, no Rust. Import it in a web page, a serverless handler, or an agent loop and go.
   - title: TypeScript-native interop
-    details: Call your TypeScript functions from MeTTa, drop TypeScript objects straight into the atomspace as grounded atoms, and write rules with a typed eDSL. No FFI, same language end to end.
-  - title: Optional host runtimes
-    details: Opt into Python or Prolog only when you need them. Node adapters use pythonia and SWI-Prolog; browser adapters use Pyodide and SWI-WASM through the same host-import contract.
-  - title: Async and concurrent
-    details: Grounded operations can do I/O and the evaluator awaits them. Concurrency primitives (par, race, once, with-mutex) and transactions build on top.
-  - title: Scales to millions of atoms
-    details: Prolog-style clause indexing keys queries by functor and every ground argument, plus a flat interned KB with a worker-thread parallel matcher.
-  - title: A typed eDSL
-    details: Write MeTTa in idiomatic TypeScript with typed term builders and a tagged template. Optional helper subpaths build Python and Prolog interop calls without loading those runtimes.
+    details: Call your own TypeScript functions from inside rules, drop TypeScript objects straight into the space, and await real I/O. No FFI, same language end to end.
+  - title: Immutable and concurrent
+    details: Keep immutable snapshots you can branch and roll back. Grounded operations can do I/O, and concurrency primitives (par, race, once, with-mutex) and transactions build on top.
+  - title: Part of the MeTTa ecosystem, if you want it
+    details: MeTTaScript implements MeTTa, the language from OpenCog Hyperon, and is validated 270/270 against Hyperon's oracle and the Lean-verified LeaTTa semantics. Use it as a plain library and never think about any of that.
 ---

@@ -1,11 +1,11 @@
-# @metta-ts/das-client
+# @mettascript/das-client
 
-A client for SingularityNET's Distributed AtomSpace (DAS). It lets a MeTTa TS program query a remote, shared atomspace over gRPC, and it presents that DAS as a `Space` backend, so a DAS drops in wherever an in-memory space would. It is Node-only, because a participant hosts an inbound bus node; from the browser you reach a DAS through [`@metta-ts/das-gateway`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/das-gateway).
+A client for SingularityNET's Distributed AtomSpace (DAS). It lets a MeTTaScript program query a remote, shared atomspace over gRPC, and it presents that DAS as a `Space` backend, so a DAS drops in wherever an in-memory space would. It is Node-only, because a participant hosts an inbound bus node; from the browser you reach a DAS through [`@mettascript/das-gateway`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/das-gateway).
 
 ## Install
 
 ```bash
-npm install @metta-ts/das-client
+npm install @mettascript/das-client
 ```
 
 ## Querying a DAS
@@ -13,8 +13,8 @@ npm install @metta-ts/das-client
 A DAS query is a network round-trip, so it is asynchronous. `DasLiveSpace` is the async analogue of an in-memory space, and `matchAsync` is the async analogue of `(match space pattern template)`: it queries the space and instantiates a template under each binding.
 
 ```ts
-import { DasLiveSpace, matchAsync } from "@metta-ts/das-client";
-import { sym, expr, variable } from "@metta-ts/core";
+import { DasLiveSpace, matchAsync } from "@mettascript/das-client";
+import { sym, expr, variable } from "@mettascript/core";
 
 const A = (...xs) => expr(xs);
 const space = new DasLiveSpace(/* connection */);
@@ -69,4 +69,4 @@ Atom-handle hashing (`handle.ts`) is a port of `hyperon_das/hasher.py` and produ
 
 ## Version matching
 
-The released `1.0.0` Query Agent serves the `dasproto.AtomSpaceNode` service. A later `das-proto` renamed it to `DistributedAlgorithmNode`, and calling the new contract against the old agent returns gRPC `UNIMPLEMENTED`. The client carries both generated contracts, and the live path uses the one the running agent serves. Regenerate the stubs with `pnpm --filter @metta-ts/das-client gen` (needs `protoc`).
+The released `1.0.0` Query Agent serves the `dasproto.AtomSpaceNode` service. A later `das-proto` renamed it to `DistributedAlgorithmNode`, and calling the new contract against the old agent returns gRPC `UNIMPLEMENTED`. The client carries both generated contracts, and the live path uses the one the running agent serves. Regenerate the stubs with `pnpm --filter @mettascript/das-client gen` (needs `protoc`).

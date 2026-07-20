@@ -16,7 +16,7 @@ function version(): string {
   return (require("../package.json") as { version: string }).version;
 }
 
-const HELP = `metta — MeTTa TS command-line interface
+const HELP = `metta — MeTTaScript command-line interface
 
 usage:
   metta <file.metta> [options]         run a program (shorthand for "metta run")

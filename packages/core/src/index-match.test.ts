@@ -89,7 +89,7 @@ describe("ground-fact index fast path — correctness vs a scan", () => {
   // Hyperon's open issues 1079 / 1076: Space::visit can undercount atoms that share a head symbol. A
   // variable query over same-head atoms (one of them a duplicate) must return EVERY match with the right
   // multiplicity. LeaTTa proves first-argument indexing sound (no firing rule dropped) and its binary
-  // returns 1 2 3 1 here; MeTTa-TS must match.
+  // returns 1 2 3 1 here; MeTTaScript must match.
   it("same-head variable query keeps every match incl. a duplicate (Hyperon 1079/1076)", () => {
     const src = `
       !(add-atom &self (foo 1))

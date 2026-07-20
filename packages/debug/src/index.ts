@@ -8,9 +8,9 @@ import {
   type QueryResult,
   type RunOptions,
   type TraceEvent,
-} from "@metta-ts/core";
+} from "@mettascript/core";
 
-export type { TraceEvent } from "@metta-ts/core";
+export type { TraceEvent } from "@mettascript/core";
 
 export interface TraceSummary {
   readonly grounded: Record<string, number>;

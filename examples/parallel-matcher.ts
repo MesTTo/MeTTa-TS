@@ -8,8 +8,8 @@
 // that).
 //
 // Run it (after `pnpm build`): npx tsx examples/parallel-matcher.ts
-import { FlatKB, sym, expr, gint, variable, format, type Atom } from "@metta-ts/core";
-import { ParallelFlatMatcher } from "@metta-ts/node";
+import { FlatKB, sym, expr, gint, variable, format, type Atom } from "@mettascript/core";
+import { ParallelFlatMatcher } from "@mettascript/node";
 
 const A = (...items: Atom[]): Atom => expr(items);
 

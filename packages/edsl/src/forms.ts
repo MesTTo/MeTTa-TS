@@ -7,7 +7,7 @@
 // `empty`, `unify`, arithmetic/comparison/boolean grounded ops, or list ops. Special forms are
 // capitalized (`If`/`Let`/`Match`/…) because they are forms, not data, and to dodge JS reserved words;
 // grounded ops stay lowercase (`add`/`gt`/…) to read as ordinary function calls.
-import { E, S, type ExpressionAtom } from "@metta-ts/hyperon";
+import { E, S, type ExpressionAtom } from "@mettascript/hyperon";
 import { ground, type Term } from "./term";
 
 /** A rewrite rule `(= head body)`. Define several with the same head for nondeterministic results. */
@@ -46,6 +46,12 @@ export const LetStar = (
 /** `(match space pattern template)`. Defaults to `&self`, the program's own space. */
 export const Match = (pattern: Term, template: Term, space: Term = S("&self")): ExpressionAtom =>
   E(S("match"), ground(space), ground(pattern), ground(template));
+
+/** A conjunctive match pattern `(, p1 p2 ...)`: every pattern must match together, joined on the
+ *  variables they share. Use it as the pattern of a `Match` for a relational rule body,
+ *  `Match(All(edge($x, $y), reach($y, $z)), $z)`, or pass an array of patterns straight to
+ *  {@link MettaDB.query} for a join query. */
+export const All = (...patterns: Term[]): ExpressionAtom => E(S(","), ...patterns.map(ground));
 
 /** `(superpose (a b ...))`: a nondeterministic choice among the items. */
 export const Superpose = (...items: Term[]): ExpressionAtom =>

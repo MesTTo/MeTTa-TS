@@ -26,7 +26,7 @@ import {
   GroundedAtom,
   S,
   E,
-} from "@metta-ts/hyperon";
+} from "@mettascript/hyperon";
 import { Graph, type GraphNode } from "./model";
 import { parseLeaf } from "./parse";
 import { layout } from "./layout";

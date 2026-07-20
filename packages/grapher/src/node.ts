@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { ExpressionAtom, MeTTa, type Atom } from "@metta-ts/hyperon";
+import { ExpressionAtom, MeTTa, type Atom } from "@mettascript/hyperon";
 import type { GifEncoderLib, GifOptions } from "./block/gif";
 import { parseProgram } from "./parse";
 import { reduceTrace } from "./reduce";
@@ -121,7 +121,7 @@ async function loadGifEncoder(): Promise<GifEncoderLib> {
     return lib;
   } catch (error) {
     throw new Error(
-      "@metta-ts/grapher/node requires gifenc; install it with `npm install gifenc sharp`",
+      "@mettascript/grapher/node requires gifenc; install it with `npm install gifenc sharp`",
       { cause: error },
     );
   }
@@ -133,7 +133,7 @@ async function sharpRasterizer(): Promise<SvgRasterizer> {
     sharp = (await import("sharp")).default;
   } catch (error) {
     throw new Error(
-      "@metta-ts/grapher/node requires sharp; install it with `npm install sharp gifenc`",
+      "@mettascript/grapher/node requires sharp; install it with `npm install sharp gifenc`",
       { cause: error },
     );
   }

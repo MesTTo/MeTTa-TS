@@ -6,7 +6,7 @@
 //   pnpm --filter @metta-ts/examples grapher-gif
 
 import { writeFile } from "node:fs/promises";
-import { renderReductionGif } from "@metta-ts/grapher/node";
+import { renderReductionGif } from "@mettascript/grapher/node";
 
 const source = `
 (= (fact $n)

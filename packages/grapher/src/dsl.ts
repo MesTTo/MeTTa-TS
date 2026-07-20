@@ -14,7 +14,7 @@
 //     .blocks()
 //     .play();
 
-import { type Atom } from "@metta-ts/hyperon";
+import { type Atom } from "@mettascript/hyperon";
 import { MeTTaGrapher, type GrapherOptions } from "./editor";
 import { SITE_PALETTE, TEAL_PALETTE, type BlockPalette } from "./block/settings";
 import { type GifEncoderLib, type GifOptions } from "./block/gif";

@@ -1,13 +1,13 @@
-# @metta-ts/node
+# @mettascript/node
 
-Node.js entry for [MeTTa TS](https://github.com/MesTTo/MeTTa-TS): the `metta` command-line interface, file-based `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher. Re-exports everything from [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core).
+Node.js entry for [MeTTaScript](https://github.com/MesTTo/MeTTaScript): the `metta` command-line interface, file-based `import!`, and a `SharedArrayBuffer` worker-thread parallel matcher. Re-exports everything from [`@mettascript/core`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/core).
 
 ## Install
 
 ```bash
-npm install @metta-ts/node
+npm install @mettascript/node
 # for the CLI on your PATH:
-npm install -g @metta-ts/node
+npm install -g @mettascript/node
 ```
 
 ## CLI
@@ -22,7 +22,7 @@ metta graph program.metta -o out.gif            # render the reduction as an ani
 metta --version
 ```
 
-Without a global install: `npx -p @metta-ts/node metta run program.metta`.
+Without a global install: `npx -p @mettascript/node metta run program.metta`.
 
 Host runtimes are explicit and lazy:
 
@@ -32,8 +32,8 @@ metta run --prolog program.metta   # Prolog through a local swipl executable
 ```
 
 Without those flags the CLI never loads Python, Prolog, or their optional
-dependencies. `metta graph` similarly loads [`@metta-ts/grapher`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/grapher)
-and its renderers only when invoked; install them with `npm install @metta-ts/grapher gifenc sharp`.
+dependencies. `metta graph` similarly loads [`@mettascript/grapher`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/grapher)
+and its renderers only when invoked; install them with `npm install @mettascript/grapher gifenc sharp`.
 
 The earlier `metta-ts` (run) and `metta-debug` (debug) commands remain as aliases,
 so existing scripts keep working.
@@ -41,7 +41,7 @@ so existing scripts keep working.
 ## Usage
 
 ```ts
-import { runFile, ParallelFlatMatcher } from "@metta-ts/node";
+import { runFile, ParallelFlatMatcher } from "@mettascript/node";
 
 // Run a .metta file (resolves import! against the file system).
 for (const { query, results } of runFile("program.metta")) {
@@ -53,4 +53,4 @@ for (const { query, results } of runFile("program.metta")) {
 
 ## License
 
-[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTaScript/blob/main/LICENSE).

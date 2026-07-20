@@ -6,7 +6,7 @@
 // it for bindings, and evaluate constructed atoms. Modeled on Python's `hyperon`, TypeScript-native.
 //
 // Run it (after `pnpm build`): npx tsx examples/hyperon-api.ts
-import { MeTTa, S, V, E, ValueAtom } from "@metta-ts/hyperon";
+import { MeTTa, S, V, E, ValueAtom } from "@mettascript/hyperon";
 
 const m = new MeTTa();
 

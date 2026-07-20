@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: MIT
 
-import * as core from "@metta-ts/core";
-import { emptyExpr, type Atom as CoreAtom } from "@metta-ts/core";
-import { type HostInterop, type HostTextLoader } from "@metta-ts/core/host";
-import { Atom, E, ExpressionAtom, S, ValueAtom, VariableAtom } from "@metta-ts/hyperon";
+import * as core from "@mettascript/core";
+import { emptyExpr, type Atom as CoreAtom } from "@mettascript/core";
+import { type HostInterop, type HostTextLoader } from "@mettascript/core/host";
+import { Atom, E, ExpressionAtom, S, ValueAtom, VariableAtom } from "@mettascript/hyperon";
 import defaultLoadSwipl from "swipl-wasm";
 import {
   PROLOG_METTA_SRC,

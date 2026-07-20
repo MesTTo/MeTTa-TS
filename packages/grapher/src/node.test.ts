@@ -5,7 +5,7 @@
 import sharp from "sharp";
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
-import { MeTTa } from "@metta-ts/hyperon";
+import { MeTTa } from "@mettascript/hyperon";
 import { parseProgram } from "./parse";
 import { reduceTrace } from "./reduce";
 import { blockReductionSvgs } from "./sidebyside-gif";

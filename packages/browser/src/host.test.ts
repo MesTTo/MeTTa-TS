@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { emptyExpr, format, type HostInterop, type ReduceResult } from "@metta-ts/core";
+import { emptyExpr, format, type HostInterop, type ReduceResult } from "@mettascript/core";
 import { createBrowserRunner, createBrowserTextLoader } from "./host";
 
 const okUnit: ReduceResult = { tag: "ok", results: [emptyExpr] };

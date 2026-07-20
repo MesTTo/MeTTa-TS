@@ -1,17 +1,17 @@
-# @metta-ts/browser
+# @mettascript/browser
 
-Browser entry for [MeTTa TS](https://github.com/MesTTo/MeTTa-TS). Re-exports everything from [`@metta-ts/core`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/core) and adds an in-memory virtual file system so `import!` works without disk access.
+Browser entry for [MeTTaScript](https://github.com/MesTTo/MeTTaScript). Re-exports everything from [`@mettascript/core`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/core) and adds an in-memory virtual file system so `import!` works without disk access.
 
 ## Install
 
 ```bash
-npm install @metta-ts/browser
+npm install @mettascript/browser
 ```
 
 ## Usage
 
 ```ts
-import { run, runSourceAsync } from "@metta-ts/browser";
+import { run, runSourceAsync } from "@mettascript/browser";
 
 // A virtual file system: module name -> MeTTa source.
 const files = new Map([["math", "(= (double $x) (* 2 $x))"]]);
@@ -27,10 +27,10 @@ const results = run(
 
 `run(src, files?, fuel?)` evaluates a program, resolving `import!` against the in-memory files. The whole interpreter is pure TypeScript, so it runs in any browser with no native addon and no required WASM.
 
-For embedders that already resolved imports, `@metta-ts/browser/source` exposes source runners:
+For embedders that already resolved imports, `@mettascript/browser/source` exposes source runners:
 
 ```ts
-import { runSourceAsync } from "@metta-ts/browser/source";
+import { runSourceAsync } from "@mettascript/browser/source";
 
 const results = await runSourceAsync(`
   !(import! &self concurrency)
@@ -43,14 +43,14 @@ The async runner supports MeTTa's async forms (`par`, `race`, `with-mutex`) and 
 
 ## Host Interop
 
-`@metta-ts/browser/host` composes optional host runtimes such as Pyodide and
+`@mettascript/browser/host` composes optional host runtimes such as Pyodide and
 SWI-Prolog WASM. The base browser package stays pure TypeScript. Import a host
 adapter only when the page needs it.
 
 ```ts
-import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
-import { createPyodideInterop } from "@metta-ts/py/pyodide";
-import { createSwiWasmInterop } from "@metta-ts/prolog/swi-wasm";
+import { createBrowserRunner, createBrowserTextLoader } from "@mettascript/browser/host";
+import { createPyodideInterop } from "@mettascript/py/pyodide";
+import { createSwiWasmInterop } from "@mettascript/prolog/swi-wasm";
 
 const files = new Map([
   ["math.py", "def add(a, b):\n    return a + b\n"],
@@ -76,4 +76,4 @@ check.
 
 ## License
 
-[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTaScript/blob/main/LICENSE).

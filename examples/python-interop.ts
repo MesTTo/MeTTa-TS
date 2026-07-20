@@ -7,9 +7,9 @@
 // (a call crosses a process boundary), so you run with `runAsync` and pass in a bridge yourself.
 //
 // Run it (after `pnpm build`, and with python3 on your PATH): npx tsx examples/python-interop.ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPyInterop } from "@metta-ts/py";
-import { pythoniaBridge } from "@metta-ts/py/pythonia";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPyInterop } from "@mettascript/py";
+import { pythoniaBridge } from "@mettascript/py/pythonia";
 import { python } from "pythonia";
 
 const m = new MeTTa();

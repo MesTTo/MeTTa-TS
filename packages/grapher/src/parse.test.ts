@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { SymbolAtom, VariableAtom, ExpressionAtom, GroundedAtom } from "@metta-ts/hyperon";
+import { SymbolAtom, VariableAtom, ExpressionAtom, GroundedAtom } from "@mettascript/hyperon";
 import { parseProgram, parseLeaf } from "./parse";
 
 describe("parse", () => {

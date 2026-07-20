@@ -5,14 +5,14 @@ SPDX-License-Identifier: MIT
 
 # Concurrency and transactions
 
-Once grounded operations can do [asynchronous I/O](/typescript/async), you can compose them concurrently. MeTTa TS adds a small set of TypeScript-native concurrency primitives and a transaction form. They are opt-in: bring them in with `(import! &self concurrency)`.
+Once grounded operations can do [asynchronous I/O](/typescript/async), you can compose them concurrently. MeTTaScript adds a small set of TypeScript-native concurrency primitives and a transaction form. They are opt-in: bring them in with `(import! &self concurrency)`.
 
 ## par: run branches concurrently
 
 `par` evaluates its branches concurrently and unions their results. With async operations, the whole thing takes about as long as the slowest branch, not the sum. Here `aw n` is an async operation that resolves to `n` after an `n`-millisecond delay:
 
 ```ts
-import { runProgramAsync, format, gint, type AsyncGroundFn } from "@metta-ts/core";
+import { runProgramAsync, format, gint, type AsyncGroundFn } from "@mettascript/core";
 
 const aw: AsyncGroundFn = async (args) => {
   const a = args[0]!;
@@ -21,10 +21,7 @@ const aw: AsyncGroundFn = async (args) => {
   return { tag: "ok", results: [gint(n)] };
 };
 
-const out = await runProgramAsync(
-  "!(collapse (par (aw 3) (aw 4) (aw 2)))",
-  new Map([["aw", aw]]),
-);
+const out = await runProgramAsync("!(collapse (par (aw 3) (aw 4) (aw 2)))", new Map([["aw", aw]]));
 console.log(out.at(-1)!.results.map(format)); // [ '(, 3 4 2)' ]
 ```
 
@@ -43,7 +40,7 @@ await runProgramAsync("!(race (aw 40) (aw 3))", new Map([["aw", aw]]));
 
 ## hyperpose: parallel branches across CPU cores
 
-`par` and `race` overlap *asynchronous* work on a single thread; they cannot speed up pure CPU work, because a branch that compiles to a tight native loop runs to completion without ever yielding. `hyperpose` covers that case. On its own, `(hyperpose (b1 b2 …))` behaves like `superpose`, yielding each branch as a nondeterministic result. But `(once (hyperpose …))` is special: on Node it evaluates the branches in parallel worker threads and returns the first to finish.
+`par` and `race` overlap _asynchronous_ work on a single thread; they cannot speed up pure CPU work, because a branch that compiles to a tight native loop runs to completion without ever yielding. `hyperpose` covers that case. On its own, `(hyperpose (b1 b2 …))` behaves like `superpose`, yielding each branch as a nondeterministic result. But `(once (hyperpose …))` is special: on Node it evaluates the branches in parallel worker threads and returns the first to finish.
 
 That is exactly what you want when the branches are CPU-bound and you only need one answer. Suppose you are checking several large numbers for primality and only one of them is cheap:
 

@@ -5,7 +5,7 @@
 // @metta-ts/node: Node adapters for file-backed import! and program runs.
 import { readFileSync } from "node:fs";
 import { resolve, dirname } from "node:path";
-import { type QueryResult, type RunOptions } from "@metta-ts/core";
+import { type QueryResult, type RunOptions } from "@mettascript/core";
 import { runSource, runSourceAllDirectives } from "./source";
 import { readImports } from "./file-imports";
 
@@ -30,7 +30,7 @@ export function runFileAllDirectives(
   return runSourceAllDirectives(src, fuel, readImports(src, fileDir, dirname(fileDir)), opts);
 }
 
-export * from "@metta-ts/core";
+export * from "@mettascript/core";
 export {
   runSource,
   runSourceAllDirectives,

@@ -1,6 +1,6 @@
 {
-  "name": "@metta-ts/node",
-  "version": "1.5.0",
+  "name": "@mettascript/node",
+  "version": "2.0.0",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -28,11 +28,11 @@
     "build": "tsup src/index.ts src/cli.ts src/debug-cli.ts src/metta-cli.ts src/source.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@metta-ts/core": "workspace:*",
-    "@metta-ts/debug": "workspace:*",
-    "@metta-ts/libraries": "workspace:*",
-    "@metta-ts/prolog": "workspace:*",
-    "@metta-ts/py": "workspace:*"
+    "@mettascript/core": "workspace:*",
+    "@mettascript/debug": "workspace:*",
+    "@mettascript/libraries": "workspace:*",
+    "@mettascript/prolog": "workspace:*",
+    "@mettascript/py": "workspace:*"
   },
   "author": "MesTTo",
   "engines": {
@@ -43,7 +43,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "Node.js entry for MeTTa TS: the metta-ts CLI, file import!, optional Python/Prolog interop, and a worker-thread parallel matcher.",
+  "description": "Node.js entry for MeTTaScript: the metta-ts CLI, file import!, optional Python/Prolog interop, and a worker-thread parallel matcher.",
   "keywords": [
     "metta",
     "hyperon",
@@ -53,24 +53,24 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MesTTo/MeTTa-TS.git",
+    "url": "git+https://github.com/MesTTo/MeTTaScript.git",
     "directory": "packages/node"
   },
-  "homepage": "https://github.com/MesTTo/MeTTa-TS#readme",
+  "homepage": "https://github.com/MesTTo/MeTTaScript#readme",
   "bugs": {
-    "url": "https://github.com/MesTTo/MeTTa-TS/issues"
+    "url": "https://github.com/MesTTo/MeTTaScript/issues"
   },
   "devDependencies": {
-    "@metta-ts/grapher": "workspace:*",
+    "@mettascript/grapher": "workspace:*",
     "pythonia": "^1.2.6",
     "ws": "^7.5.10"
   },
   "peerDependencies": {
-    "@metta-ts/grapher": "workspace:^",
+    "@mettascript/grapher": "workspace:^",
     "pythonia": "^1.2.6"
   },
   "peerDependenciesMeta": {
-    "@metta-ts/grapher": {
+    "@mettascript/grapher": {
       "optional": true
     },
     "pythonia": {

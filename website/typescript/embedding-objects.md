@@ -12,13 +12,14 @@ In the Python bindings you reach for `py-atom` to put a Python object into the a
 `ValueAtom` wraps any TypeScript value as a grounded atom. Primitives become MeTTa primitives; anything else (an object, a `Map`, a class instance) rides as an opaque grounded value:
 
 ```ts
-import { MeTTa, S, E, ValueAtom, type GroundedAtom, type Atom } from "@metta-ts/hyperon";
+import { MeTTa, S, E, ValueAtom, type GroundedAtom, type Atom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 const account = { owner: "Tom", balance: 100 }; // a plain TS object
 
-metta.registerOperation("balance-of", (args: Atom[]) =>
-  [ValueAtom((args[0] as GroundedAtom).jsValue<{ balance: number }>().balance)]);
+metta.registerOperation("balance-of", (args: Atom[]) => [
+  ValueAtom((args[0] as GroundedAtom).jsValue<{ balance: number }>().balance),
+]);
 
 // pass the object straight into a query
 const accAtom = ValueAtom(account);
@@ -32,7 +33,7 @@ console.log(metta.evaluateAtom(E(S("balance-of"), accAtom)).map(String)); // [ '
 A grounded object is an atom like any other, so it can live in the space and be retrieved by a query:
 
 ```ts
-import { MeTTa, S, E, V, ValueAtom, type GroundedAtom } from "@metta-ts/hyperon";
+import { MeTTa, S, E, V, ValueAtom, type GroundedAtom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 metta.space().addAtom(E(S("account"), S("tom"), ValueAtom({ owner: "Tom", balance: 100 })));
@@ -44,14 +45,19 @@ console.log(obj.balance); // 100
 
 ## Custom unification
 
-An embedded object is opaque to the matcher by default: it unifies by equality, not by its fields. If you want the engine to match *into* a TypeScript type, subclass `MatchableObject` and override `match_`. The core matcher will call it. For example, a `Range` that matches any integer within its bounds:
+An embedded object is opaque to the matcher by default: it unifies by equality, not by its fields. If you want the engine to match _into_ a TypeScript type, subclass `MatchableObject` and override `match_`. The core matcher will call it. For example, a `Range` that matches any integer within its bounds:
 
 ```ts
-import { G, MatchableObject, type Atom, type GroundedAtom } from "@metta-ts/hyperon";
-import { gint, matchAtoms } from "@metta-ts/core";
+import { G, MatchableObject, type Atom, type GroundedAtom } from "@mettascript/hyperon";
+import { gint, matchAtoms } from "@mettascript/core";
 
 class Range extends MatchableObject {
-  constructor(readonly lo: number, readonly hi: number) { super({ lo, hi }); }
+  constructor(
+    readonly lo: number,
+    readonly hi: number,
+  ) {
+    super({ lo, hi });
+  }
   override match_(other: Atom): unknown[] {
     const n = (other as GroundedAtom).object?.().content;
     return typeof n === "number" && n >= this.lo && n <= this.hi ? [[]] : [];
@@ -59,7 +65,7 @@ class Range extends MatchableObject {
 }
 
 const range = G(new Range(1, 10));
-matchAtoms(range.catom, gint(5)).length;  // 1: matches
+matchAtoms(range.catom, gint(5)).length; // 1: matches
 matchAtoms(range.catom, gint(20)).length; // 0: does not
 ```
 

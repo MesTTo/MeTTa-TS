@@ -1,19 +1,19 @@
-# @metta-ts/core
+# @mettascript/core
 
 The MeTTa (OpenCog Hyperon) interpreter in pure TypeScript: atoms, spaces, the type system, pattern matching, evaluation, and the standard library. No native addons and no required WASM. Runs in any JavaScript runtime (browser, Node, Deno, Bun, edge).
 
-Part of [MeTTa TS](https://github.com/MesTTo/MeTTa-TS).
+Part of [MeTTaScript](https://github.com/MesTTo/MeTTaScript).
 
 ## Install
 
 ```bash
-npm install @metta-ts/core
+npm install @mettascript/core
 ```
 
 ## Usage
 
 ```ts
-import { runProgram, format } from "@metta-ts/core";
+import { runProgram, format } from "@mettascript/core";
 
 const results = runProgram(`
   (= (fact $n) (unify $n 0 1 (* $n (fact (- $n 1)))))
@@ -26,10 +26,10 @@ for (const { query, results: rs } of results) {
 // (fact 5) => [ '120' ]
 ```
 
-`runProgram` parses the source, adds every non-bang atom to the knowledge base, evaluates each `!`-query, and returns one result group per query. For a higher-level class API modeled on Python's `hyperon`, see [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon).
+`runProgram` parses the source, adds every non-bang atom to the knowledge base, evaluates each `!`-query, and returns one result group per query. For a higher-level class API modeled on Python's `hyperon`, see [`@mettascript/hyperon`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/hyperon).
 
-The experimental line adds a pull-based streaming grounded-operation protocol on the `experimental` npm tag; see [Experimental features](https://mestto.github.io/MeTTa-TS/guide/experimental).
+The experimental line adds a pull-based streaming grounded-operation protocol on the `experimental` npm tag; see [Experimental features](https://mestto.github.io/MeTTaScript/guide/experimental).
 
 ## License
 
-[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTaScript/blob/main/LICENSE).

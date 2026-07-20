@@ -2,10 +2,10 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { format } from "@metta-ts/core";
-import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
-import { createPyodideInterop } from "@metta-ts/py/pyodide";
-import { createSwiWasmInterop } from "@metta-ts/prolog/swi-wasm";
+import { format } from "@mettascript/core";
+import { createBrowserRunner, createBrowserTextLoader } from "@mettascript/browser/host";
+import { createPyodideInterop } from "@mettascript/py/pyodide";
+import { createSwiWasmInterop } from "@mettascript/prolog/swi-wasm";
 
 export interface BrowserInteropOptions {
   readonly baseUrl?: string | URL;

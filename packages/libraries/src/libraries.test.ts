@@ -8,7 +8,7 @@
 
 import "./index.js";
 import { describe, expect, it } from "vitest";
-import { format, runProgram } from "@metta-ts/core";
+import { format, runProgram } from "@mettascript/core";
 
 const printed = (src: string): string[][] => runProgram(src).map((q) => q.results.map(format));
 

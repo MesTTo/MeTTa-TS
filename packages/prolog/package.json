@@ -1,6 +1,6 @@
 {
-  "name": "@metta-ts/prolog",
-  "version": "1.5.0",
+  "name": "@mettascript/prolog",
+  "version": "2.0.0",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -27,8 +27,8 @@
     "build": "tsup src/index.ts src/swi-node.ts src/swi-wasm.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@metta-ts/core": "workspace:*",
-    "@metta-ts/hyperon": "workspace:*"
+    "@mettascript/core": "workspace:*",
+    "@mettascript/hyperon": "workspace:*"
   },
   "author": "MesTTo",
   "engines": {
@@ -39,7 +39,7 @@
   "publishConfig": {
     "access": "public"
   },
-  "description": "Prolog interop for MeTTa TS: PeTTa-compatible Predicate/callPredicate/prolog-call/import_prolog_function over SWI-Prolog or SWI-WASM.",
+  "description": "Prolog interop for MeTTaScript: PeTTa-compatible Predicate/callPredicate/prolog-call/import_prolog_function over SWI-Prolog or SWI-WASM.",
   "keywords": [
     "metta",
     "hyperon",
@@ -50,12 +50,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MesTTo/MeTTa-TS.git",
+    "url": "git+https://github.com/MesTTo/MeTTaScript.git",
     "directory": "packages/prolog"
   },
-  "homepage": "https://github.com/MesTTo/MeTTa-TS#readme",
+  "homepage": "https://github.com/MesTTo/MeTTaScript#readme",
   "bugs": {
-    "url": "https://github.com/MesTTo/MeTTa-TS/issues"
+    "url": "https://github.com/MesTTo/MeTTaScript/issues"
   },
   "devDependencies": {
     "swipl-wasm": "8.0.3"

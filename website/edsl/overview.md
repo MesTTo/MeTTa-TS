@@ -5,16 +5,16 @@ SPDX-License-Identifier: MIT
 
 # The typed eDSL
 
-`@metta-ts/edsl` lets you write MeTTa in idiomatic, typed TypeScript instead of source strings. It is a thin layer over the engine: every builder produces an ordinary atom, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types.
+`@mettascript/edsl` lets you write MeTTa in idiomatic, typed TypeScript instead of source strings. It is a thin layer over the engine: every builder produces an ordinary atom, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types.
 
 ```bash
-npm install @metta-ts/edsl
+npm install @mettascript/edsl
 ```
 
 ## A first taste
 
 ```ts
-import { mettaDB, names, vars, If, gt, mul, sub } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, mul, sub } from "@mettascript/edsl";
 
 const db = mettaDB();
 const { fact } = names();
@@ -33,7 +33,7 @@ db.evalJs(fact(5)); // [120]
 `names()` returns a proxy that mints a symbol or functor per property, and `vars()` one that mints a fresh logic variable per property. A bare name grounds to its symbol; a called name applies it. Destructure what you use.
 
 ```ts
-import { names, vars, rule, e } from "@metta-ts/edsl";
+import { names, vars, rule, e } from "@mettascript/edsl";
 
 const { swap, check, Pair } = names();
 const { a, b } = vars();
@@ -49,7 +49,7 @@ Type a variable's unwrapped value with `vars<{ x: number }>()`. The special form
 `m\`...\``is the general escape hatch. It runs the real parser, so it expresses every MeTTa form, and`${value}` interpolations are auto-grounded:
 
 ```ts
-import { mettaDB, m } from "@metta-ts/edsl";
+import { mettaDB, m } from "@mettascript/edsl";
 const db = mettaDB();
 db.add(m`(= (gp $x $z) (match &self (parent $x $y) (match &self (parent $y $z) $z)))`);
 ```
@@ -59,7 +59,7 @@ db.add(m`(= (gp $x $z) (match &self (parent $x $y) (match &self (parent $y $z) $
 Any value that is not already an atom is grounded automatically, by every builder and by template interpolation. A grounded function bridges the other way with `db.fn`: arguments are auto-unwrapped to JS and the result auto-grounded, so a plain typed function is all you write.
 
 ```ts
-import { mettaDB, names, m } from "@metta-ts/edsl";
+import { mettaDB, names, m } from "@mettascript/edsl";
 
 const db = mettaDB();
 db.fn("balance-of", (a: { balance: number }) => a.balance);
@@ -80,7 +80,7 @@ Use `db.fns({ ... })` to register several at once, `db.asyncFn` for I/O, and the
 - `eval(atom)` rewrites with the `=` rules and returns the (nondeterministic) result atoms. `evalJs` unwraps each to a JavaScript value.
 
 ```ts
-import { mettaDB, names, vars } from "@metta-ts/edsl";
+import { mettaDB, names, vars } from "@mettascript/edsl";
 
 const db = mettaDB();
 const { Likes, Ada, Coffee, Chocolate } = names();
@@ -140,12 +140,12 @@ db.evalFirst(getValue(doc, "name")); // "Ada"  (JSON keys decode to strings)
 
 The eDSL has helper subpaths for Python and Prolog host interop. They only
 construct atoms. The runtime still has to be registered explicitly through
-`@metta-ts/py`, `@metta-ts/prolog`, a CLI flag, or a browser host runner.
+`@mettascript/py`, `@mettascript/prolog`, a CLI flag, or a browser host runner.
 
 ```ts
-import { vars } from "@metta-ts/edsl";
-import { pyCall } from "@metta-ts/edsl/py";
-import { prologCall, importPrologFunction } from "@metta-ts/edsl/prolog";
+import { vars } from "@mettascript/edsl";
+import { pyCall } from "@mettascript/edsl/py";
+import { prologCall, importPrologFunction } from "@mettascript/edsl/prolog";
 
 const { x } = vars();
 

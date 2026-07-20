@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { format, parseAll, standardTokenizer, type Atom } from "@metta-ts/core";
+import { format, parseAll, standardTokenizer, type Atom } from "@mettascript/core";
 import { runSource, runSourceAsync } from "./source";
 
 function inertAtoms(src: string): Atom[] {

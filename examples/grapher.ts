@@ -6,8 +6,8 @@
 // graph is a MeTTa atom, so you can parse source into a graph, compose it back, evaluate a head on the
 // engine, and serialize, all headless. Run with: npx tsx examples/grapher.ts
 
-import { MeTTa } from "@metta-ts/hyperon";
-import { fromSource, toSource, toJson, graphToAtoms, evaluateHead } from "@metta-ts/grapher";
+import { MeTTa } from "@mettascript/hyperon";
+import { fromSource, toSource, toJson, graphToAtoms, evaluateHead } from "@mettascript/grapher";
 
 // Parse a program into a laid-out node graph.
 const graph = fromSource("(+ 10 (* 25 2))");

@@ -5,10 +5,10 @@ SPDX-License-Identifier: MIT
 
 # JavaScript interop
 
-Grounded operations let MeTTa call *your* TypeScript functions. The JavaScript interop layer goes one step further: it lets MeTTa reach into the host runtime itself, calling global functions and methods and building JavaScript values, with no glue code. Enable it with `registerJsInterop`.
+Grounded operations let MeTTa call _your_ TypeScript functions. The JavaScript interop layer goes one step further: it lets MeTTa reach into the host runtime itself, calling global functions and methods and building JavaScript values, with no glue code. Enable it with `registerJsInterop`.
 
 ```ts
-import { MeTTa, registerJsInterop } from "@metta-ts/hyperon";
+import { MeTTa, registerJsInterop } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 registerJsInterop(metta);

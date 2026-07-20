@@ -1,5 +1,6 @@
 packages:
   - "packages/*"
+  - "compat/*"
   - "examples"
   - "website"
 allowBuilds:

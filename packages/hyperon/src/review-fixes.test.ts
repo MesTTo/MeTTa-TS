@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { sym as coreSym, matchAtoms } from "@metta-ts/core";
+import { sym as coreSym, matchAtoms } from "@mettascript/core";
 import { G, MatchableObject, ValueAtom, type GroundedAtom } from "./atoms";
 import { MeTTa, IncorrectArgumentError } from "./base";
 

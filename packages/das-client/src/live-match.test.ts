@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { sym, variable, expr, format, type Atom } from "@metta-ts/core";
+import { sym, variable, expr, format, type Atom } from "@mettascript/core";
 import { DasLiveSpace, matchAsync } from "./async-space";
 
 // The async Space, end-to-end against a live DAS: match a MeTTa pattern and get concrete atoms back

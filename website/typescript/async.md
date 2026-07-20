@@ -5,14 +5,14 @@ SPDX-License-Identifier: MIT
 
 # Async MeTTa
 
-MeTTa evaluation is synchronous by default. But a grounded operation often wants to do I/O, a fetch, a database lookup, a timer, and for that the evaluator needs to wait. MeTTa TS lets you register asynchronous grounded operations and evaluate a program along an async path that awaits them.
+MeTTa evaluation is synchronous by default. But a grounded operation often wants to do I/O, a fetch, a database lookup, a timer, and for that the evaluator needs to wait. MeTTaScript lets you register asynchronous grounded operations and evaluate a program along an async path that awaits them.
 
 ## Registering an async operation
 
 Use `registerAsyncOperation`: the function returns a `Promise` of result atoms. Then run the program with `runAsync` (or evaluate a single atom with `evaluateAtomAsync`):
 
 ```ts
-import { MeTTa, ValueAtom } from "@metta-ts/hyperon";
+import { MeTTa, ValueAtom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 metta.registerAsyncOperation("fetch-temperature", async () => {
@@ -32,10 +32,10 @@ The interpreter's drivers are generators. The synchronous `run` advances them to
 
 ## From the core package
 
-If you are using `@metta-ts/core` directly rather than the class API, the async entry point is `runProgramAsync`, which takes a map of async operations:
+If you are using `@mettascript/core` directly rather than the class API, the async entry point is `runProgramAsync`, which takes a map of async operations:
 
 ```ts
-import { runProgramAsync, format, gint, type AsyncGroundFn } from "@metta-ts/core";
+import { runProgramAsync, format, gint, type AsyncGroundFn } from "@mettascript/core";
 
 const wait: AsyncGroundFn = async (args) => {
   const n = args[0]!.kind === "gnd" && args[0]!.value.g === "int" ? args[0]!.value.n : 0;

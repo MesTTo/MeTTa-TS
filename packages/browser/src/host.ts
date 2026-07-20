@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { DEFAULT_FUEL, type QueryResult, type RunOptions } from "@metta-ts/core";
-import { composeHostInterops, type HostInterop, type HostTextLoader } from "@metta-ts/core/host";
+import { DEFAULT_FUEL, type QueryResult, type RunOptions } from "@mettascript/core";
+import { composeHostInterops, type HostInterop, type HostTextLoader } from "@mettascript/core/host";
 import { runSourceAsync, vfsImports, type BrowserParEvalOptions } from "./source";
 
 export interface BrowserRunnerOptions {

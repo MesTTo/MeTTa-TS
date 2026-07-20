@@ -1,19 +1,19 @@
-# @metta-ts/edsl
+# @mettascript/edsl
 
-A typed TypeScript eDSL for [MeTTa TS](https://github.com/MesTTo/MeTTa-TS). Mint symbols, functors, and logic variables from proxies, build MeTTa with combinators or a tagged template, and run it on the real interpreter. Any TypeScript value drops in as a grounded atom automatically, and TypeScript functions bridge in both directions.
+A typed TypeScript eDSL for [MeTTaScript](https://github.com/MesTTo/MeTTaScript). Mint symbols, functors, and logic variables from proxies, build MeTTa with combinators or a tagged template, and run it on the real interpreter. Any TypeScript value drops in as a grounded atom automatically, and TypeScript functions bridge in both directions.
 
-It is a thin layer over [`@metta-ts/hyperon`](https://github.com/MesTTo/MeTTa-TS/tree/main/packages/hyperon): every builder produces an ordinary atom that runs on the existing engine, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types.
+It is a thin layer over [`@mettascript/hyperon`](https://github.com/MesTTo/MeTTaScript/tree/main/packages/hyperon): every builder produces an ordinary atom that runs on the existing engine, so you get MeTTa's full semantics: rewrite rules, nondeterminism, pattern matching, and types.
 
 ## Install
 
 ```bash
-npm install @metta-ts/edsl
+npm install @mettascript/edsl
 ```
 
 ## Usage
 
 ```ts
-import { mettaDB, names, vars, If, gt, lt, mul, sub, m } from "@metta-ts/edsl";
+import { mettaDB, names, vars, If, gt, lt, mul, sub, m } from "@mettascript/edsl";
 
 const db = mettaDB();
 
@@ -99,13 +99,13 @@ db.evalFirst(getValue(doc, "name")); // "Ada"  (JSON keys decode to strings)
 
 The eDSL also has pure builder subpaths for optional host runtimes. They only
 construct atoms. You still register the Python or Prolog runtime explicitly
-through `@metta-ts/py`, `@metta-ts/prolog`, the Node CLI flags, or browser host
+through `@mettascript/py`, `@mettascript/prolog`, the Node CLI flags, or browser host
 composition.
 
 ```ts
-import { ground, vars } from "@metta-ts/edsl";
-import { pyCall } from "@metta-ts/edsl/py";
-import { prologCall, importPrologFunction } from "@metta-ts/edsl/prolog";
+import { ground, vars } from "@mettascript/edsl";
+import { pyCall } from "@mettascript/edsl/py";
+import { prologCall, importPrologFunction } from "@mettascript/edsl/prolog";
 
 const { x } = vars();
 
@@ -121,4 +121,4 @@ Prolog goal when you need a Prolog string.
 
 ## License
 
-[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTaScript/blob/main/LICENSE).

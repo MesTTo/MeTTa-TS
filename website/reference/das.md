@@ -3,12 +3,12 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/das-client and @metta-ts/das-gateway
+# @mettascript/das-client and @mettascript/das-gateway
 
-The Distributed AtomSpace feature is split in two. `@metta-ts/das-client` is the Node client for a live DAS Query Agent and local transport-backed spaces. `@metta-ts/das-gateway` is the browser-facing query codec over an injected HTTP transport.
+The Distributed AtomSpace feature is split in two. `@mettascript/das-client` is the Node client for a live DAS Query Agent and local transport-backed spaces. `@mettascript/das-gateway` is the browser-facing query codec over an injected HTTP transport.
 
 ```bash
-npm install @metta-ts/das-client @metta-ts/das-gateway
+npm install @mettascript/das-client @mettascript/das-gateway
 ```
 
 Use the client when Node can host the inbound DAS bus node. Use the gateway when a browser needs to reach a server-side DAS bridge.
@@ -39,8 +39,8 @@ class DasSpace implements Space {
 `DasSpace` implements the core `Space` interface by delegating to a `DasTransport`. `MockTransport` keeps tests and offline examples on the same path without a remote DAS.
 
 ```ts
-import { DasSpace, MockTransport } from "@metta-ts/das-client";
-import { expr, format, instantiate, sym, variable, type Atom } from "@metta-ts/core";
+import { DasSpace, MockTransport } from "@mettascript/das-client";
+import { expr, format, instantiate, sym, variable, type Atom } from "@mettascript/core";
 
 const A = (...items: Atom[]) => expr(items);
 const transport = new MockTransport([A(sym("parent"), sym("Tom"), sym("Ada"))]);
@@ -60,10 +60,10 @@ type Pattern =
   | { kind: "atom"; handle: string }
   | { kind: "expr"; children: Pattern[] };
 
-function node(name: string, type?: string): Pattern
-function variable(name: string): Pattern
-function expr(...children: Pattern[]): Pattern
-function encodeQuery(p: Pattern, linkType?: string): string[]
+function node(name: string, type?: string): Pattern;
+function variable(name: string): Pattern;
+function expr(...children: Pattern[]): Pattern;
+function encodeQuery(p: Pattern, linkType?: string): string[];
 ```
 
 `node`, `variable`, and `expr` build the DAS pattern tree. `encodeQuery` turns it into the prefix token stream used by DAS pattern matching. A link with any nested variable becomes a `LINK_TEMPLATE`; a ground link becomes a `LINK`.
@@ -84,7 +84,7 @@ interface QueryResult {
   readonly aborted: boolean;
 }
 
-function queryPatternMatching(opts: QueryOptions): Promise<QueryResult>
+function queryPatternMatching(opts: QueryOptions): Promise<QueryResult>;
 ```
 
 `queryPatternMatching` hosts an inbound proxy node, sends a `pattern_matching_query` to the Query Agent, waits for streamed answer bundles, and decodes them.
@@ -108,23 +108,23 @@ const BusCommand: {
   readonly queryAnswerTokensFlow: "query_answer_tokens_flow";
 };
 
-function parseQueryAnswer(token: string): QueryAnswer
-function collectAnswers(messages: readonly { command: string; args: string[] }[]): QueryResult
-function unwrapProxyMessage(args: readonly string[]): { command: string; args: string[] }
-const PROXY_COMMAND: string
-const ANSWER_BUNDLE: string
-const FINISHED: string
-const ABORT: string
+function parseQueryAnswer(token: string): QueryAnswer;
+function collectAnswers(messages: readonly { command: string; args: string[] }[]): QueryResult;
+function unwrapProxyMessage(args: readonly string[]): { command: string; args: string[] };
+const PROXY_COMMAND: string;
+const ANSWER_BUNDLE: string;
+const FINISHED: string;
+const ABORT: string;
 ```
 
 ## Hashing
 
 ```ts
-function computeHash(input: string): string
-function namedTypeHash(name: string): string
-function terminalHash(type: string, name: string): string
-function compositeHash(elements: readonly string[]): string
-function expressionHash(typeHash: string, elements: readonly string[]): string
+function computeHash(input: string): string;
+function namedTypeHash(name: string): string;
+function terminalHash(type: string, name: string): string;
+function compositeHash(elements: readonly string[]): string;
+function expressionHash(typeHash: string, elements: readonly string[]): string;
 ```
 
 These helpers reproduce DAS atom-handle hashing. Query handles must match the handles stored in AtomDB, or a live query will miss.
@@ -141,15 +141,15 @@ class DasLiveSpace implements AsyncSpace {
   queryAsync(pattern: Atom): Promise<Bindings[]>;
 }
 
-function atomToPattern(atom: Atom): Pattern
-function matchAsync(space: AsyncSpace, pattern: Atom, template?: Atom): Promise<Atom[]>
+function atomToPattern(atom: Atom): Pattern;
+function matchAsync(space: AsyncSpace, pattern: Atom, template?: Atom): Promise<Atom[]>;
 ```
 
 `DasLiveSpace` queries a live DAS Query Agent and resolves returned handles through the answer's MeTTa mapping. `matchAsync` is the async analogue of `(match space pattern template)`.
 
 ```ts
-import { DasLiveSpace, matchAsync } from "@metta-ts/das-client";
-import { expr, sym, variable, type Atom } from "@metta-ts/core";
+import { DasLiveSpace, matchAsync } from "@mettascript/das-client";
+import { expr, sym, variable, type Atom } from "@mettascript/core";
 
 const A = (...items: Atom[]) => expr(items);
 const live = new DasLiveSpace("127.0.0.1:40002");
@@ -174,21 +174,21 @@ interface GatewayTransport {
   query(req: QueryRequest): Promise<QueryResponse>;
 }
 
-const encodePattern: (a: Atom) => string
-const decodeBindings: (resp: QueryResponse) => Bindings[]
-function queryDas(transport: GatewayTransport, space: string, pattern: Atom): Promise<Bindings[]>
+const encodePattern: (a: Atom) => string;
+const decodeBindings: (resp: QueryResponse) => Bindings[];
+function queryDas(transport: GatewayTransport, space: string, pattern: Atom): Promise<Bindings[]>;
 ```
 
 `queryDas` encodes the query pattern as MeTTa source, sends it through the transport, and decodes each returned binding value as exactly one MeTTa atom. Blank, malformed, bang-prefixed, and multi-atom binding values throw at decode time.
 
 ```ts
-import { queryDas, type GatewayTransport } from "@metta-ts/das-gateway";
-import { parse, standardTokenizer } from "@metta-ts/core";
+import { queryDas, type GatewayTransport } from "@mettascript/das-gateway";
+import { parse, standardTokenizer } from "@mettascript/core";
 
 const transport: GatewayTransport = {
   query: async (request) => {
     console.log(request.pattern);
-    return { bindings: [[[ "x", "Ada" ]]] };
+    return { bindings: [[["x", "Ada"]]] };
   },
 };
 

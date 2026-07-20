@@ -5,7 +5,7 @@
 // Browser source runners. They mirror the Node source runners without file-system capability: imports come
 // from an in-memory VFS, async forms run through the core async driver, and browser hyperpose uses Web Workers
 // when the host exposes them.
-import "@metta-ts/libraries";
+import "@mettascript/libraries";
 import {
   DEFAULT_FUEL,
   evalSequential,
@@ -17,7 +17,7 @@ import {
   type Atom,
   type QueryResult,
   type RunOptions,
-} from "@metta-ts/core";
+} from "@mettascript/core";
 import type { BranchWorkerRequest, BranchWorkerResponse } from "./hyperpose-protocol";
 
 export interface BrowserParEvalOptions {

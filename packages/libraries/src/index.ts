@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-import { registerBuiltinModule } from "@metta-ts/core";
+import { registerBuiltinModule } from "@mettascript/core";
 import { LIBRARY_MODULE_SRCS } from "./generated/sources.js";
 
 let done = false;

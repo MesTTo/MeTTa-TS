@@ -84,6 +84,10 @@ function occursThrough(
   return false;
 }
 
+/** Value pairs currently being reconciled somewhere up the call stack, keyed by object identity (l -> {r}).
+ *  Allocated by the first conflicting `reconcile` in a merge cascade and threaded through the recursion. */
+type ReconcileSeen = Map<Atom, Set<Atom>>;
+
 /** Reconcile two already-determined values `l` and `r` by matching them and merging each result into `b`,
  *  so the constraint that they unify is propagated (hyperon's add_var_binding/add_var_equality semantics).
  *  A reconciliation that would force a variable to equal a term containing itself is rejected: LeaTTa's spec
@@ -91,51 +95,83 @@ function occursThrough(
  *  `(= (+ $t Z) $t)` with a reflexive `(= $q $q)` forces `$t = (+ $t Z)`) must fail, not silently produce
  *  an unsound result. The shallow `hasLoop` misses this (it only catches `$x = $x`). Only the reconciliation
  *  path is checked; a direct match binding a variable to a term containing it is left as-is, matching LeaTTa
- *  (its `matchAtomsWith` has no occurs check; only `addVarBinding` does). */
-function reconcile(b: Bindings, l: Atom, r: Atom): Bindings[] {
+ *  (its `matchAtomsWith` has no occurs check; only `addVarBinding` does).
+ *
+ *  `seen` grey-marks the (l, r) pair for the duration of the call, and a re-encounter of an in-progress pair
+ *  closes as success with `b` unchanged instead of recursing, the standard rational-tree treatment (Prolog
+ *  II's cyclic unification; SWI-Prolog unifies cyclic terms the same way). Without it, a rebind cascade whose
+ *  value pairs alias each other in a ring recursed forever and overflowed the native stack: with
+ *  `e ← (g $a 1)`, `d ← (g $b 1)`, `a ← (g $e 1)`, `b ← $d`, adding `a = b` ping-pongs through
+ *  `($d, (g $e 1)) → ((g $b 1), (g $e 1)) → ($d, $e) → ((g $b 1), $e) → ((g $a 1), (g $b 1)) →
+ *  ((g $e 1), $b)` and back, while the per-variable occurs check stays false at every individual step (the
+ *  `a = b, b ← $d` aliasing routes each query around the cycle). The interpreter's
+ *  `(pragma! max-stack-depth N)` bounds interpreter frames only, so this machinery must be total on its own.
+ *  Termination: every reconciled pair is drawn, by object identity, from the finite subterm universe of the
+ *  cascade's values, and each recursive entry grey-marks a fresh pair. Behaviour is unchanged on every input
+ *  that terminates today: `reconcile` is a pure function of its arguments, so an in-stack revisit of the same
+ *  pair could only ever have recursed forever. The mark is removed on exit, so a sequential (non-nested)
+ *  repeat of a pair reconciles exactly as before. A guard-closed branch carries the value cycle that drove
+ *  the ping-pong, so the deep `hasLoop` filter at every matcher boundary (Hyperon's `has_loops`) discards it
+ *  as it would any cyclic solution. */
+function reconcile(b: Bindings, l: Atom, r: Atom, seen?: ReconcileSeen): Bindings[] {
+  if (seen === undefined) seen = new Map();
+  else if (seen.get(l)?.has(r) === true) return [b];
+  let marked = seen.get(l);
+  if (marked === undefined) {
+    marked = new Set();
+    seen.set(l, marked);
+  }
+  marked.add(r);
   const out: Bindings[] = [];
   for (const mb of matchAtoms(l, r)) {
     if (someVal(mb, (x, a) => occursThrough(x, a, mb, b, new Set(), new Map()))) continue;
-    for (const m of merge(b, mb)) out.push(m);
+    for (const m of merge(b, mb, seen)) out.push(m);
   }
+  marked.delete(r);
   return out;
 }
 
 /** Add `$x ← v` to `b` consistently. If `$x` is already bound to a different value, reconcile the old value
  *  against the new one (propagating the unification constraint), rejecting a cyclic result. Mirrors hyperon's
  *  `add_var_binding` with LeaTTa's occurs check. */
-export function addVarBinding(b: Bindings, x: string, v: Atom): Bindings[] {
+export function addVarBinding(b: Bindings, x: string, v: Atom, seen?: ReconcileSeen): Bindings[] {
   const prev = lookupVal(b, x);
   if (prev === undefined) return [prependValRaw(b, x, v)];
   if (atomEq(prev, v)) return [b];
-  return reconcile(b, prev, v);
+  return reconcile(b, prev, v, seen);
 }
 
 /** Add the alias `$x = $y` to `b` consistently. If both are already value-bound to different values,
  *  reconcile those values (mirrors hyperon's `add_var_equality`); otherwise record the equality. */
-export function addVarEquality(b: Bindings, x: string, y: string): Bindings[] {
+export function addVarEquality(
+  b: Bindings,
+  x: string,
+  y: string,
+  seen?: ReconcileSeen,
+): Bindings[] {
   if (x === y) return [b];
   const vx = lookupVal(b, x);
   const vy = lookupVal(b, y);
   if (vx === undefined || vy === undefined || atomEq(vx, vy)) return [addEqRaw(b, x, y)];
-  return reconcile(b, vx, vy);
+  return reconcile(b, vx, vy, seen);
 }
 
 /** Fold one relation into every candidate set, keeping consistent extensions (LeaTTa `mergeOne`). */
-function mergeOne(bs: Bindings[], r: BindingRel): Bindings[] {
+function mergeOne(bs: Bindings[], r: BindingRel, seen?: ReconcileSeen): Bindings[] {
   if (r.tag === "eq" && r.x === r.y) return bs;
   const out: Bindings[] = [];
   for (const b of bs) {
-    const ext = r.tag === "val" ? addVarBinding(b, r.x, r.a) : addVarEquality(b, r.x, r.y);
+    const ext =
+      r.tag === "val" ? addVarBinding(b, r.x, r.a, seen) : addVarEquality(b, r.x, r.y, seen);
     for (const e of ext) out.push(e);
   }
   return out;
 }
 
 /** Combine two binding sets into all their consistent unions (LeaTTa `merge`). */
-export function merge(a: Bindings, b: Bindings): Bindings[] {
+export function merge(a: Bindings, b: Bindings, seen?: ReconcileSeen): Bindings[] {
   let acc: Bindings[] = [a];
-  for (const r of relations(b)) acc = mergeOne(acc, r);
+  for (const r of relations(b)) acc = mergeOne(acc, r, seen);
   return acc;
 }
 

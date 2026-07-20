@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Prolog interop
 
-`@metta-ts/prolog` lets a MeTTa program call a host Prolog runtime without
+`@mettascript/prolog` lets a MeTTa program call a host Prolog runtime without
 changing the MeTTa evaluator. The package exposes PeTTa-compatible forms where
 they are independent of PeTTa's own Prolog evaluator: `Predicate`,
 `callPredicate`, `assertzPredicate`, `retractPredicate`, `prolog-call`, and
@@ -19,15 +19,15 @@ adapter, register it, and run asynchronously.
 Install the package and make sure `swipl` is on your `PATH`:
 
 ```sh
-npm install @metta-ts/prolog
+npm install @mettascript/prolog
 ```
 
 Then register the Node adapter:
 
 ```ts
-import { MeTTa } from "@metta-ts/hyperon";
-import { registerPrologInterop } from "@metta-ts/prolog";
-import { swiPrologBridge } from "@metta-ts/prolog/swi-node";
+import { MeTTa } from "@mettascript/hyperon";
+import { registerPrologInterop } from "@mettascript/prolog";
+import { swiPrologBridge } from "@mettascript/prolog/swi-node";
 
 const bridge = swiPrologBridge();
 const metta = new MeTTa();
@@ -58,13 +58,13 @@ The CLI wires `.pl` imports through the same host import hook:
 
 ## Browser with SWI-WASM
 
-Use `@metta-ts/prolog/swi-wasm` when Prolog should run in the browser. The root
+Use `@mettascript/prolog/swi-wasm` when Prolog should run in the browser. The root
 package stays runtime-agnostic, and the WASM runtime is only pulled in when you
 import the SWI-WASM subpath.
 
 ```ts
-import { createBrowserRunner, createBrowserTextLoader } from "@metta-ts/browser/host";
-import { createSwiWasmInterop } from "@metta-ts/prolog/swi-wasm";
+import { createBrowserRunner, createBrowserTextLoader } from "@mettascript/browser/host";
+import { createSwiWasmInterop } from "@mettascript/prolog/swi-wasm";
 
 const files = new Map([["facts.pl", "edge(alice, bob).\nedge(alice, mars).\n"]]);
 const loadText = createBrowserTextLoader({ files, baseUrl: import.meta.url });
@@ -109,7 +109,7 @@ output into a MeTTa function:
 
 ## PeTTa compatibility boundary
 
-The surface follows PeTTa where the operation is just a Prolog bridge. MeTTa TS
+The surface follows PeTTa where the operation is just a Prolog bridge. MeTTaScript
 does not switch into a PeTTa execution mode, does not add a curry mode, and does
 not compile all MeTTa rules to Prolog. Plain `.pl` imports, predicate calls, and
 function imports are host capabilities plugged into Hyperon-style evaluation.

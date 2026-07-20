@@ -5,8 +5,8 @@ SPDX-License-Identifier: MIT
 
 # Generate a reduction GIF in Node.js
 
-`@metta-ts/grapher/node` turns MeTTa source into an animated GIF from a normal
-Node.js program. It evaluates the reduction with MeTTa TS, builds the same SVG
+`@mettascript/grapher/node` turns MeTTa source into an animated GIF from a normal
+Node.js program. It evaluates the reduction with MeTTaScript, builds the same SVG
 frames as the browser editor, rasterizes each frame with Sharp, and returns GIF
 bytes. It does not open a browser or require an HTML element.
 
@@ -21,14 +21,14 @@ optional rendering packages:
 ```bash
 npm init -y
 npm pkg set type=module
-npm install @metta-ts/grapher sharp gifenc
+npm install @mettascript/grapher sharp gifenc
 ```
 
 Create `app.js`:
 
 ```js
 import { writeFile } from "node:fs/promises";
-import { renderReductionGif } from "@metta-ts/grapher/node";
+import { renderReductionGif } from "@mettascript/grapher/node";
 
 const gif = await renderReductionGif("(+ 10 (* 25 2))", {
   view: "blocks",
@@ -74,7 +74,7 @@ await writeFile("factorial.gif", gif);
 ```
 
 The same example is runnable in the repository:
-[`examples/grapher-gif.ts`](https://github.com/MesTTo/MeTTa-TS/blob/main/examples/grapher-gif.ts).
+[`examples/grapher-gif.ts`](https://github.com/MesTTo/MeTTaScript/blob/main/examples/grapher-gif.ts).
 
 ## Choose the picture
 
@@ -99,8 +99,8 @@ Pass a `MeTTa` instance when the query should use rules, facts, modules, or
 grounded operations already registered by your application:
 
 ```js
-import { MeTTa } from "@metta-ts/hyperon";
-import { renderReductionGif } from "@metta-ts/grapher/node";
+import { MeTTa } from "@mettascript/hyperon";
+import { renderReductionGif } from "@mettascript/grapher/node";
 
 const metta = new MeTTa();
 metta.run("(= (double $x) (* $x 2))");
@@ -157,8 +157,8 @@ The lower-level SVG builders do not require Sharp or `gifenc`. Use them when
 another renderer, image service, or command-line tool will consume the frames:
 
 ```js
-import { MeTTa } from "@metta-ts/hyperon";
-import { blockReductionSvgs, parseProgram, reduceTrace } from "@metta-ts/grapher";
+import { MeTTa } from "@mettascript/hyperon";
+import { blockReductionSvgs, parseProgram, reduceTrace } from "@mettascript/grapher";
 
 const query = parseProgram("(+ 10 (* 25 2))")[0];
 const states = reduceTrace(query, new MeTTa());

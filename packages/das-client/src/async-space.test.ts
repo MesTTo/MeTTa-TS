@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { sym, variable, expr, gstr, format, type Atom, type Bindings } from "@metta-ts/core";
+import { sym, variable, expr, gstr, format, type Atom, type Bindings } from "@mettascript/core";
 import { atomToPattern, matchAsync, type AsyncSpace } from "./async-space";
 import { parseQueryAnswer } from "./answer";
 

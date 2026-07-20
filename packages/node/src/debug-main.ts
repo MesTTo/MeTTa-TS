@@ -11,8 +11,8 @@
 import { parseArgs } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { format, setOutputSink, setRawSink } from "@metta-ts/core";
-import { assembleQuery, explainCall } from "@metta-ts/debug";
+import { format, setOutputSink, setRawSink } from "@mettascript/core";
+import { assembleQuery, explainCall } from "@mettascript/debug";
 import { readImports } from "./file-imports";
 import { runSource } from "./source";
 

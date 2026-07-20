@@ -7,7 +7,7 @@
 // takes one engine reduction of the addressed subterm and splices the result back into the whole atom, so
 // clicking a redex rewrites it in place.
 
-import { E, ExpressionAtom, type Atom, type MeTTa } from "@metta-ts/hyperon";
+import { E, ExpressionAtom, type Atom, type MeTTa } from "@mettascript/hyperon";
 import { reduceStep } from "../reduce";
 
 /** The subterm at `path`, or null if the path leaves the tree. */

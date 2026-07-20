@@ -8,7 +8,7 @@
 // when an async op is actually reached.
 //
 // Run it (after `pnpm build`): npx tsx examples/async.ts
-import { MeTTa, ValueAtom, type Atom } from "@metta-ts/hyperon";
+import { MeTTa, ValueAtom, type Atom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 

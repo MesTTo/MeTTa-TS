@@ -6,7 +6,7 @@
 // the nested blocks on the right, morphing between the same states in lockstep. It reuses the block frame
 // machinery and graph interpolation, then places both SVG panels in one frame for the host to rasterize.
 
-import type { Atom } from "@metta-ts/hyperon";
+import type { Atom } from "@mettascript/hyperon";
 import { boxesToPrims, interpolate, ease, type Prim } from "./block/animate";
 import { placeProgram } from "./block/layout";
 import { makeSettings, type BlockSettings } from "./block/settings";

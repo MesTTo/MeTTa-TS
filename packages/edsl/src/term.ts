@@ -21,7 +21,7 @@ import {
   SymbolAtom,
   VariableAtom,
   ExpressionAtom,
-} from "@metta-ts/hyperon";
+} from "@mettascript/hyperon";
 
 /** A typed variable. The phantom `T` is the JS type its binding unwraps to in a query result; it is a
  *  compile-time promise, while the runtime value is whatever unifies. */

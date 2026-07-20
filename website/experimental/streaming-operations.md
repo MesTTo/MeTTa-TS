@@ -6,7 +6,7 @@ SPDX-License-Identifier: MIT
 # Streaming grounded operations
 
 ::: warning Experimental
-This is on the `experimental` channel. Install it with `npm install @metta-ts/hyperon@experimental`. The surface may change before it reaches a stable release. See [Experimental features](/guide/experimental) for the channel.
+This is on the `experimental` channel. Install it with `npm install @mettascript/hyperon@experimental`. The surface may change before it reaches a stable release. See [Experimental features](/guide/experimental) for the channel.
 :::
 
 Let us build a grounded operation that produces results one at a time, and see what that lets you do that a normal one cannot.
@@ -16,7 +16,7 @@ Let us build a grounded operation that produces results one at a time, and see w
 A normal grounded operation returns an array. The evaluator gets to see the results only after your function has built the whole array and returned it:
 
 ```ts
-import { MeTTa, ValueAtom } from "@metta-ts/hyperon";
+import { MeTTa, ValueAtom } from "@mettascript/hyperon";
 
 const metta = new MeTTa();
 metta.registerOperation("first-three", () => [ValueAtom(0), ValueAtom(1), ValueAtom(2)]);
@@ -84,7 +84,7 @@ Here `args[1]` is the atom `$d` the caller passed, and each answer binds `d` to 
 An answer can also carry `effects`, applied only when that answer's branch is accepted. An effect adds or removes an atom, or binds a token:
 
 ```ts
-import { MeTTa, ValueAtom, S, E } from "@metta-ts/hyperon";
+import { MeTTa, ValueAtom, S, E } from "@mettascript/hyperon";
 
 metta.registerStreamingOperation("remember", function* (args) {
   yield {
@@ -128,7 +128,7 @@ Errors behave like the eager API:
 - Throw partway through, after some answers, and the stream ends with an `(Error ...)` answer following the answers already produced.
 
 ```ts
-import { IncorrectArgumentError } from "@metta-ts/hyperon";
+import { IncorrectArgumentError } from "@mettascript/hyperon";
 
 metta.registerStreamingOperation("only-values", (args) => {
   if (args[0]?.metatype() !== "Grounded") throw new IncorrectArgumentError("want a value");

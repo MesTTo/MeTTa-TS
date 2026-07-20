@@ -1280,8 +1280,8 @@ const stdEntries: Array<[string, GroundFn]> = [
   ["empty", () => ok()],
   [
     // `(test actual expected)` checks alpha-equivalence (exactly, no convention-forgiving), prints
-    // "is X, should Y. ✅/❌", and reduces to `()` on pass. The MeTTa-TS corpus is written in MeTTa-TS
-    // conventions, so this stays strict. MeTTa-TS is not bent to match PeTTa's rendering.
+    // "is X, should Y. ✅/❌", and reduces to `()` on pass. The MeTTaScript corpus is written in MeTTaScript
+    // conventions, so this stays strict. MeTTaScript is not bent to match PeTTa's rendering.
     "test",
     (args) => {
       if (args.length !== 2) return ierr("test expects 2 arguments");
@@ -1317,7 +1317,7 @@ const stdEntries: Array<[string, GroundFn]> = [
 ];
 
 // --- PeTTa-compat stdlib ---------------------------------------------------------------------------------
-// Functions PeTTa auto-loads from `src/metta.pl` that Hyperon (and so MeTTa-TS) does not define, ported as
+// Functions PeTTa auto-loads from `src/metta.pl` that Hyperon (and so MeTTaScript) does not define, ported as
 // grounded ops so the PeTTa example corpus runs against the same engine. Only NEW names are added; where a
 // name already exists with Hyperon semantics (foldl-atom/map-atom/filter-atom are the Hyperon higher-order
 // forms, repr/size-atom/index-atom/the *-atom set are already present) the existing op wins, so the Hyperon

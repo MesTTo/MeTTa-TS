@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
-import { emptyExpr, format, gstr, runProgramAsync, sym } from "@metta-ts/core";
+import { emptyExpr, format, gstr, runProgramAsync, sym } from "@mettascript/core";
 import type { PyodideAPI } from "pyodide";
 import { createPyodideInterop, pyodideBridge } from "./pyodide";
 

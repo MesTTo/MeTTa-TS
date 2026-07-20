@@ -30,6 +30,7 @@ export {
   Let,
   LetStar,
   Match,
+  All,
   Superpose,
   Collapse,
   Empty,
@@ -74,4 +75,4 @@ export { type SourceVars, type SourceRow } from "./source-vars";
 export { MettaDB, mettaDB, type Row, type ImportedFn, type CallProxy, type FnSchema } from "./db";
 
 // Re-export hyperon atom types for annotations without a second import.
-export { Atom, type GroundedAtom, ValueAtom, atomToJs } from "@metta-ts/hyperon";
+export { Atom, type GroundedAtom, ValueAtom, atomToJs } from "@mettascript/hyperon";

@@ -1,6 +1,6 @@
 {
-  "name": "@metta-ts/edsl",
-  "version": "1.5.0",
+  "name": "@mettascript/edsl",
+  "version": "2.0.0",
   "author": "MesTTo",
   "license": "MIT",
   "description": "Ergonomic, typed TypeScript eDSL for MeTTa: term builders, tagged templates, host-interop builders, and auto-grounding of TypeScript values.",
@@ -42,16 +42,16 @@
     "build": "tsup src/index.ts src/py.ts src/prolog.ts --format esm --dts --clean"
   },
   "dependencies": {
-    "@metta-ts/hyperon": "workspace:*"
+    "@mettascript/hyperon": "workspace:*"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/MesTTo/MeTTa-TS.git",
+    "url": "git+https://github.com/MesTTo/MeTTaScript.git",
     "directory": "packages/edsl"
   },
-  "homepage": "https://github.com/MesTTo/MeTTa-TS#readme",
+  "homepage": "https://github.com/MesTTo/MeTTaScript#readme",
   "bugs": {
-    "url": "https://github.com/MesTTo/MeTTa-TS/issues"
+    "url": "https://github.com/MesTTo/MeTTaScript/issues"
   },
   "publishConfig": {
     "access": "public"

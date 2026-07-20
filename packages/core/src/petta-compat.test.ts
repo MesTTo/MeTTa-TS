@@ -53,7 +53,7 @@ describe("PeTTa-compat stdlib ops", () => {
   it("the corpus `test` op is strict and uses LeaTTa conventions", () => {
     // `collapse` returns an explicit comma tuple.
     expect(one("!(test (collapse (superpose (1 2 3))) (, 1 2 3))")).toBe("()");
-    // Written in MeTTa-TS conventions: grounded Bool `False`, full float `8.0`.
+    // Written in MeTTaScript conventions: grounded Bool `False`, full float `8.0`.
     expect(one("!(test (is-member z (a b)) False)")).toBe("()");
     expect(one("!(test (+ 3.0 5.0) 8.0)")).toBe("()");
     // A genuinely different value fails.

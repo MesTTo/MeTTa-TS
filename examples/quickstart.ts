@@ -6,7 +6,7 @@
 // non-bang atom to the knowledge base, evaluates each `!`-query, and returns one result group per query.
 //
 // Run it (after `pnpm build`): npx tsx examples/quickstart.ts
-import { runProgram, format } from "@metta-ts/core";
+import { runProgram, format } from "@mettascript/core";
 
 const results = runProgram(`
   ; a rule: factorial via the minimal unify instruction

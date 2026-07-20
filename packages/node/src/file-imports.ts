@@ -5,7 +5,7 @@
 // File-backed MeTTa import resolution shared by the package API and the CLI.
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, sep } from "node:path";
-import { type Atom, collectImports, parseAll, standardTokenizer } from "@metta-ts/core";
+import { type Atom, collectImports, parseAll, standardTokenizer } from "@mettascript/core";
 
 /** Pre-read every `import!` target referenced in `src`, resolving names against `baseDir`. */
 export function readImports(

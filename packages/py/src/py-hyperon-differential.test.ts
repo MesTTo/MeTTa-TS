@@ -15,7 +15,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MeTTa } from "@metta-ts/hyperon";
+import { MeTTa } from "@mettascript/hyperon";
 import { registerPyInterop, type PyBridge } from "./index";
 import { makePythoniaBridge } from "./live-bridge";
 

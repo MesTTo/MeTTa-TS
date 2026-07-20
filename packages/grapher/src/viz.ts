@@ -20,7 +20,7 @@
 // The directives are read back with `(get-atoms &grapher)`. Under LeaTTa semantics `add-atom` evaluates its
 // atom argument first, so use `noeval` when a target like `(fact 5)` should be stored as data.
 
-import { ExpressionAtom, atomIsError, type Atom, type MeTTa } from "@metta-ts/hyperon";
+import { ExpressionAtom, atomIsError, type Atom, type MeTTa } from "@mettascript/hyperon";
 
 /** The space the editor watches for directives. */
 export const VIZ_SPACE = "&grapher";

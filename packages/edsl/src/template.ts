@@ -14,7 +14,7 @@ import {
   E,
   standardTokenizer,
   type Tokenizer,
-} from "@metta-ts/hyperon";
+} from "@mettascript/hyperon";
 import { ground, type Term } from "./term";
 
 const SLOT = (i: number): string => `__metta_ts_slot_${i}__`;

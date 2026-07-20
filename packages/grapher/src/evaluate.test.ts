@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, it, expect } from "vitest";
-import { MeTTa } from "@metta-ts/hyperon";
+import { MeTTa } from "@mettascript/hyperon";
 import { atomToGraph } from "./atom";
 import { parseProgram } from "./parse";
 import { evaluateHead, evaluateHeadAsync, loadProgram } from "./evaluate";

@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { format, gstr, runProgramAsync, sym } from "@metta-ts/core";
-import { E, S, VariableAtom } from "@metta-ts/hyperon";
+import { format, gstr, runProgramAsync, sym } from "@mettascript/core";
+import { E, S, VariableAtom } from "@mettascript/hyperon";
 import {
   createSwiWasmInterop,
   swiWasmBridge,

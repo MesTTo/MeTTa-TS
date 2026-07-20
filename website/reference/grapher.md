@@ -3,18 +3,18 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/grapher
+# @mettascript/grapher
 
 The visual node-graph editor for MeTTa, [MeTTaGrapher](/tools/grapher). It renders a program two ways, as a node graph and as nested blocks, and runs on the same interpreter as the rest of the packages. A node graph is a MeTTa atom, so anything that produces atoms feeds it.
 
 ```bash
-npm install @metta-ts/grapher
+npm install @mettascript/grapher
 ```
 
 The editor is framework-free and renders its UI as SVG. It depends on
-`@metta-ts/hyperon` for evaluation, and the blocks view uses Canvas 2D for text
+`@mettascript/hyperon` for evaluation, and the blocks view uses Canvas 2D for text
 measurement. Browser GIF export takes an encoder as an argument. Plain Node.js
-uses the separate `@metta-ts/grapher/node` entry with optional `sharp` and
+uses the separate `@mettascript/grapher/node` entry with optional `sharp` and
 `gifenc` packages. That entry requires Node 20.9 or newer.
 
 ## The fluent driver
@@ -22,7 +22,7 @@ uses the separate `@metta-ts/grapher/node` entry with optional `sharp` and
 `grapher(el)` is the quickest way in, in the same style as the [eDSL](/reference/edsl). Every building step returns the handle, so a chain reads as one sentence; the terminal steps `source()`, `gif()`, and `destroy()` end it.
 
 ```ts
-import { grapher } from "@metta-ts/grapher";
+import { grapher } from "@mettascript/grapher";
 
 const view = grapher("#app")
   .load("(= (double $x) (* $x 2))\n(double 21)")
@@ -50,7 +50,7 @@ const view = grapher("#app")
 ## The MeTTaGrapher class
 
 ```ts
-import { MeTTaGrapher } from "@metta-ts/grapher";
+import { MeTTaGrapher } from "@mettascript/grapher";
 
 const editor = new MeTTaGrapher(document.getElementById("app")!, { source: "(+ 10 (* 25 2))" });
 ```
@@ -169,12 +169,12 @@ A TARGET is a node's name (`if`, reaching every `if`) or the term a node stands 
 Install the optional Node renderer and encoder beside the grapher:
 
 ```bash
-npm install @metta-ts/grapher sharp gifenc
+npm install @mettascript/grapher sharp gifenc
 ```
 
 ```ts
 import { writeFile } from "node:fs/promises";
-import { renderReductionGif } from "@metta-ts/grapher/node";
+import { renderReductionGif } from "@mettascript/grapher/node";
 
 const bytes = await renderReductionGif("(+ 10 (* 25 2))", {
   view: "blocks",

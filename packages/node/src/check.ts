@@ -4,7 +4,7 @@
 // The `metta-ts --check` core: read a file, run the static analyzer, and return rendered text or JSON
 // plus an exit code. No process IO here, so it is unit-testable; cli.ts does the reading and exiting.
 import { readFileSync } from "node:fs";
-import { analyzeSource, renderAll, DiagnosticSeverity } from "@metta-ts/core";
+import { analyzeSource, renderAll, DiagnosticSeverity } from "@mettascript/core";
 
 export interface CheckOptions {
   readonly json: boolean;

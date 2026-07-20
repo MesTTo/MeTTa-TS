@@ -5,9 +5,9 @@ SPDX-License-Identifier: MIT
 
 # Debugging and traces
 
-`metta debug` is the headless debugger that ships with `@metta-ts/node`. It runs the same Node source runner as `metta run`, then prints either the result or a short explanation from the engine trace bus.
+`metta debug` is the headless debugger that ships with `@mettascript/node`. It runs the same Node source runner as `metta run`, then prints either the result or a short explanation from the engine trace bus.
 
-After `@metta-ts/node` is installed globally, the package registers the command through `metta debug`. The standalone `metta-debug` command remains an alias.
+After `@mettascript/node` is installed globally, the package registers the command through `metta debug`. The standalone `metta-debug` command remains an alias.
 
 ## Evaluate one expression
 
@@ -46,13 +46,9 @@ metta debug --source '(= (twice $f $x) ($f ($f $x))) (= (inc $n) (+ $n 1)) (= (m
 ```json
 {
   "call": "(main)",
-  "result": [
-    "2"
-  ],
+  "result": ["2"],
   "grounded": {},
-  "specialized": [
-    "twice -> twice$inc"
-  ],
+  "specialized": ["twice -> twice$inc"],
   "overflow": [],
   "reductions": 1
 }
@@ -65,7 +61,7 @@ The fields have direct meanings. `grounded` counts native grounded operations by
 The same trace bus is available to embedders through `RunOptions.trace`:
 
 ```ts
-import { runProgram, format, type TraceEvent } from "@metta-ts/core";
+import { runProgram, format, type TraceEvent } from "@mettascript/core";
 
 const events: TraceEvent[] = [];
 const groups = runProgram("!(+ 1 2)", undefined, undefined, {

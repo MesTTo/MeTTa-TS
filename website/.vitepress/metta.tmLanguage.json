@@ -1,0 +1,107 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "MeTTa",
+  "scopeName": "source.metta",
+  "comment": "Lexical token model shared with the editor, hover code fences, output channels, and the metta-lang.dev / MeTTaLingo highlighter: it colours comments, strings, numbers, @doc atoms, $variables, &space refs, capitalized type/value atoms, %Special% meta-types, the core operators : = -> ! == !=, and parens. Meaning-based colouring (definition vs call, parameter vs free variable, known type or keyword) is layered on top by the server's semantic tokens, which a static highlighter cannot do. A GitHub Light/Dark theme reproduces the metta-lang.dev palette (green parens, red operators, orange variables, blue numbers, purple doc atoms).",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#char" },
+    { "include": "#number" },
+    { "include": "#doctag" },
+    { "include": "#variable" },
+    { "include": "#space" },
+    { "include": "#standard-type" },
+    { "include": "#special-type" },
+    { "include": "#control" },
+    { "include": "#operator" },
+    { "include": "#paren" }
+  ],
+  "repository": {
+    "comment": {
+      "patterns": [{ "name": "comment.line.semicolon.metta", "match": ";.*$" }]
+    },
+    "string": {
+      "name": "string.quoted.double.metta",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.metta",
+          "match": "\\\\(?:[nrt\\\\\"']|u[0-9A-Fa-f]{4})"
+        }
+      ]
+    },
+    "char": {
+      "name": "string.quoted.single.metta",
+      "begin": "'",
+      "end": "'",
+      "patterns": [{ "name": "constant.character.escape.metta", "match": "\\\\." }]
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.metta",
+          "match": "(?<![^\\s()\\[\\]{}])[+-]?(?:\\d+\\.\\d*|\\.\\d+)(?:[eE][+-]?\\d+)?(?![^\\s()\\[\\]{}])"
+        },
+        {
+          "name": "constant.numeric.integer.metta",
+          "match": "(?<![^\\s()\\[\\]{}])[+-]?\\d+(?:[eE][+-]?\\d+)?(?![^\\s()\\[\\]{}])"
+        }
+      ]
+    },
+    "doctag": {
+      "comment": "@doc, @param, @desc and the rest of the documentation atoms (purple on metta-lang.dev).",
+      "patterns": [
+        { "name": "keyword.other.documentation.metta", "match": "@[A-Za-z_][A-Za-z0-9_\\-*]*!?" }
+      ]
+    },
+    "variable": {
+      "patterns": [
+        { "name": "variable.other.metta", "match": "\\$[A-Za-z_][A-Za-z0-9_\\-?!*/<>=.]*" }
+      ]
+    },
+    "space": {
+      "comment": "&self, &kb and other atomspace references (orange, grouped with $variables on metta-lang.dev).",
+      "patterns": [
+        { "name": "variable.language.metta", "match": "&[A-Za-z_][A-Za-z0-9_\\-?!*/<>=.]*" }
+      ]
+    },
+    "standard-type": {
+      "comment": "Capitalized standard and user type/value atoms such as Bool, Atom, Shape, True, and False.",
+      "patterns": [
+        {
+          "name": "support.type.builtin.metta",
+          "match": "(?<![^\\s()\\[\\]{}])[A-Z][A-Za-z0-9_\\-?!*/<>=.]*(?![^\\s()\\[\\]{}])"
+        }
+      ]
+    },
+    "special-type": {
+      "comment": "%Undefined%, %Irreducible% and other grounded meta-types.",
+      "patterns": [{ "name": "support.type.builtin.metta", "match": "%[A-Za-z][A-Za-z0-9]*%" }]
+    },
+    "control": {
+      "comment": "The core syntactic operators, matched only as standalone atoms so import! and foo=bar are untouched.",
+      "patterns": [
+        {
+          "name": "keyword.control.metta",
+          "match": "(?<![^\\s()\\[\\]{}])(?:->|:|=|!)(?![^\\s()\\[\\]{}])"
+        }
+      ]
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.metta",
+          "match": "(?<![^\\s()\\[\\]{}])(?:==|!=|~=)(?![^\\s()\\[\\]{}])"
+        }
+      ]
+    },
+    "paren": {
+      "patterns": [
+        { "name": "punctuation.section.parens.begin.metta", "match": "[(\\[{]" },
+        { "name": "punctuation.section.parens.end.metta", "match": "[)\\]}]" }
+      ]
+    }
+  }
+}

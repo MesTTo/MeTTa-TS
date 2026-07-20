@@ -1,14 +1,14 @@
-# @metta-ts/grapher
+# @mettascript/grapher
 
 A visual editor and reduction renderer for MeTTa programs. It renders the same
 atoms as a connected node graph or nested blocks, evaluates them with
-`@metta-ts/hyperon`, and can export the reduction from a browser or plain
+`@mettascript/hyperon`, and can export the reduction from a browser or plain
 Node.js.
 
 ## Install
 
 ```bash
-npm install @metta-ts/grapher
+npm install @mettascript/grapher
 ```
 
 ## Mount the editor
@@ -21,7 +21,7 @@ container.
 ```
 
 ```ts
-import { grapher } from "@metta-ts/grapher";
+import { grapher } from "@mettascript/grapher";
 
 const view = grapher("#metta-graph")
   .load("(= (double $x) (* $x 2))\n(double 21)")
@@ -55,7 +55,7 @@ no stylesheet to import.
 The parser, graph model, serialization, evaluation helpers, SVG-frame builders,
 and Node GIF renderer also run headlessly. Node consumers require Node 20 or
 newer. The GIF renderer uses Sharp 0.35 and requires Node 20.9 or newer.
-`@metta-ts/hyperon` is installed as a package dependency.
+`@mettascript/hyperon` is installed as a package dependency.
 
 Browser GIF export is optional. Install `gifenc` and pass its module to `gif()`
 or `exportReductionGif()`:
@@ -76,14 +76,14 @@ const blob = await grapher("#metta-graph")
 Install the two optional rendering packages:
 
 ```bash
-npm install @metta-ts/grapher sharp gifenc
+npm install @mettascript/grapher sharp gifenc
 ```
 
 Then call the Node entry point. It does not create a DOM or open a browser.
 
 ```ts
 import { writeFile } from "node:fs/promises";
-import { renderReductionGif } from "@metta-ts/grapher/node";
+import { renderReductionGif } from "@mettascript/grapher/node";
 
 const gif = await renderReductionGif("(+ 10 (* 25 2))", {
   view: "blocks",
@@ -107,7 +107,7 @@ choice.
 
 ## Exports
 
-The code entry point is `@metta-ts/grapher`. Its main public surfaces are:
+The code entry point is `@mettascript/grapher`. Its main public surfaces are:
 
 - `grapher`, `MeTTaGrapher`, and their types for mounting and controlling the
   editor.
@@ -124,12 +124,12 @@ The code entry point is `@metta-ts/grapher`. Its main public surfaces are:
   caller-supplied GIF encoding.
 - `blockReductionSvgs`, `graphReductionSvgs`, `sideBySideReductionSvgs`, and
   `encodeSvgAnimation` for host-independent frame generation and encoding.
-- `renderReductionGif` from `@metta-ts/grapher/node` for direct Node GIF bytes.
+- `renderReductionGif` from `@mettascript/grapher/node` for direct Node GIF bytes.
 
-The package also exports `@metta-ts/grapher/node` and
-`@metta-ts/grapher/package.json`. See the
-[full API reference](https://mestto.github.io/MeTTa-TS/reference/grapher).
+The package also exports `@mettascript/grapher/node` and
+`@mettascript/grapher/package.json`. See the
+[full API reference](https://mestto.github.io/MeTTaScript/reference/grapher).
 
 ## License
 
-[MIT](https://github.com/MesTTo/MeTTa-TS/blob/main/LICENSE).
+[MIT](https://github.com/MesTTo/MeTTaScript/blob/main/LICENSE).

@@ -13,7 +13,7 @@ import { readFileSync, readdirSync, writeFileSync, mkdtempSync, existsSync } fro
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { setOutputSink, runProgramAsync, format } from "@metta-ts/core";
+import { setOutputSink, runProgramAsync, format } from "@mettascript/core";
 import { PY_METTA_SRC, pyCoreAsyncOps, type PyBridge } from "./index";
 import { makePythoniaBridge } from "./live-bridge";
 

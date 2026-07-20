@@ -3,5 +3,5 @@
   "out": "docs",
   "excludeInternal": true,
   "readme": "README.md",
-  "name": "@metta-ts/hyperon"
+  "name": "@mettascript/hyperon"
 }

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Documentation and tutorials site for MeTTa TS (VitePress).",
+  "description": "Documentation and tutorials site for MeTTaScript (VitePress).",
   "scripts": {
     "docs:dev": "vitepress dev",
     "docs:build": "vitepress build",
@@ -16,6 +16,8 @@
     "gifenc": "^1.0.3"
   },
   "devDependencies": {
+    "@shikijs/themes": "^2.5.0",
+    "@shikijs/types": "^2.5.0",
     "vitepress": "^1.6.3"
   }
 }

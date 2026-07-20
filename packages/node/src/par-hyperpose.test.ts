@@ -6,7 +6,7 @@
 // line. We assert that differentially: the same program run with the worker pool installed and with it
 // disabled (`parEvalImpl` omitted, sequential fallback) gives byte-identical results.
 import { describe, it, expect } from "vitest";
-import { runProgram, format, type QueryResult } from "@metta-ts/core";
+import { runProgram, format, type QueryResult } from "@mettascript/core";
 import { makeParEvalImpl } from "./par-hyperpose";
 
 const shape = (rs: QueryResult[]): string[] =>

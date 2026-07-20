@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "vitest";
-import { E, MeTTa, S, ValueAtom, VariableAtom } from "@metta-ts/hyperon";
+import { E, MeTTa, S, ValueAtom, VariableAtom } from "@mettascript/hyperon";
 import { registerPrologInterop } from "./prolog";
 import { swiPrologBridge } from "./swi";
 import { runLast } from "./testSupport";

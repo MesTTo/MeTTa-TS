@@ -1,7 +1,8 @@
 name: Publish
 
-# Publishes all @metta-ts/* packages to npm with provenance (a signed link back
-# to this repo and commit). Runs when a v* tag is pushed, or on demand.
+# Publishes the @mettascript/* packages and their @metta-ts/* compatibility shims
+# to npm with provenance (a signed link back to this repo and commit). Runs when a
+# v* tag is pushed, or on demand.
 on:
   push:
     tags: ["v*"]
@@ -23,6 +24,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
-      - run: pnpm -r --filter "./packages/*" publish --access public --provenance --no-git-checks
+      - run: pnpm -r --filter "./packages/*" --filter "./compat/*" publish --access public --provenance --no-git-checks
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

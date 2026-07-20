@@ -5,10 +5,10 @@ SPDX-License-Identifier: MIT
 
 # The metta CLI
 
-`@metta-ts/node` installs the `metta` command. Use it to run MeTTa files, check them, explain reductions, and render reduction GIFs.
+`@mettascript/node` installs the `metta` command. Use it to run MeTTa files, check them, explain reductions, and render reduction GIFs.
 
 ```bash
-npm install -g @metta-ts/node
+npm install -g @mettascript/node
 ```
 
 ## Run a program
@@ -33,18 +33,18 @@ Both commands run the file and print one result list for each `!` query:
 
 The runner accepts these flags:
 
-| flag | does |
-| --- | --- |
-| `--check` | run static analysis instead of evaluation |
-| `--json` | print checker diagnostics as JSON when `--check` is set |
-| `--undefined-symbols` | include undefined-symbol diagnostics in the checker |
-| `--py` | enable Python interop through `pythonia` |
-| `--prolog` | enable Prolog interop through a local `swipl` executable |
-| `--conformance` | print every top-level directive result, not only `!` queries |
-| `--max-steps=N` | set the evaluation fuel |
-| `--max-stack-depth=N` | set the initial interpreter stack-depth bound |
-| `--hash-cons` | enable the experimental hash-consing mode |
-| `--flat-atomspace` | enable the experimental flat atomspace mode |
+| flag                  | does                                                         |
+| --------------------- | ------------------------------------------------------------ |
+| `--check`             | run static analysis instead of evaluation                    |
+| `--json`              | print checker diagnostics as JSON when `--check` is set      |
+| `--undefined-symbols` | include undefined-symbol diagnostics in the checker          |
+| `--py`                | enable Python interop through `pythonia`                     |
+| `--prolog`            | enable Prolog interop through a local `swipl` executable     |
+| `--conformance`       | print every top-level directive result, not only `!` queries |
+| `--max-steps=N`       | set the evaluation fuel                                      |
+| `--max-stack-depth=N` | set the initial interpreter stack-depth bound                |
+| `--hash-cons`         | enable the experimental hash-consing mode                    |
+| `--flat-atomspace`    | enable the experimental flat atomspace mode                  |
 
 Host runtimes are opt-in. Without `--py` or `--prolog`, the runner does not load Python, Prolog, or their optional packages.
 
@@ -67,11 +67,11 @@ metta debug --file program.metta why '(main)' --llm --max-steps 1000
 
 The debugger takes source from `--file <p>` or `--source '<m>'`, then runs one command:
 
-| command | does |
-| --- | --- |
-| `why` | evaluates one call with tracing and prints the trace summary |
-| `eval` | evaluates one expression against the loaded source |
-| `run` | runs every `!` query in the loaded source |
+| command | does                                                         |
+| ------- | ------------------------------------------------------------ |
+| `why`   | evaluates one call with tracing and prints the trace summary |
+| `eval`  | evaluates one expression against the loaded source           |
+| `run`   | runs every `!` query in the loaded source                    |
 
 `--llm` prints JSON. `--max-steps N` sets the evaluation fuel. See [Debugging and traces](/tools/metta-debug) for the trace fields.
 
@@ -82,22 +82,22 @@ metta graph program.metta -o out.gif
 metta graph program.metta --view side-by-side --width 960 --max-steps 200
 ```
 
-`metta graph` renders the reduction to an animated GIF through `@metta-ts/grapher/node`. The grapher is loaded lazily, so install the renderer packages before using this command:
+`metta graph` renders the reduction to an animated GIF through `@mettascript/grapher/node`. The grapher is loaded lazily, so install the renderer packages before using this command:
 
 ```bash
-npm install @metta-ts/grapher gifenc sharp
+npm install @mettascript/grapher gifenc sharp
 ```
 
 The graph command accepts these flags:
 
-| flag | does |
-| --- | --- |
-| `-o out.gif` | write to the given GIF path |
-| `--view blocks` | render the nested blocks view |
-| `--view graph` | render the node graph view |
-| `--view side-by-side` | render both views together |
-| `--width N` | set the GIF width in pixels |
-| `--max-steps N` | bound reduction steps while building the trace |
+| flag                  | does                                           |
+| --------------------- | ---------------------------------------------- |
+| `-o out.gif`          | write to the given GIF path                    |
+| `--view blocks`       | render the nested blocks view                  |
+| `--view graph`        | render the node graph view                     |
+| `--view side-by-side` | render both views together                     |
+| `--width N`           | set the GIF width in pixels                    |
+| `--max-steps N`       | bound reduction steps while building the trace |
 
 ## Version and help
 

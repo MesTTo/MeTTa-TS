@@ -6,7 +6,7 @@
 // The gRPC bus implementation (das-proto stubs plus Python `hyperon_das` choreography) plugs in here.
 // `MockTransport` keeps tests and offline flows on the same `DasSpace` path; live-bus validation
 // needs a running DAS service. See README.
-import { type Atom, type Bindings, atomEq, matchAtoms } from "@metta-ts/core";
+import { type Atom, type Bindings, atomEq, matchAtoms } from "@mettascript/core";
 
 export interface DasTransport {
   /** Pattern-matching query against the remote space; returns binding sets (DAS `query`). */

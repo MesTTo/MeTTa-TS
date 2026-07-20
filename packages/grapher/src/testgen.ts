@@ -6,7 +6,7 @@
 // Math.random) and a random MeTTa atom generator. Not part of the shipped bundle; index.ts does not
 // export it.
 
-import { S, V, E, ValueAtom, type Atom } from "@metta-ts/hyperon";
+import { S, V, E, ValueAtom, type Atom } from "@mettascript/hyperon";
 
 /** A seeded linear-congruential PRNG returning values in [0, 1). */
 export function makeRng(seed: number): () => number {

@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-import * as core from "@metta-ts/core";
-import { Atom, ExpressionAtom, SymbolAtom } from "@metta-ts/hyperon";
+import * as core from "@mettascript/core";
+import { Atom, ExpressionAtom, SymbolAtom } from "@mettascript/hyperon";
 import type { PrologBridge } from "./prolog";
 
 function predicateNameAndArity(

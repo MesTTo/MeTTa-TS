@@ -6,7 +6,7 @@
 // offscreen canvas and uses a caller-provided GIF encoder. The frames use a fixed view box over every
 // state, so the animation does not jump or rescale.
 
-import type { Atom } from "@metta-ts/hyperon";
+import type { Atom } from "@mettascript/hyperon";
 import { DEFAULT_TRACE_MS } from "../anim";
 import { encodeBrowserSvgAnimation, type SvgAnimation } from "../svg-gif";
 import type { BlockSettings } from "./settings";

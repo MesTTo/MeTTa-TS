@@ -9,7 +9,7 @@
 //     compressible repeated subpatterns (MORK / Hyperon whitepaper compression).
 //
 // Run it (after `pnpm build`): npx tsx examples/scaling.ts
-import { runProgram, format, FlatKB, williamTopK, sym, expr, gint, variable, type Atom } from "@metta-ts/core";
+import { runProgram, format, FlatKB, williamTopK, sym, expr, gint, variable, type Atom } from "@mettascript/core";
 
 const A = (...items: Atom[]): Atom => expr(items);
 const hrt = (): number => Number(process.hrtime.bigint()) / 1e6;

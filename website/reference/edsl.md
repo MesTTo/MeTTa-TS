@@ -3,12 +3,12 @@ SPDX-FileCopyrightText: 2026 MesTTo
 SPDX-License-Identifier: MIT
 -->
 
-# @metta-ts/edsl
+# @mettascript/edsl
 
 The ergonomic, typed eDSL. Builders produce ordinary atoms; the runner evaluates them on the core engine. For the conceptual tour, see [the typed eDSL](/edsl/overview); this page is the full surface.
 
 ```bash
-npm install @metta-ts/edsl
+npm install @mettascript/edsl
 ```
 
 ## Names, variables, and terms
@@ -62,7 +62,7 @@ const not: (x: Term) => ExpressionAtom;
 const getType, getMetatype: (x: Term) => ExpressionAtom; //           get-type / get-metatype
 const unique: (x: Term) => ExpressionAtom; //                         de-duplicate a nondeterministic result
 const union, intersection, subtraction: (a: Term, b: Term) => ExpressionAtom; // set ops
-const assertEqual, assertAlphaEqual: (a: Term, b: Term) => ExpressionAtom;      // test assertions
+const assertEqual, assertAlphaEqual: (a: Term, b: Term) => ExpressionAtom; // test assertions
 const println: (x: Term) => ExpressionAtom; //                        println!
 const carAtom, cdrAtom, deconsAtom: (x: Term) => ExpressionAtom; //   expression/list ops
 const consAtom: (head: Term, tail: Term) => ExpressionAtom;
@@ -126,15 +126,15 @@ type SourceRow<S extends string> = { [K in SourceVars<S>]: unknown }; // $-vars 
 
 `query` runs `match &self` and returns one row per match (keys inferred from the pattern, or typed by an explicit `vars` map). `q` does the same from a source string with the row keys extracted from the source's `$`-variables at compile time. `fn`/`fns`/`asyncFn` register plain typed functions (args auto-unwrapped, result auto-grounded); `op`/`asyncOp` give raw atom control. `call` and `import` call MeTTa functions back from TypeScript. Pass a schema to `mettaDB<Schema>()` to type all of these; both an `interface` and a `type` work.
 
-For annotations without a second import, the entry also re-exports `Atom`, `GroundedAtom`, `ValueAtom`, and `atomToJs` from [`@metta-ts/hyperon`](/reference/hyperon).
+For annotations without a second import, the entry also re-exports `Atom`, `GroundedAtom`, `ValueAtom`, and `atomToJs` from [`@mettascript/hyperon`](/reference/hyperon).
 
 ## Optional host interop builders
 
-The `@metta-ts/edsl/py` and `@metta-ts/edsl/prolog` subpaths build atoms for
+The `@mettascript/edsl/py` and `@mettascript/edsl/prolog` subpaths build atoms for
 optional host runtimes. They do not import the runtime packages themselves.
 
 ```ts
-// @metta-ts/edsl/py
+// @mettascript/edsl/py
 function pyCall(path: string, ...args: Term[]): ExpressionAtom; // (py-call (<path> ...args))
 function pyCall(spec: Term): ExpressionAtom; //                 (py-call <spec>)
 const pyEval: (source: Term) => ExpressionAtom; //              (py-eval source)
@@ -148,7 +148,7 @@ function pyChain(items: readonly Term[] | Term): ExpressionAtom;
 ```
 
 ```ts
-// @metta-ts/edsl/prolog
+// @mettascript/edsl/prolog
 type PrologGoal = Term | readonly Term[];
 const prologCall: (goal: PrologGoal) => ExpressionAtom;
 const Predicate: (goal: PrologGoal) => ExpressionAtom;

@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-import type { AsyncGroundFn } from "@metta-ts/core";
-import * as core from "@metta-ts/core";
+import type { AsyncGroundFn } from "@mettascript/core";
+import * as core from "@mettascript/core";
 import {
   Atom,
   type AsyncOperationEffect,
@@ -18,7 +18,7 @@ import {
   ValueAtom,
   VariableAtom,
   asyncOperationReturnToReduceResult,
-} from "@metta-ts/hyperon";
+} from "@mettascript/hyperon";
 
 export type PrologTermJson =
   | { readonly type: "atom"; readonly name: string }

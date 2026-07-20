@@ -4,7 +4,7 @@
 
 // @metta-ts/browser: browser entry point. The core interpreter has no Node dependencies, so this build
 // re-exports it and adds in-memory source runners for browser hosts.
-export * from "@metta-ts/core";
+export * from "@mettascript/core";
 export {
   evalBranchesInBrowserWorkers,
   makeBrowserParEvalImpl,

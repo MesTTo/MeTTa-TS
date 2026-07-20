@@ -12,7 +12,7 @@
 // literals (a base case, a decrement) stay literal. This is a display-only refinement; the engine-facing
 // trace from reduceTrace stays a pure, one-rewrite-per-step sequence.
 
-import { E, S, V, ExpressionAtom, VariableAtom, type Atom, type MeTTa } from "@metta-ts/hyperon";
+import { E, S, V, ExpressionAtom, VariableAtom, type Atom, type MeTTa } from "@mettascript/hyperon";
 
 /** Insert, after each linear rewrite `before -> after` that instantiates a rule body, the body with its
  *  bound values shown as hollow variables, so the next step fills them in. Grounded steps that bind nothing

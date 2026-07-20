@@ -7,8 +7,8 @@
 // differential suite (py-differential.test.ts) holds the same programs to byte-parity with PeTTa.
 import { describe, it, expect } from "vitest";
 import fc from "fast-check";
-import { MeTTa, S, E, ValueAtom, GroundedAtom } from "@metta-ts/hyperon";
-import type { Atom } from "@metta-ts/hyperon";
+import { MeTTa, S, E, ValueAtom, GroundedAtom } from "@mettascript/hyperon";
+import type { Atom } from "@mettascript/hyperon";
 import { atomToPy, pyToAtom, registerPyInterop } from "./py";
 import { MockPyBridge } from "./py-mock";
 
