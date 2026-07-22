@@ -15,6 +15,7 @@ import {
   collectImports,
   type AsyncGroundFn,
   type Atom,
+  type ImportMap,
   type QueryResult,
   type RunOptions,
 } from "@mettascript/core";
@@ -175,7 +176,7 @@ function withDefaultOptions(
 export function runSource(
   src: string,
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts?: RunOptions,
 ): QueryResult[] {
   return evalSequential(parseAll(src, standardTokenizer()), fuel, imports, {
@@ -189,7 +190,7 @@ export function runSourceAsync(
   src: string,
   asyncOps: Map<string, AsyncGroundFn> = new Map(),
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts?: RunOptions,
   parOptions?: BrowserParEvalOptions,
 ): Promise<QueryResult[]> {

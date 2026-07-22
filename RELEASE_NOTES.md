@@ -1,3 +1,31 @@
+# MeTTaScript 2.1.0
+
+Imports are now transitive, deduplicated, and cycle-safe. A module you import can itself import other
+modules, and their definitions become available; importing the same module twice is a no-op; and a cycle of
+imports resolves instead of failing. Import order already did not matter. Every terminating program from
+2.0.4 produces the same output, validated byte-identical across the full corpus, so upgrading is safe.
+
+## Transitive, deduplicated, cycle-safe imports
+
+Before this release, `(import! &self <module>)` brought in only that module's own definitions. If the module
+itself imported another, those transitive definitions did not follow; importing the same module twice
+duplicated its rules; and a cycle of imports left calls unresolved.
+
+Now `import!` resolves the whole definition closure. When you import a module, its definitions load, and so
+do the definitions of every module it imports, transitively. Each module loads once per space, so a
+duplicate import is a no-op and a cycle of imports terminates. This matches Hyperon on transitivity and
+deduplication, and it is cycle-safe where Hyperon loops, which affects no terminating program.
+
+The model stays definition-oriented. Importing a module brings its definitions and follows its `import!`
+edges, but does not execute the module's other top-level `!` directives, so a module's own tests or prints
+do not re-run when you import it.
+
+## Compatibility
+
+Nothing changes for programs that do not use nested, duplicate, or cyclic imports, which is the whole
+existing corpus: 124 of 124 programs are byte-identical to 2.0.4. The new behavior only activates for the
+import shapes that previously did not work.
+
 # MeTTaScript 2.0.4
 
 A packaging fix for the browser compatibility package. `@metta-ts/browser` declared `sideEffects: false`

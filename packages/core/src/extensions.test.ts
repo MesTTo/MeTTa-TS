@@ -40,11 +40,11 @@ describe("built-in module registry", () => {
     expect(out.at(-1)).toEqual(["(dot (1.0 2.0 3.0) (4.0 5.0 6.0))"]);
   });
 
-  it("resolves a module registered through registerBuiltinModule", () => {
+  it("loads a module registered through registerBuiltinModule once", () => {
     registerBuiltinModule("regtest", "(= (regtest-answer) 42)");
-    const out = runProgram("!(import! &self regtest)\n!(regtest-answer)").map((g) =>
-      g.results.map(format),
-    );
+    const out = runProgram(
+      "!(import! &self regtest)\n!(import! &self regtest)\n!(regtest-answer)",
+    ).map((g) => g.results.map(format));
     expect(out.at(-1)).toEqual(["42"]);
   });
 

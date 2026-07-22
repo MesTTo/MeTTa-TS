@@ -293,6 +293,25 @@ function opOf(a: Atom): string | undefined {
     : undefined;
 }
 
+/** A literal `import!` target: a symbol, string, or PeTTa `(library ...)` wrapper. */
+export function literalImportName(atom: Atom): string | undefined {
+  if (atom.kind === "sym") return atom.name;
+  if (atom.kind === "gnd" && atom.value.g === "str") return atom.value.s;
+  if (atom.kind === "expr" && opOf(atom) === "library" && atom.items.length === 2) {
+    const name = atom.items[1]!;
+    if (name.kind === "sym") return name.name;
+    if (name.kind === "gnd" && name.value.g === "str") return name.value.s;
+  }
+  return undefined;
+}
+
+/** Return the literal target of an `(import! <space> <target>)` atom. */
+export function literalImportTarget(atom: Atom): string | undefined {
+  return atom.kind === "expr" && opOf(atom) === "import!" && atom.items.length === 3
+    ? literalImportName(atom.items[2]!)
+    : undefined;
+}
+
 /** Parallel `hyperpose`: when `arg` is `(hyperpose (b1 … bn))` with every branch a pure, ground call and a
  *  Node worker pool is installed (`env.parEval`), evaluate the branches in parallel OS threads and return the
  *  flattened results in branch order. PeTTa forks a thread per branch; our cooperative concurrency cannot,
@@ -559,6 +578,15 @@ function evalResult(prev: Stack, r: Atom, b: Bindings): Item {
 }
 
 // ---------- env (MinEnv) ----------
+export interface ImportModule {
+  readonly id: string;
+  readonly defs: Atom[];
+  readonly imports: string[];
+}
+
+export type ImportEntry = Atom[] | ImportModule;
+export type ImportMap = Map<string, ImportEntry>;
+
 export interface MinEnv {
   ruleIndex: Map<string, Array<[Atom, Atom]>>;
   varRules: Array<[Atom, Atom]>;
@@ -573,7 +601,9 @@ export interface MinEnv {
    *  slot's storage without renumbering. */
   atoms: StaticAtomStore;
   types: Map<string, Atom[]>;
-  imports: Map<string, Atom[]>;
+  imports: ImportMap;
+  /** Canonical module ids loaded into each space during this evaluator run. */
+  loadedModules: Map<string, Set<string>>;
   exprTypes: Array<[Atom, Atom]>;
   /** Async grounded operations, dispatched by the async runner; empty for pure synchronous evaluation. */
   agt: Map<string, AsyncGroundFn>;
@@ -965,6 +995,7 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
     atoms: new StaticAtomStore(),
     types: new Map(),
     imports: new Map(),
+    loadedModules: new Map(),
     exprTypes: [],
     agt: new Map(),
     mutexes: new Map(),
@@ -1537,6 +1568,7 @@ function namedSpaceAtoms(space: NamedSpace | undefined): Atom[] {
 function namedSpaceEnv(env: MinEnv, w: World, name: string): MinEnv {
   const view = buildEnv(namedSpaceAtoms(w.spaces.get(name)), env.gt);
   view.imports = env.imports;
+  view.loadedModules = env.loadedModules;
   if (env.intern !== undefined) view.intern = env.intern;
   return view;
 }
@@ -4191,36 +4223,9 @@ function* interpretStack1G(
           return [[finItem(prev, errAtom(inst(env, it.bnd, a), hostResult.msg), it.bnd)], st];
         return [[finItem(prev, errTextAtom(inst(env, it.bnd, a), hostResult.msg), it.bnd)], st];
       }
-      const moduleName =
-        fileAtom.kind === "sym"
-          ? fileAtom.name
-          : fileAtom.kind === "gnd" && fileAtom.value.g === "str"
-            ? fileAtom.value.s
-            : fileAtom.kind === "expr" &&
-                fileAtom.items.length === 2 &&
-                fileAtom.items[0]?.kind === "sym" &&
-                fileAtom.items[0].name === "library" &&
-                fileAtom.items[1]?.kind === "sym"
-              ? fileAtom.items[1].name
-              : fileAtom.kind === "expr" &&
-                  fileAtom.items.length === 2 &&
-                  fileAtom.items[0]?.kind === "sym" &&
-                  fileAtom.items[0].name === "library" &&
-                  fileAtom.items[1]?.kind === "gnd" &&
-                  fileAtom.items[1].value.g === "str"
-                ? fileAtom.items[1].value.s
-                : undefined;
-      const fileAtoms = moduleName !== undefined ? (env.imports.get(moduleName) ?? []) : [];
-      // Bring the module's type signatures into the env so type-directed evaluation sees them (a
-      // sig in a space's atom list is not consulted by `env.sigs`). Rules stay in the space and are
-      // read dynamically by candidate selection.
-      registerImportedTypes(env, fileAtoms);
-      // Only an import that actually brings in equations can invalidate tabling/compilation (those run off
-      // the static rule index). A no-op import, a missing or unresolved module reference, or a data-only one,
-      // leaves the compiled core valid, so it must not be switched off.
-      if (fileAtoms.some((a) => opOf(a) === "=")) disableTabling(env);
+      const moduleName = literalImportName(fileAtom);
       return spaceMutate(env, st, prev, it2[1]!, it.bnd, (w, name) =>
-        appendSpace(env, w, name, fileAtoms),
+        moduleName === undefined ? w : appendImportedModule(env, w, name, moduleName),
       );
     }
     default:
@@ -4314,6 +4319,31 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
   const spaces = new Map(w0.spaces);
   spaces.set(name, logAppendAll(spaces.get(name) ?? emptyLog, atoms));
   return { ...w0, spaces };
+}
+
+/** Append one module's transitive definition closure once to `name`. Mark before descending to break cycles. */
+function appendImportedModule(env: MinEnv, w0: World, name: string, moduleName: string): World {
+  const entry = env.imports.get(moduleName);
+  if (entry === undefined) return w0;
+  const id = Array.isArray(entry) ? moduleName : entry.id;
+  let loaded = env.loadedModules.get(name);
+  if (loaded === undefined) {
+    loaded = new Set();
+    env.loadedModules.set(name, loaded);
+  }
+  if (loaded.has(id)) return w0;
+  loaded.add(id);
+
+  const defs = Array.isArray(entry) ? entry : entry.defs;
+  let w = w0;
+  if (!Array.isArray(entry))
+    for (const nested of entry.imports) w = appendImportedModule(env, w, name, nested);
+
+  // A space's atom list does not feed `env.sigs`, so register imported declarations explicitly.
+  registerImportedTypes(env, defs);
+  // Only newly loaded equations invalidate compilation. Missing, data-only, and duplicate imports do not.
+  if (defs.some((atom) => opOf(atom) === "=")) disableTabling(env);
+  return appendSpace(env, w, name, defs);
 }
 function reindexRuntimeSelfRules(w: World): void {
   w.selfRules = new Map();

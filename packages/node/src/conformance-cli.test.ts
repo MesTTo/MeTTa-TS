@@ -98,6 +98,18 @@ describe("metta-ts --conformance", () => {
     expect(out).toBe("[()]\n[2]\n");
   });
 
+  it("loads a built-in dependency reached through a file import", () => {
+    const file = fixture("!(import! &self lib)\n!(nested-dot)");
+    writeFileSync(
+      join(dirname(file), "lib.metta"),
+      "!(import! &self vector)\n(= (nested-dot) (dot (1.0 2.0 3.0) (4.0 5.0 6.0)))",
+    );
+
+    const out = execFileSync(process.execPath, [CLI, file], { timeout: 60_000 }).toString();
+
+    expect(out).toBe("[()]\n[32.0]\n");
+  });
+
   it("runs a dynamically constructed hyperpose head through workers", () => {
     const out = execFileSync(
       process.execPath,

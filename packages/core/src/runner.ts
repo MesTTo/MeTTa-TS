@@ -13,9 +13,11 @@ import {
   type MinEnv,
   type AsyncGroundFn,
   type HostImportFn,
+  type ImportMap,
   buildEnv,
   addAtomToEnv,
   initSt,
+  literalImportTarget,
   mettaEval,
   mettaEvalAsync,
   registerAsyncGroundedOperation,
@@ -118,11 +120,7 @@ function baseTablingAnalysis(env: MinEnv): TablingAnalysis {
  *  built-in extension modules (e.g. `concurrency`). The env is built once and extended per non-bang
  *  atom; built-in modules apply only when a program actually `(import! ...)`s them, so the Hyperon
  *  oracle baseline is unaffected. */
-function buildDefaultEnv(
-  imports: Map<string, Atom[]>,
-  tabling: boolean,
-  opts: RunOptions = {},
-): MinEnv {
+function buildDefaultEnv(imports: ImportMap, tabling: boolean, opts: RunOptions = {}): MinEnv {
   const experimental = opts.experimental;
   const env: MinEnv = buildEnv(
     [...preludeAtoms(), ...stdlibAtoms(), ...pettaStdlibAtoms()],
@@ -262,7 +260,7 @@ function resultsForQuery(pairs: Array<[Atom, unknown]>): Atom[] {
 function evalSequentialInternal(
   atoms: readonly { atom: Atom; bang: boolean }[],
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts: RunOptions = {},
   includeNonBang: boolean,
 ): QueryResult[] {
@@ -289,7 +287,7 @@ function evalSequentialInternal(
 export function evalSequential(
   atoms: readonly { atom: Atom; bang: boolean }[],
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts: RunOptions = {},
 ): QueryResult[] {
   return evalSequentialInternal(atoms, fuel, imports, opts, false);
@@ -299,7 +297,7 @@ export function evalSequential(
 export function evalSequentialAllDirectives(
   atoms: readonly { atom: Atom; bang: boolean }[],
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts: RunOptions = {},
 ): QueryResult[] {
   return evalSequentialInternal(atoms, fuel, imports, opts, true);
@@ -309,7 +307,7 @@ export function evalSequentialAllDirectives(
 export function runProgram(
   src: string,
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts: RunOptions = {},
 ): QueryResult[] {
   return evalSequential(parseAll(src, standardTokenizer()), fuel, imports, opts);
@@ -319,7 +317,7 @@ export function runProgram(
 export function runProgramAllDirectives(
   src: string,
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts: RunOptions = {},
 ): QueryResult[] {
   return evalSequentialAllDirectives(parseAll(src, standardTokenizer()), fuel, imports, opts);
@@ -332,7 +330,7 @@ export async function runProgramAsync(
   src: string,
   asyncOps: Map<string, AsyncGroundFn> = new Map(),
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts: RunOptions = {},
 ): Promise<QueryResult[]> {
   const parsed = parseAll(src, standardTokenizer());
@@ -366,21 +364,9 @@ export async function runProgramAsync(
 /** Module names referenced by top-level `import!` statements (so a caller can pre-read them). */
 export function collectImports(src: string): string[] {
   const out: string[] = [];
-  const importName = (atom: Atom): string | undefined => {
-    if (atom.kind === "sym") return atom.name;
-    if (atom.kind === "gnd" && atom.value.g === "str") return atom.value.s;
-    return undefined;
-  };
   for (const { atom } of parseAll(src, standardTokenizer())) {
-    if (
-      atom.kind === "expr" &&
-      atom.items.length === 3 &&
-      atom.items[0]!.kind === "sym" &&
-      atom.items[0]!.name === "import!"
-    ) {
-      const name = importName(atom.items[2]!);
-      if (name !== undefined) out.push(name);
-    }
+    const name = literalImportTarget(atom);
+    if (name !== undefined) out.push(name);
   }
   return out;
 }
@@ -396,7 +382,7 @@ export function isOraclePass(r: QueryResult): boolean {
 export function oracleReport(
   src: string,
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
 ): { total: number; passed: number; failures: string[] } {
   const results = runProgram(src, fuel, imports);
   let passed = 0;

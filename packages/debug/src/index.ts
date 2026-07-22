@@ -4,7 +4,7 @@
 
 import {
   format,
-  type Atom,
+  type ImportMap,
   type QueryResult,
   type RunOptions,
   type TraceEvent,
@@ -22,13 +22,13 @@ export interface TraceSummary {
 export type TraceRunner = (
   program: string,
   fuel: number | undefined,
-  imports: Map<string, Atom[]>,
+  imports: ImportMap,
   opts?: RunOptions,
 ) => QueryResult[];
 
 export interface DebugRunOptions {
   readonly fuel?: number | undefined;
-  readonly imports?: Map<string, Atom[]> | undefined;
+  readonly imports?: ImportMap | undefined;
   readonly runOptions?: Omit<RunOptions, "trace"> | undefined;
 }
 

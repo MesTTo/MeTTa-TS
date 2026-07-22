@@ -17,6 +17,7 @@ import {
   setOutputSink,
   setRawSink,
   type Atom,
+  type ImportMap,
   type QueryResult,
   type ReduceResult,
   type RunOptions,
@@ -41,7 +42,7 @@ async function reexecWithLargerStack(): Promise<never> {
 async function runCliSource(
   src: string,
   fuel: number | undefined,
-  imports: Map<string, Atom[]>,
+  imports: ImportMap,
   opts: RunOptions | undefined,
   includeNonBang: boolean,
 ): Promise<QueryResult[]> {

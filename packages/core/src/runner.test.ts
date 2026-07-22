@@ -271,5 +271,24 @@ describe("runner + stdlib prelude", () => {
     expect(lastWithImports("!(import! &self mymod)\n!(myfn 5)", imports)).toEqual(["50"]);
     expect(lastWithImports('!(import! &self "mymod")\n!(myfn 5)', imports)).toEqual(["50"]);
     expect(lastWithImports("!(import! &self (library mymod))\n!(myfn 5)", imports)).toEqual(["50"]);
+    expect(lastWithImports('!(import! &self (library "mymod"))\n!(myfn 5)', imports)).toEqual([
+      "50",
+    ]);
+  });
+
+  it("loads a module once in each target space", () => {
+    const imports = new Map([["mymod", moduleAtoms("(module-item only)")]]);
+    const out = runProgram(
+      `
+        !(import! &left mymod)
+        !(import! &left mymod)
+        !(import! &right mymod)
+        !(collapse (match &left (module-item $x) $x))
+        !(collapse (match &right (module-item $x) $x))
+      `,
+      100_000,
+      imports,
+    ).map((group) => group.results.map(format));
+    expect(out.slice(-2)).toEqual([["(, only)"], ["(, only)"]]);
   });
 });

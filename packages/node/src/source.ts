@@ -13,7 +13,7 @@ import {
   runProgramAsync,
   standardTokenizer,
   type AsyncGroundFn,
-  type Atom,
+  type ImportMap,
   type QueryResult,
   type RunOptions,
 } from "@mettascript/core";
@@ -36,7 +36,7 @@ function withDefaultParallelism(
 export function runSource(
   src: string,
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts?: RunOptions,
 ): QueryResult[] {
   return evalSequential(
@@ -51,7 +51,7 @@ export function runSource(
 export function runSourceAllDirectives(
   src: string,
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts?: RunOptions,
 ): QueryResult[] {
   return evalSequentialAllDirectives(
@@ -67,7 +67,7 @@ export function runSourceAsync(
   src: string,
   asyncOps: Map<string, AsyncGroundFn> = new Map(),
   fuel = DEFAULT_FUEL,
-  imports: Map<string, Atom[]> = new Map(),
+  imports: ImportMap = new Map(),
   opts?: RunOptions,
   parOptions?: ParEvalOptions,
 ): Promise<QueryResult[]> {

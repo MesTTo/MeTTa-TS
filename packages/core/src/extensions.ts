@@ -9,6 +9,7 @@
 // type-directed argument handling work, e.g. `transaction`'s body is typed `Atom`, so it reaches the
 // transaction instruction unevaluated and is evaluated under snapshot/rollback.
 import type { Atom } from "./atom";
+import type { ImportMap } from "./eval";
 import { parseAll } from "./parser";
 import { standardTokenizer } from "./runner";
 
@@ -190,8 +191,8 @@ export function builtinModules(): Map<string, Atom[]> {
  *  imports. Built-ins are only applied when a program actually `(import! ...)`s them, so this never
  *  affects the Hyperon oracle baseline. Built-in module names are reserved: a caller-supplied module of
  *  the same name does NOT override the built-in. */
-export function withBuiltinModules(extra?: Map<string, Atom[]>): Map<string, Atom[]> {
-  const out = new Map<string, Atom[]>(builtinModules());
+export function withBuiltinModules(extra?: ImportMap): ImportMap {
+  const out: ImportMap = new Map(builtinModules());
   if (extra) for (const [k, v] of extra) if (!out.has(k)) out.set(k, v);
   return out;
 }
