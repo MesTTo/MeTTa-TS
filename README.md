@@ -19,10 +19,10 @@ npm install @mettascript/core        # the interpreter (works in any JS runtime)
 # or: pnpm add @mettascript/core  /  yarn add @mettascript/core
 ```
 
-Other packages, add as needed:
+Optional packages:
 
 ```bash
-npm install @mettascript/hyperon     # a Python-hyperon-style class API
+npm install @mettascript/hyperon     # the stateful MeTTa runner class + grounded ops
 npm install @mettascript/edsl        # a typed TypeScript eDSL for building MeTTa
 npm install @mettascript/node        # CLI + file import! + a parallel matcher
 npm install @mettascript/browser     # web entry + in-memory virtual file system

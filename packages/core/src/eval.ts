@@ -11,6 +11,7 @@ import {
   type Atom,
   atomEq,
   atomVars,
+  collectSubstitutedVars,
   collectVars,
   type ExprAtom,
   emptyExpr,
@@ -607,6 +608,9 @@ export interface MinEnv {
   /** False when `compiled` contains only query-directed dependent search groups. Undefined retains the
    *  historical meaning for structural environments whose map was produced by `compileEnv`. */
   compiledComplete?: boolean | undefined;
+  /** Internal differential switch for handing a pure compiled tail continuation back to the evaluator loop.
+   *  Enabled by default. `false` keeps the former recursive normalization path for equivalence tests. */
+  useCompiledTailContinuation?: boolean;
   /** Opt-in trail-based matching (`experimental.trail`): the conjunctive `match` enumerates on a WAM-style
    *  trail (zero per-solution allocation) instead of the immutable `Bindings`/`merge` threading. Off by
    *  default; byte-identical to the reference matcher (differential-gated), falling back to it per query for
@@ -2168,11 +2172,11 @@ function scopeVars(env: MinEnv, b: Bindings, prev: Stack): string[] {
   for (let p = prev; p !== null; p = p.tail) collectVars(inst(env, b, p.head.atom), out, seen);
   return out;
 }
-function chainLiveVars(cont: Atom, prev: Stack): string[] {
+function chainLiveVars(template: Atom, name: string, value: Atom, prev: Stack): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
   for (let p = prev; p !== null; p = p.tail) collectVars(p.head.atom, out, seen);
-  collectVars(cont, out, seen);
+  collectSubstitutedVars(template, name, value, out, seen);
   return out;
 }
 function superposeItem(prev: Stack, b: Bindings, pair: Atom): Item {
@@ -3622,7 +3626,7 @@ function* interpretStack1G(env: MinEnv, fuel: number, st: St, it: Item): Gen<[It
         // `(div 350000 5 0)` quadratic. The full stack is visible here (unlike inside a reduce-loop arg
         // sub-evaluation), so the live set is complete; restrictBnd resolves transitively, so a value still
         // reachable through a dropped variable is flattened into what is kept rather than lost.
-        const bnd = restrictBnd(env, chainLiveVars(cont, prev), it.bnd);
+        const bnd = restrictBnd(env, chainLiveVars(it2[3]!, v, it2[1]!, prev), it.bnd);
         return [[{ stack: atomToStack(cont, prev), bnd }], st];
       }
       break;
@@ -6995,6 +6999,49 @@ function* mettaEvalG(
         ) {
           const cr = runCompiled(env, op, partAtoms, cur2, COMPILED_IMPURE_OPS, undefined, fuel);
           if (cr !== undefined) {
+            const tailResult =
+              env.useCompiledTailContinuation !== false &&
+              partials.length === 1 &&
+              queryVars.length === 0 &&
+              wApp.ground &&
+              cr.state === undefined &&
+              cr.results.length === 1
+                ? cr.results[0]!
+                : undefined;
+            if (tailResult !== undefined) {
+              const nextAtom = tailResult.atom;
+              if (
+                nextAtom.kind === "expr" &&
+                nextAtom.items.length > 0 &&
+                nextAtom.items[0]!.kind === "sym" &&
+                nextAtom.ground &&
+                !isStackOverflowAtom(nextAtom) &&
+                !(opReturnsAtom && !isEmbeddedOp(nextAtom)) &&
+                !atomEq(nextAtom, wApp)
+              ) {
+                const nextOp = (nextAtom.items[0] as { name: string }).name;
+                const staticRules = nextOp === op ? env.ruleIndex.get(op) : undefined;
+                // A lone all-variable direct self rewrite has no rule-level base case. Keep its former
+                // recursive path so a runaway call still reaches the native overflow guard instead of
+                // spinning forever in a loop that deliberately does not consume evaluator fuel.
+                const loneCatchAllSelfCall =
+                  staticRules?.length === 1 &&
+                  staticRules[0]![0].kind === "expr" &&
+                  staticRules[0]![0].items.slice(1).every((item) => item.kind === "var");
+                if (!loneCatchAllSelfCall) {
+                  if (cr.counterDelta !== 0)
+                    cur2 = {
+                      counter: cur2.counter + cr.counterDelta,
+                      world: cur2.world,
+                    };
+                  la = nextAtom;
+                  lbnd = emptyBindings;
+                  lst = cur2;
+                  lw = nextAtom;
+                  continue reduceTrampoline;
+                }
+              }
+            }
             const [handled, st4] = yield* reduceCompiledResultsG(
               env,
               fuel,

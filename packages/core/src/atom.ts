@@ -465,6 +465,23 @@ export function collectVars(a: Atom, out: string[], seen: Set<string>): void {
   }
 }
 
+/** Collect the variable order produced by replacing `name` with `value` in `template` once. */
+export function collectSubstitutedVars(
+  template: Atom,
+  name: string,
+  value: Atom,
+  out: string[],
+  seen: Set<string>,
+): void {
+  for (const v of atomVarsOf(template)) {
+    if (v === name) collectVars(value, out, seen);
+    else if (!seen.has(v)) {
+      seen.add(v);
+      out.push(v);
+    }
+  }
+}
+
 /** The empty expression `()` (LeaTTa `Atom.empty`), the success marker used by `assert*`. */
 export const emptyExpr: ExprAtom = expr([]);
 

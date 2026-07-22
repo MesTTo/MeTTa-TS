@@ -159,6 +159,10 @@ export function addVarEquality(
 /** Fold one relation into every candidate set, keeping consistent extensions (LeaTTa `mergeOne`). */
 function mergeOne(bs: Bindings[], r: BindingRel, seen?: ReconcileSeen): Bindings[] {
   if (r.tag === "eq" && r.x === r.y) return bs;
+  if (bs.length === 1) {
+    const b = bs[0]!;
+    return r.tag === "val" ? addVarBinding(b, r.x, r.a, seen) : addVarEquality(b, r.x, r.y, seen);
+  }
   const out: Bindings[] = [];
   for (const b of bs) {
     const ext =

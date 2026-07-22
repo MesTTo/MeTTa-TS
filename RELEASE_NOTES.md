@@ -1,3 +1,53 @@
+# MeTTaScript 2.0.1
+
+A performance, robustness, and conformance patch. Semantics are unchanged from 2.0.0: every
+terminating program produces the same output, validated byte-identical on the conformance oracle and
+the full test suite. Upgrading from 2.0.0 is safe.
+
+## Faster
+
+Two allocation reductions on the hottest evaluator paths, each measured on a quiet machine and proven
+byte-identical against the old path:
+
+- A chain continuation no longer re-scans a freshly substituted atom to find its live variables. The
+  order is derived from the cached template and replacement lists instead.
+- A binding merge with a single candidate returns the extension array directly rather than allocating
+  and copying a new one.
+
+On the `he_minimalmetta` corpus benchmark, the 70,000-division Minimal MeTTa program, this is about
+14.6% faster, repeated across four runs. Both are pure allocation reductions on the paths the profile
+ranked first, so they help allocation-heavy programs generally.
+
+## Deeper recursion
+
+Deep compiled linear recursion no longer overflows the native JavaScript stack. A compiled tail
+continuation is now handed back to the reduction trampoline instead of recursing, so a guarded
+count-down to 100,000 completes and returns its result. The change is perf-neutral on the corpus,
+measured within control noise, and byte-identical on every terminating program.
+
+## Conformance tests
+
+A new `semantic-conformance` suite adds black-box cases whose expected outputs come from the Hyperon
+0.2.10 reference, not from this engine. They pin behaviors the prior suite left to differential tests
+only: symmetric first-order unification rejecting a symbol clash, the occurs check, cyclic-binding
+rejection, match multiplicity, `remove-atom` removing a single occurrence, `match` instantiating its
+template, and higher-order specialization. It is the start of a suite that specifies the language
+rather than the implementation.
+
+## Docs
+
+The DataScript comparison now has its own results file at
+[`packages/node/bench/RESULTS-datascript.md`](packages/node/bench/RESULTS-datascript.md), and the Use
+cases page links to it. On declarative queries MeTTaScript is faster than DataScript; DataScript's
+hand-tuned direct index reads keep point lookups, as the page already notes.
+
+## Known limitation
+
+A program whose control flow depends on recursion depth can observe different output depending on how
+much native stack an evaluation uses, because termination by depth currently follows the host
+JavaScript stack rather than an in-language bound. This is pre-existing, not new in 2.0.1, and is
+tracked for a future language-level depth rule.
+
 # MeTTaScript 2.0.0
 
 MeTTaScript 2.0.0 is a rename. The project was MeTTa TS; it is now MeTTaScript. On the conformance

@@ -15,6 +15,8 @@ import {
   gstr,
   atomEq,
   atomVars,
+  collectSubstitutedVars,
+  collectVars,
 } from "./atom";
 import { callGrounded, stdTable } from "./builtins";
 import { parse, format } from "./parser";
@@ -22,6 +24,7 @@ import { standardTokenizer } from "./runner";
 import { alphaEq } from "./alpha";
 import { matchAtoms } from "./match";
 import { instantiate } from "./instantiate";
+import { applySubst } from "./substitution";
 
 // A safe symbol name: starts with a letter, not "True"/"False", not all-digits (those tokenize).
 const name = fc
@@ -53,6 +56,29 @@ const groundAtomArb: fc.Arbitrary<Atom> = fc.letrec<{ atom: Atom }>((tie) => ({
 const tk = standardTokenizer();
 
 describe("properties (fast-check)", () => {
+  it("substituted variable collection matches one-pass substitution", () => {
+    fc.assert(
+      fc.property(
+        atomArb,
+        atomArb,
+        name,
+        fc.uniqueArray(name, { maxLength: 4 }),
+        (template, value, variableName, prefix) => {
+          const actual = [...prefix];
+          collectSubstitutedVars(template, variableName, value, actual, new Set(actual));
+
+          const expected = [...prefix];
+          collectVars(applySubst([[variableName, value]], template), expected, new Set(expected));
+          return (
+            actual.length === expected.length &&
+            actual.every((item, index) => item === expected[index])
+          );
+        },
+      ),
+      { numRuns: 2_000 },
+    );
+  });
+
   it("parser round-trip: parse(format(a)) ≡ a", () => {
     fc.assert(
       fc.property(atomArb, (a) => {
