@@ -1,3 +1,20 @@
+# MeTTaScript 2.0.4
+
+A packaging fix for the browser compatibility package. `@metta-ts/browser` declared `sideEffects: false`
+while shipping a Web Worker entry that does have side effects, so a bundler could tree-shake
+`@metta-ts/browser/hyperpose-worker` down to an empty file and break parallel evaluation in the browser. No
+API or evaluation change: upgrading from 2.0.3 is safe and every terminating program produces the same
+output.
+
+## What changed
+
+`@metta-ts/browser`'s `sideEffects` now lists `./dist/hyperpose-worker.js`, matching the canonical
+`@mettascript/browser`, which already declared it. A consumer that imports the worker for its side effect,
+such as a `new Worker(...)` entry, now keeps the worker code through tree-shaking with no bundler workaround.
+Verified with esbuild 0.28.1: the worker bundle goes from an empty 51 bytes to the full 331 KB. A new test
+asserts every `@metta-ts/*` shim mirrors its `@mettascript/*` canonical's `sideEffects`, so a shim cannot
+silently drop a worker entry again.
+
 # MeTTaScript 2.0.3
 
 Adds an opt-in, deterministic work budget that bounds how much a single query is allowed to compute.
