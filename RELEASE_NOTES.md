@@ -1,3 +1,22 @@
+# MeTTaScript 2.2.0
+
+Exposes the import resolver as a reusable, host-agnostic function. The transitive, cycle-safe import
+resolution that 2.1.0 added is now a core primitive that any host can drive with its own module reader.
+Behavior is unchanged: every terminating program produces the same output as 2.1.0, validated byte-identical
+across the full corpus, so upgrading is safe.
+
+## `resolveImportGraph`
+
+`@mettascript/core` now exports `resolveImportGraph(entrySrc, resolveModule, contextId?)`, the transitive,
+cycle-safe import-graph walk, decoupled from the filesystem. The caller supplies a `resolveModule` callback
+that maps an import name and a context to a module identity and, when the module is loadable, its source. The
+function returns the same import graph the runtime consumes.
+
+`@metta-ts/node`'s `readImports` is now a thin wrapper that supplies a filesystem `resolveModule`, so its
+behavior is identical. A tool that resolves modules from somewhere other than the filesystem, such as an
+editor working over in-memory workspace files, can build the exact same import graph the runtime uses by
+supplying its own reader, rather than reimplementing the resolution.
+
 # MeTTaScript 2.1.0
 
 Imports are now transitive, deduplicated, and cycle-safe. A module you import can itself import other

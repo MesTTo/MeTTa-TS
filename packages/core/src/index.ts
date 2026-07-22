@@ -22,6 +22,7 @@ export * from "./eval";
 export * from "./eval-depth";
 export * from "./eval-steps";
 export * from "./runner";
+export * from "./import-graph";
 export type { TraceEvent, TraceSink } from "./trace";
 export * from "./host";
 export * from "./extensions";
