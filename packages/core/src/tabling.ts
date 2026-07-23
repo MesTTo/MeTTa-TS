@@ -69,6 +69,12 @@ export const MODED_IMPURE_OPS: ReadonlySet<string> = new Set(
   [...IMPURE_OPS].filter((op) => op !== "empty"),
 );
 
+/** `IMPURE_OPS` minus `match`. Calls admitted under this class are keyed by the current atom-space
+ *  content version. `get-atoms` remains impure because it evaluates the atoms returned by the read. */
+export const SPACE_READ_IMPURE_OPS: ReadonlySet<string> = new Set(
+  [...IMPURE_OPS].filter((op) => op !== "match"),
+);
+
 /** A named grounded operation is table-safe only when it is an unchanged built-in on the pure list. */
 export function isTablingImpureHead(
   env: MinEnv,

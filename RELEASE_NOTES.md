@@ -1,3 +1,55 @@
+# MeTTaScript 2.5.0
+
+Four engine changes: repeated queries over a knowledge base that has not changed now reuse their
+answers instead of recomputing them, functions that build and test candidate programs compile to
+native code, `superpose` treats a tuple of operators as data the way Hyperon does, and numeric type
+annotations written `Int`, `Integer`, `Double`, or `Float` are accepted as `Number`. The full
+corpus validates byte-identical against 2.4.0; the only outputs that change are the two the new
+semantics exist for, a superposed operator tuple that used to be a type error and now enumerates,
+and an `Int`-style signature that used to reject numbers and now runs.
+
+## Tabling for functions that read a space
+
+Automatic tabling already memoised pure recursive functions. It now also covers a function whose only
+side effect is reading atoms with `match`, which is the shape of a backward chainer: rules stored as
+atoms, a recursive `deduce` that matches them, and the same goal asked many times. The memo key
+carries a whole-world atom-space content version, so a cached answer is reused only while every space
+is unchanged. Any write, `add-atom` and `remove-atom` on `&self` or a named space, `new-space`,
+`fork-space`, `bind!`, an import, or a transaction commit, moves later calls to a fresh key, so a
+query always reflects the current contents. `get-atoms` stays outside the memo because it evaluates
+what it reads. A repeated deduction over a fixed rule base that recomputed every subgoal on every
+query now answers the repeats from the table: a thousand repetitions of a backward-chained goal run about three times faster end to end, with the whole gain on the repeated queries.
+
+## Compiling program synthesis
+
+A generate-and-test program, a non-deterministic generator that builds candidate expressions, a
+checker that evaluates each candidate, and a renderer that prints the winner, previously ran entirely
+in the interpreter. Three additions bring it onto the compiled path. A clause that applies a variable
+bound to a constructor's child, `($op $a $b)` where `$op` came from destructuring, compiles to a
+native numeric dispatch when the value is `+`, `-`, or `*`, and falls back to the interpreter for any
+other head. A single guarded clause that calls another compiled function joins the scalar path, and a
+tail self-call in such a clause loops without consuming an evaluation-depth level, matching the
+interpreter's tail behaviour exactly. The generator's two-clause union and the generate-test-render
+pipeline compile as a unit, preserving clause order, operator order, and the left-to-right product so
+results enumerate in the same sequence as before. Candidate order and multiplicity are unchanged. The depth-2 generate-and-test workload runs about eleven times faster; the depth-1 form about twice as fast.
+
+## Operators as data in superpose
+
+`(superpose (+ - *))` now enumerates the three operators, matching Hyperon. `superpose` splits its
+argument tuple and evaluates each element as a result; a tuple whose head cannot be applied, a set of
+operators carried as data, is the data itself, so the elements are the operators. A tuple that is a
+well-typed call is still evaluated first and its value split, so a computed argument such as
+`(superpose (cdr-atom (collapse (match ...))))` keeps working. The error for a non-expression
+argument now reads exactly as Hyperon's.
+
+## Numeric type aliases
+
+A signature written `(-> Int Int)`, or with `Integer`, `Double`, or `Float`, now type-checks against
+numeric values the same way `Number` does, in both directions: an `Int` parameter accepts any number,
+and an `Int`-typed result satisfies a `Number` parameter such as `+`. The names denote one numeric
+family, so a float is accepted where `Int` is declared. A type you define yourself is unaffected and
+still guards its constructors. `get-type` continues to report the declared name.
+
 # MeTTaScript 2.4.0
 
 A native fast path for the functions that destructure data. A deterministic function that matches on its

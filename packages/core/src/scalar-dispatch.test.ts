@@ -5,9 +5,10 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { Bindings } from "./bindings";
-import { compileEnv } from "./compile";
+import { compileEnv, runCompiled } from "./compile";
 import { compiledEnvWith, envWith, parseOne } from "./compile-test-utils";
 import { initSt, mettaEval, type MinEnv } from "./eval";
+import { DEFAULT_MAX_STACK_DEPTH } from "./eval-depth";
 import { format } from "./parser";
 import { runProgram } from "./runner";
 
@@ -95,6 +96,29 @@ describe("scalar constructor dispatch", () => {
     expect(holder?.kind).toBe("scalar");
     expect(actual.results[0]).toEqual([{ atom: "23", bindings: [] }]);
     expect(actual.results[1]).toEqual([{ atom: "(lookup x Nil)", bindings: [] }]);
+  });
+
+  it("dispatches constructor-bound numeric heads and falls back for other symbols", () => {
+    const src = `
+(= (join $a $b) (Pair $a $b))
+(= (var-ev (C $n)) $n)
+(= (var-ev (Bin $op $a $b)) ($op (var-ev $a) (var-ev $b)))
+`;
+    const compiled = compiledEnvWith(src);
+    const interpreted = envWith(src);
+    const queries = [
+      "(var-ev (Bin + (C 2) (Bin * (C 3) (C 4))))",
+      "(var-ev (Bin join (C 2) (C 3)))",
+      "(var-ev (Bin unresolved-head (C 2) (C 3)))",
+    ];
+    const actual = trace(compiled, queries);
+    expect(actual).toEqual(trace(interpreted, queries));
+    expect(compiled.compiled?.get("var-ev")?.kind).toBe("scalar");
+    expect(actual.results.map((row) => row.map((result) => result.atom))).toEqual([
+      ["14"],
+      ["(Pair 2 3)"],
+      ["(unresolved-head 2 3)"],
+    ]);
   });
 
   it("is exact on generated ground constructor trees", () => {
@@ -360,6 +384,48 @@ describe("scalar constructor dispatch", () => {
         ).toContain("StackOverflow");
       }
     }
+  });
+
+  it("matches the default depth cut through a constructor-bound application head", () => {
+    const src = `
+(= (var-ev (C $n)) $n)
+(= (var-ev (Bin $op $a $b)) ($op (var-ev $a) (var-ev $b)))
+`;
+    const tree = nested("Bin +", "(C 1)", DEFAULT_MAX_STACK_DEPTH + 5);
+    const query = `(var-ev ${tree})`;
+    const compiled = compiledEnvWith(src);
+    const interpreted = trace(envWith(src), [query]);
+    expect(compiled.compiled?.get("var-ev")?.kind).toBe("scalar");
+    expect(trace(compiled, [query])).toEqual(interpreted);
+    expect(
+      interpreted.results
+        .at(-1)
+        ?.map((result) => result.atom)
+        .join("\n"),
+    ).toContain("StackOverflow");
+  });
+
+  it("loops on grounded scalar tail frames and declines an open frame", () => {
+    const src = `(= (count $n) (if (== $n 0) done (count (- $n 1))))`;
+    const compiled = compiledEnvWith(src);
+    expect(compiled.compiled?.get("count")?.kind).toBe("scalar");
+    expect(trace(compiled, ["(count 1000)"])).toEqual(trace(envWith(src), ["(count 1000)"]));
+    expect(runCompiled(compiled, "count", [parseOne("$n")], initSt())).toBeUndefined();
+
+    for (const argument of ["500", "-1"]) {
+      const bounded = `${src}\n!(count ${argument})`;
+      const native = runProgram(bounded, 100_000, new Map(), {
+        tabling: true,
+        maxSteps: 100,
+      }).map((result) => result.results.map(format));
+      const boundedReference = runProgram(bounded, 100_000, new Map(), {
+        tabling: false,
+        maxSteps: 100,
+      }).map((result) => result.results.map(format));
+      expect(native).toEqual(boundedReference);
+      expect(native.at(-1)?.join("\n")).toContain("ResourceLimit");
+    }
+    expect(programTrace(`${src}\n!(count 500)`, false).at(-1)).toEqual(["done"]);
   });
 
   it("matches raised max-stack-depth results for deep int and atom recursion", () => {

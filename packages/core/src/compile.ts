@@ -22,6 +22,7 @@ import {
   variable,
   atomVars,
   emptyExpr,
+  NUMBER_FAMILY_TYPE_NAMES,
 } from "./atom";
 import { type CellVar, mkCell, derefCell, occursCell, unifyCellOccurs } from "./trail";
 import {
@@ -134,6 +135,7 @@ interface FunctionalRuntime {
   readonly depth: EvaluationDepth;
   readonly limit: number;
   readonly counterBase: number;
+  readonly counterLimit: number | undefined;
   counterDelta: number;
   freshSuffix: string;
 }
@@ -145,6 +147,9 @@ export interface CompiledRunResult {
   readonly results: readonly CompiledAtomResult[];
   readonly counterDelta: number;
   readonly state?: St;
+  /** The holder reduced each result fully and checked that the current world cannot change that result.
+   *  The evaluator may skip the ordinary RHS reduction for this call. */
+  readonly resultsFinal?: boolean;
 }
 interface RewriteHolder {
   kind: "rewrite";
@@ -245,8 +250,16 @@ type ValueFns = ReadonlyMap<string, ValueHolder>;
 // Replaces the old flat `string[]` of int params so a tuple-pattern parameter's elements ($t/$i/$sum) can
 // resolve to element accessors on the tuple's frame slot. Constructor children use the same mechanism to
 // read an Atom through a positional path in an argument slot. `len` is the current frame length (let appends).
+interface ScopedValue {
+  readonly acc: (f: FrameVal[]) => FrameVal;
+  readonly type: Ty;
+  /** The value came from below a matched constructor. In application-head position it may select one of
+   *  the numeric grounded operations at runtime; every other value declines to the interpreter. */
+  readonly runtimeNumericHead?: boolean;
+}
+
 interface Scope {
-  vars: ReadonlyMap<string, { acc: (f: FrameVal[]) => FrameVal; type: Ty }>;
+  vars: ReadonlyMap<string, ScopedValue>;
   len: number;
 }
 
@@ -351,6 +364,7 @@ function compileArgument(
 ): Compiled | undefined {
   if (expected === "int") return compileIntBody(a, scope, holders);
   if (expected === "number") return compileNumberBody(a, scope, holders);
+  if (expected === "atom") return coerceForReturn(compileBody(a, scope, holders), "atom");
   return compileBody(a, scope, holders);
 }
 
@@ -480,6 +494,30 @@ function compileBody(a: Atom, scope: Scope, holders: ValueFns): Compiled | undef
   // must compile to an int; the node builds a Tup. (An operator/function call has a symbol head handled
   // below; a tuple's head is a non-symbol, or a symbol that is neither a known op nor a compiled function.)
   const head = a.items[0]!;
+  if (head.kind === "var" && scope.vars.get(head.name)?.runtimeNumericHead === true) {
+    const opValue = scope.vars.get(head.name)!;
+    const xy = binNumberArgs(a.items.slice(1), scope, holders);
+    if (xy === undefined) return undefined;
+    const [xn, yn, type] = xy;
+    return {
+      node: (frame, runtime) => {
+        const selected = opValue.acc(frame);
+        if (
+          !isAtomFrameVal(selected) ||
+          selected.kind !== "sym" ||
+          (selected.name !== "+" && selected.name !== "-" && selected.name !== "*")
+        )
+          throw BAIL;
+        return numberArithmetic(
+          xn(frame, runtime),
+          yn(frame, runtime),
+          ARITH[selected.name]!,
+          FLOAT_ARITH[selected.name]!,
+        );
+      },
+      type,
+    };
+  }
   const isCall = head.kind === "sym" && (KNOWN_OPS.has(head.name) || holders.has(head.name));
   if (!isCall) {
     const elems = a.items.map((e) => compileBody(e, scope, holders));
@@ -623,13 +661,37 @@ function compileBody(a: Atom, scope: Scope, holders: ValueFns): Compiled | undef
   return undefined;
 }
 
+function compileTailSelfCall(
+  a: Atom,
+  scope: Scope,
+  holders: ValueFns,
+  self: string,
+): Compiled | undefined {
+  if (
+    a.kind !== "expr" ||
+    a.items.length === 0 ||
+    a.items[0]!.kind !== "sym" ||
+    a.items[0]!.name !== self
+  )
+    return undefined;
+  const h = holders.get(self);
+  if (h === undefined || a.items.length - 1 !== h.arity) return undefined;
+  const cs = a.items.slice(1).map((x, i) => compileArgument(x, h.paramTypes[i]!, scope, holders));
+  if (cs.some((c, i) => !c || c.type !== h.paramTypes[i])) return undefined;
+  const ns = cs.map((c) => c!.node);
+  return {
+    node: (f, runtime) => ns.map((n) => n(f, runtime)) as unknown as FrameVal,
+    type: h.retType,
+  };
+}
+
 /** Compile a body atom in TAIL position. A self-call there returns the next argument frame (an array) for
  *  the caller's loop to consume instead of recursing, and an `if`'s branches stay in tail position. Anything
  *  else compiles normally via `compileBody` (so a non-tail self-call, e.g. fib's, stays ordinary recursion).
  *  This turns a tail-recursive function (find-divisor's trial-division loop is the motivating case) into a
  *  native while-loop in `makeRun`, instead of deep recursion that V8 deoptimises (measured 8x slower than
- *  the interpreter on a deep loop). The array sentinel is unambiguous: a real result is `number | bigint |
- *  boolean`, never an array. */
+ *  the interpreter on a deep loop). The array sentinel is unambiguous because a real scalar result is never
+ *  an array. */
 function compileTail(
   a: Atom,
   scope: Scope,
@@ -668,19 +730,8 @@ function compileTail(
       };
     }
     if (op === self) {
-      const h = holders.get(self);
-      if (h !== undefined && a.items.length - 1 === h.arity) {
-        const cs = a.items
-          .slice(1)
-          .map((x, i) => compileArgument(x, h.paramTypes[i]!, scope, holders));
-        if (!cs.some((c, i) => !c || c.type !== h.paramTypes[i])) {
-          const ns = cs.map((c) => c!.node);
-          return {
-            node: (f, runtime) => ns.map((n) => n(f, runtime)) as unknown as FrameVal,
-            type: h.retType,
-          };
-        }
-      }
+      const tailCall = compileTailSelfCall(a, scope, holders, self);
+      if (tailCall !== undefined) return tailCall;
     }
   }
   const body = compileBody(a, scope, holders);
@@ -722,6 +773,8 @@ function makeRun(
     for (;;) {
       if (first) first = false;
       else runtime.counterDelta += 1;
+      if (runtime.counterLimit !== undefined && runtime.counterDelta > runtime.counterLimit)
+        throw BAIL;
       const r: unknown = node(frame, runtime);
       if (Array.isArray(r)) {
         frame = r as FrameVal[];
@@ -750,6 +803,7 @@ function makeRun(
       depth: new EvaluationDepth(),
       limit: 0,
       counterBase: 0,
+      counterLimit: undefined,
       counterDelta: 0,
       freshSuffix: "",
     };
@@ -824,7 +878,7 @@ function singleClauseHead(
  *  var reads its frame slot (its type may be a tuple, inferred from usage); a tuple pattern's elements read
  *  into the tuple sitting in that slot. */
 function buildScope(params: readonly ParamPat[], paramTypes: readonly Ty[]): Scope {
-  const vars = new Map<string, { acc: (f: FrameVal[]) => FrameVal; type: Ty }>();
+  const vars = new Map<string, ScopedValue>();
   params.forEach((p, i) => {
     if (typeof p === "string") vars.set(p, { acc: (f) => f[i]!, type: paramTypes[i]! });
     else p.forEach((e, j) => vars.set(e, { acc: (f) => (f[i] as Tup).v[j]!, type: "int" }));
@@ -1359,9 +1413,7 @@ function hasVariableOutsideSlots(atom: Atom, slots: ReadonlyMap<string, number>)
 }
 
 const scalarDeclaredReturn = (name: string): "number" | undefined =>
-  name === "Number" || name === "Int" || name === "Integer" || name === "Double" || name === "Float"
-    ? "number"
-    : undefined;
+  NUMBER_FAMILY_TYPE_NAMES.has(name) ? "number" : undefined;
 
 /** Analyze every clause before compiling any body. A present signature must take Atom parameters and
  *  return a numeric type; an untyped constructor function is inferred below. An explicit Atom return makes
@@ -1448,6 +1500,10 @@ function scalarBodyReturnHint(
   if (atom.kind === "sym") return "atom";
   if (atom.items.length === 0) return "atom";
   const head = atom.items[0]!;
+  if (head.kind === "var" && atom.items.length === 3) {
+    const slot = clause.slots.get(head.name);
+    if (slot !== undefined && clause.positions[slot]?.path.length !== 0) return "number";
+  }
   if (head.kind !== "sym") return "atom";
   const op = head.name;
   if (op === "+" || op === "-" || op === "*" || op === "/" || op === "%") return "number";
@@ -1550,9 +1606,32 @@ function hasScalarCallUnderConstructor(
   );
 }
 
+function hasScalarCall(atom: Atom, scalarNames: ReadonlySet<string>): boolean {
+  if (atom.kind !== "expr" || atom.items.length === 0) return false;
+  const head = atom.items[0]!;
+  if (head.kind === "sym" && scalarNames.has(head.name)) return true;
+  return atom.items.some((item) => hasScalarCall(item, scalarNames));
+}
+
+function isSingleGuardedScalarCandidate(
+  candidate: ScalarCandidate,
+  scalarNames: ReadonlySet<string>,
+): boolean {
+  if (candidate.clauses.length !== 1) return false;
+  const body = candidate.clauses[0]!.body;
+  return (
+    body.kind === "expr" &&
+    body.items.length === 4 &&
+    body.items[0]!.kind === "sym" &&
+    body.items[0]!.name === "if" &&
+    hasScalarCall(body, scalarNames)
+  );
+}
+
 /** Keep established one-step symbolic rewrites on their existing holder. Untyped scalar dispatch is useful
  *  when clauses mix value and atom representations, or when a constructor contains a call that the scalar
- *  path can execute while building the result. An explicit supported return type requests scalar semantics. */
+ *  path can execute while building the result. A single guarded clause joins the same path when its guard
+ *  or branches call another scalar candidate. An explicit supported return type requests scalar semantics. */
 function scalarCandidateAddsNativeWork(
   env: MinEnv,
   candidate: ScalarCandidate,
@@ -1574,6 +1653,7 @@ function scalarCandidateAddsNativeWork(
     )
   )
     return true;
+  if (isSingleGuardedScalarCandidate(candidate, scalarNames)) return true;
   return candidate.clauses.some((clause) =>
     hasScalarCallUnderConstructor(env, clause.body, scalarNames, functional),
   );
@@ -1591,10 +1671,14 @@ function scalarSlot(frame: FrameVal[], position: ScalarSlotPosition): Atom {
 }
 
 function scalarScope(clause: ScalarClauseCandidate, arity: number): Scope {
-  const vars = new Map<string, { acc: (f: FrameVal[]) => FrameVal; type: Ty }>();
+  const vars = new Map<string, ScopedValue>();
   for (const [name, slot] of clause.slots) {
     const position = clause.positions[slot]!;
-    vars.set(name, { acc: (frame) => scalarSlot(frame, position), type: "atom" });
+    vars.set(name, {
+      acc: (frame) => scalarSlot(frame, position),
+      type: "atom",
+      runtimeNumericHead: position.path.length !== 0,
+    });
   }
   return { vars, len: arity };
 }
@@ -1696,6 +1780,30 @@ function compileScalarAtom(
   };
 }
 
+/** Keep exact scalar self-calls in tail position while allowing atom-valued base branches. A tail call that
+ *  cannot produce a complete next frame declines the clause instead of silently becoming ordinary
+ *  recursion. Calls nested inside another value stay on compileScalarAtom's depth-tracked path. */
+function compileScalarTail(
+  env: MinEnv,
+  atom: Atom,
+  scope: Scope,
+  holders: ValueFns,
+  self: string,
+  expected: "number" | "atom",
+): Compiled | undefined {
+  if (atom.kind === "expr" && atom.items.length > 0 && atom.items[0]!.kind === "sym") {
+    const op = atom.items[0]!.name;
+    if (op === "if" && atom.items.length === 4)
+      return compileIf(atom.items[1]!, atom.items[2]!, atom.items[3]!, scope, holders, (branch) =>
+        compileScalarTail(env, branch, scope, holders, self, expected),
+      );
+    if (op === self) return compileTailSelfCall(atom, scope, holders, self);
+  }
+  return expected === "number"
+    ? coerceForReturn(compileBody(atom, scope, holders), expected)
+    : compileScalarAtom(env, atom, scope, holders);
+}
+
 function compileScalarClause(
   env: MinEnv,
   functor: string,
@@ -1705,11 +1813,7 @@ function compileScalarClause(
   holders: ValueFns,
 ): Compiled | undefined {
   const scope = scalarScope(clause, candidate.arity);
-  if (expected === "number") return compileTail(clause.body, scope, holders, functor, "number");
-  return (
-    compileTail(clause.body, scope, holders, functor, "atom") ??
-    compileScalarAtom(env, clause.body, scope, holders)
-  );
+  return compileScalarTail(env, clause.body, scope, holders, functor, expected);
 }
 
 function scalarDependencies(
@@ -1721,6 +1825,21 @@ function scalarDependencies(
   const head = atom.items[0]!;
   if (head.kind === "sym" && scalarNames.has(head.name)) dependencies.add(head.name);
   for (const item of atom.items) scalarDependencies(item, scalarNames, dependencies);
+}
+
+/** Whether one evaluated control-flow path avoids a direct call to `self`. The productivity fixpoint can
+ *  then use the clause's native base path instead of treating a conditional self-call as unconditional. */
+function hasScalarPathWithoutSelfCall(atom: Atom, self: string): boolean {
+  if (atom.kind !== "expr" || atom.items.length === 0) return true;
+  const head = atom.items[0]!;
+  if (head.kind === "sym" && head.name === self) return false;
+  if (head.kind === "sym" && head.name === "if" && atom.items.length === 4)
+    return (
+      hasScalarPathWithoutSelfCall(atom.items[1]!, self) &&
+      (hasScalarPathWithoutSelfCall(atom.items[2]!, self) ||
+        hasScalarPathWithoutSelfCall(atom.items[3]!, self))
+    );
+  return atom.items.every((item) => hasScalarPathWithoutSelfCall(item, self));
 }
 
 /** Compile each proven-exclusive clause independently. Unsupported bodies stay in the matcher with no node;
@@ -1776,6 +1895,7 @@ function compileScalarHolders(
         candidate.clauses.map((clause) => {
           const callees = new Set<string>();
           scalarDependencies(clause.body, scalarNames, callees);
+          if (hasScalarPathWithoutSelfCall(clause.body, functor)) callees.delete(functor);
           return callees;
         }),
       );
@@ -1856,6 +1976,703 @@ function compileScalarHolders(
     }
     return holders;
   }
+}
+
+// ---------- guarded recursive constructor choice unions ----------
+
+type ChoiceUnionClause =
+  | { readonly tag: "seed"; readonly values: readonly Atom[] }
+  | {
+      readonly tag: "recursive";
+      readonly constructor: SymAtom;
+      readonly operators: readonly SymAtom[];
+    };
+
+const CHOICE_UNION_NUMERIC_OPS = new Set(["+", "-", "*"]);
+
+function choiceUnionConstructor(env: MinEnv, name: string): boolean {
+  return !env.ruleIndex.has(name) && !env.gt.has(name) && !env.agt.has(name) && !env.sigs.has(name);
+}
+
+function signaturePrefix(
+  env: MinEnv,
+  name: string,
+  expected: readonly string[],
+  length = expected.length,
+): boolean {
+  const actual = env.sigs.get(name);
+  return (
+    actual !== undefined &&
+    actual.length === length &&
+    expected.every(
+      (typeName, index) => actual[index]!.kind === "sym" && actual[index]!.name === typeName,
+    )
+  );
+}
+
+function choiceUnionBuiltinsUnchanged(env: MinEnv): boolean {
+  if ((env.ruleIndex.get("if")?.length ?? 0) !== 2) return false;
+  for (const name of ["superpose", "empty", ...CHOICE_UNION_NUMERIC_OPS, ">"])
+    if ((env.ruleIndex.get(name)?.length ?? 0) !== 0 || !env.gt.has(name) || env.agt.has(name))
+      return false;
+  return (
+    signaturePrefix(env, "if", ["Bool", "Atom", "Atom"], 4) &&
+    signaturePrefix(env, "superpose", ["Expression", "%Undefined%"]) &&
+    signaturePrefix(env, "+", ["Number", "Number", "Number"]) &&
+    signaturePrefix(env, "-", ["Number", "Number", "Number"]) &&
+    signaturePrefix(env, "*", ["Number", "Number", "Number"]) &&
+    signaturePrefix(env, ">", ["Number", "Number", "Bool"])
+  );
+}
+
+function choiceUnionStaticData(env: MinEnv, atom: Atom): boolean {
+  if (atom.kind === "var") return false;
+  if (atom.kind !== "expr" || atom.items.length === 0) return true;
+  const head = atom.items[0]!;
+  return (
+    head.kind === "sym" &&
+    choiceUnionConstructor(env, head.name) &&
+    atom.items.slice(1).every((item) => choiceUnionStaticData(env, item))
+  );
+}
+
+function choiceUnionSeed(env: MinEnv, rhs: Atom): ChoiceUnionClause | undefined {
+  if (
+    rhs.kind !== "expr" ||
+    rhs.items.length !== 2 ||
+    rhs.items[0]!.kind !== "sym" ||
+    rhs.items[0]!.name !== "superpose"
+  )
+    return undefined;
+  const source = rhs.items[1]!;
+  if (
+    source.kind !== "expr" ||
+    source.items.length === 0 ||
+    !source.ground ||
+    !choiceUnionStaticData(env, source)
+  )
+    return undefined;
+  const first = source.items[0]!;
+  const start = first.kind === "sym" && first.name === "," ? 1 : 0;
+  return { tag: "seed", values: source.items.slice(start) };
+}
+
+function choiceUnionRecursiveCall(atom: Atom, functor: string, parameter: string): boolean {
+  if (
+    atom.kind !== "expr" ||
+    atom.items.length !== 2 ||
+    atom.items[0]!.kind !== "sym" ||
+    atom.items[0]!.name !== functor
+  )
+    return false;
+  const decrement = atom.items[1]!;
+  return (
+    decrement.kind === "expr" &&
+    decrement.items.length === 3 &&
+    decrement.items[0]!.kind === "sym" &&
+    decrement.items[0]!.name === "-" &&
+    decrement.items[1]!.kind === "var" &&
+    decrement.items[1]!.name === parameter &&
+    decrement.items[2]!.kind === "gnd" &&
+    decrement.items[2]!.value.g === "int" &&
+    cmpIntVal(decrement.items[2]!.value.n, 1) === 0
+  );
+}
+
+function choiceUnionRecursiveClause(
+  env: MinEnv,
+  rhs: Atom,
+  functor: string,
+  parameter: string,
+): ChoiceUnionClause | undefined {
+  if (
+    rhs.kind !== "expr" ||
+    rhs.items.length !== 4 ||
+    rhs.items[0]!.kind !== "sym" ||
+    rhs.items[0]!.name !== "if" ||
+    !isEmptyCall(rhs.items[3]!)
+  )
+    return undefined;
+  const condition = rhs.items[1]!;
+  if (
+    condition.kind !== "expr" ||
+    condition.items.length !== 3 ||
+    condition.items[0]!.kind !== "sym" ||
+    condition.items[0]!.name !== ">" ||
+    condition.items[1]!.kind !== "var" ||
+    condition.items[1]!.name !== parameter ||
+    condition.items[2]!.kind !== "gnd" ||
+    condition.items[2]!.value.g !== "int" ||
+    cmpIntVal(condition.items[2]!.value.n, 0) !== 0
+  )
+    return undefined;
+  const product = rhs.items[2]!;
+  if (
+    product.kind !== "expr" ||
+    product.items.length !== 4 ||
+    product.items[0]!.kind !== "sym" ||
+    !choiceUnionConstructor(env, product.items[0]!.name)
+  )
+    return undefined;
+  const superpose = product.items[1]!;
+  if (
+    superpose.kind !== "expr" ||
+    superpose.items.length !== 2 ||
+    superpose.items[0]!.kind !== "sym" ||
+    superpose.items[0]!.name !== "superpose"
+  )
+    return undefined;
+  const operatorTuple = superpose.items[1]!;
+  if (
+    operatorTuple.kind !== "expr" ||
+    operatorTuple.items.length === 0 ||
+    !operatorTuple.items.every(
+      (item): item is SymAtom => item.kind === "sym" && CHOICE_UNION_NUMERIC_OPS.has(item.name),
+    ) ||
+    !choiceUnionRecursiveCall(product.items[2]!, functor, parameter) ||
+    !choiceUnionRecursiveCall(product.items[3]!, functor, parameter)
+  )
+    return undefined;
+  return {
+    tag: "recursive",
+    constructor: product.items[0]!,
+    operators: operatorTuple.items,
+  };
+}
+
+function choiceUnionParameter(lhs: Atom, functor: string): string | undefined {
+  if (
+    lhs.kind !== "expr" ||
+    lhs.items.length !== 2 ||
+    lhs.items[0]!.kind !== "sym" ||
+    lhs.items[0]!.name !== functor ||
+    lhs.items[1]!.kind !== "var"
+  )
+    return undefined;
+  return lhs.items[1]!.name;
+}
+
+/** Compile only the synthesis-style union: one finite `superpose` seed and one `if`-guarded constructor
+ *  product with two identical `(- $depth 1)` recursive calls. Both heads are catch-all variables, so every
+ *  call runs both clauses in source order. Other nondeterministic rule shapes stay on the general compiler. */
+function compileChoiceUnion(env: MinEnv, functor: string): NondetHolder | undefined {
+  const equations = env.ruleIndex.get(functor);
+  if (env.varRulesVar.length !== 0 || equations?.length !== 2 || !choiceUnionBuiltinsUnchanged(env))
+    return undefined;
+
+  const clauses: ChoiceUnionClause[] = [];
+  let seeds = 0;
+  let recursive = 0;
+  for (const [lhs, rhs] of equations) {
+    const parameter = choiceUnionParameter(lhs, functor);
+    if (parameter === undefined) return undefined;
+    const clause =
+      choiceUnionSeed(env, rhs) ?? choiceUnionRecursiveClause(env, rhs, functor, parameter);
+    if (clause === undefined) return undefined;
+    if (clause.tag === "seed") seeds++;
+    else recursive++;
+    clauses.push(clause);
+  }
+  if (seeds !== 1 || recursive !== 1) return undefined;
+
+  return {
+    kind: "nondet",
+    arity: 1,
+    clauseCount: clauses.length,
+    preferDirectForModed: false,
+    run: (_env, partAtoms, st, ops, fuel) => {
+      if (st.world.selfRules.size !== 0 || st.world.removedStatic !== null) return undefined;
+      const depthAtom = partAtoms[0];
+      if (partAtoms.length !== 1 || depthAtom?.kind !== "gnd" || depthAtom.value.g !== "int")
+        return undefined;
+      const results: CompiledAtomResult[] = [];
+      const evaluationDepth = ops.evaluationDepth;
+      const depthLimit = ops.maxStackDepth ?? 0;
+      const cap = fuel === undefined || fuel < NONDET_CALL_CAP ? NONDET_CALL_CAP : fuel;
+      let dispatches = 0;
+      let counterDelta = 0;
+
+      const dispatch = (
+        depthValue: IntVal,
+        emit: (value: Atom) => void,
+        enterDepth: boolean,
+      ): void => {
+        if (++dispatches > cap) throw BAIL;
+        let entered = false;
+        if (enterDepth && evaluationDepth !== undefined) {
+          const boundary = evaluationDepth.enterBoundary(depthLimit, EVALUATION_TRAMPOLINE_DEPTH);
+          if (boundary !== undefined)
+            throwEvaluationDepthBoundary(boundary, expr([sym(functor), gint(depthValue)]), {
+              counter: st.counter + counterDelta,
+              world: st.world,
+            });
+          entered = true;
+        }
+        try {
+          counterDelta += clauses.length;
+          for (const clause of clauses) {
+            if (clause.tag === "seed") {
+              for (const value of clause.values) emit(value);
+              continue;
+            }
+            // The standard `if` scans both clauses before selecting its deterministic branch.
+            counterDelta += 2;
+            if (cmpIntVal(depthValue, 0) <= 0) continue;
+            const nextDepth = subInt(depthValue, 1);
+            for (const operator of clause.operators)
+              dispatch(
+                nextDepth,
+                (left) =>
+                  dispatch(
+                    nextDepth,
+                    (right) => emit(expr([clause.constructor, operator, left, right])),
+                    true,
+                  ),
+                true,
+              );
+          }
+        } finally {
+          if (entered) evaluationDepth?.leave();
+        }
+      };
+
+      try {
+        dispatch(depthAtom.value.n, (atom) => results.push({ atom, bnd: emptyBindings }), false);
+        return { results, counterDelta, resultsFinal: true };
+      } catch (error) {
+        if (error === BAIL || error instanceof RangeError) return undefined;
+        throw error;
+      }
+    },
+  };
+}
+
+// ---------- synthesis choice-filter-render pipelines ----------
+
+type QuotedRendererBody =
+  | { readonly tag: "quote"; readonly template: SymTpl }
+  | {
+      readonly tag: "recursive";
+      readonly calls: ReadonlyArray<{ readonly sourceSlot: number; readonly resultSlot: number }>;
+      readonly template: SymTpl;
+      readonly slotCount: number;
+    };
+
+interface QuotedRendererClause {
+  readonly pat: SymPat;
+  readonly body: QuotedRendererBody;
+}
+
+interface QuotedRenderer {
+  readonly run: (
+    atom: Atom,
+    runtime: FunctionalRuntime,
+    world: St["world"],
+    entered?: boolean,
+  ) => Atom;
+}
+
+function standardQuoteUnchanged(env: MinEnv): boolean {
+  const rules = env.ruleIndex.get("quote");
+  if (rules?.length !== 1 || !signaturePrefix(env, "quote", ["Atom", "Atom"])) return false;
+  const [lhs, rhs] = rules[0]!;
+  return (
+    lhs.kind === "expr" &&
+    lhs.items.length === 2 &&
+    lhs.items[0]!.kind === "sym" &&
+    lhs.items[0]!.name === "quote" &&
+    lhs.items[1]!.kind === "var" &&
+    rhs.kind === "sym" &&
+    rhs.name === "NotReducible"
+  );
+}
+
+function quotedBody(atom: Atom): Atom | undefined {
+  return atom.kind === "expr" &&
+    atom.items.length === 2 &&
+    atom.items[0]!.kind === "sym" &&
+    atom.items[0]!.name === "quote"
+    ? atom.items[1]!
+    : undefined;
+}
+
+function compileQuotedRendererClause(
+  env: MinEnv,
+  functor: string,
+  lhs: Atom,
+  rhs: Atom,
+): QuotedRendererClause | undefined {
+  if (
+    lhs.kind !== "expr" ||
+    lhs.items.length !== 2 ||
+    lhs.items[0]!.kind !== "sym" ||
+    lhs.items[0]!.name !== functor
+  )
+    return undefined;
+  const slots = new Map<string, number>();
+  const pat = compileSymPat(lhs.items[1]!, slots);
+  if (pat === undefined) return undefined;
+  const direct = quotedBody(rhs);
+  if (direct !== undefined) {
+    if (hasVariableOutsideSlots(direct, slots)) return undefined;
+    return { pat, body: { tag: "quote", template: compileSymTpl(direct, slots) } };
+  }
+  if (
+    rhs.kind !== "expr" ||
+    rhs.items.length !== 3 ||
+    rhs.items[0]!.kind !== "sym" ||
+    rhs.items[0]!.name !== "let*" ||
+    rhs.items[1]!.kind !== "expr"
+  )
+    return undefined;
+
+  const calls: Array<{ readonly sourceSlot: number; readonly resultSlot: number }> = [];
+  for (const pair of rhs.items[1]!.items) {
+    if (
+      pair.kind !== "expr" ||
+      pair.items.length !== 2 ||
+      pair.items[0]!.kind !== "expr" ||
+      pair.items[0]!.items.length !== 2 ||
+      pair.items[0]!.items[0]!.kind !== "sym" ||
+      pair.items[0]!.items[0]!.name !== "quote" ||
+      pair.items[0]!.items[1]!.kind !== "var" ||
+      pair.items[1]!.kind !== "expr" ||
+      pair.items[1]!.items.length !== 2 ||
+      pair.items[1]!.items[0]!.kind !== "sym" ||
+      pair.items[1]!.items[0]!.name !== functor ||
+      pair.items[1]!.items[1]!.kind !== "var"
+    )
+      return undefined;
+    const resultName = pair.items[0]!.items[1]!.name;
+    const sourceName = pair.items[1]!.items[1]!.name;
+    const sourceSlot = slots.get(sourceName);
+    if (sourceSlot === undefined || slots.has(resultName)) return undefined;
+    const resultSlot = slots.size;
+    slots.set(resultName, resultSlot);
+    calls.push({ sourceSlot, resultSlot });
+  }
+  if (calls.length === 0) return undefined;
+  const template = quotedBody(rhs.items[2]!);
+  if (template === undefined || hasVariableOutsideSlots(template, slots)) return undefined;
+  if (
+    (env.ruleIndex.get("let*")?.length ?? 0) !== 1 ||
+    (env.ruleIndex.get("let")?.length ?? 0) !== 1
+  )
+    return undefined;
+  return {
+    pat,
+    body: {
+      tag: "recursive",
+      calls,
+      template: compileSymTpl(template, slots),
+      slotCount: slots.size,
+    },
+  };
+}
+
+function compileQuotedRenderer(env: MinEnv, functor: string): QuotedRenderer | undefined {
+  if (env.sigs.has(functor) || !standardQuoteUnchanged(env)) return undefined;
+  const equations = env.ruleIndex.get(functor);
+  if (equations === undefined || equations.length === 0) return undefined;
+  const clauses: QuotedRendererClause[] = [];
+  for (const [lhs, rhs] of equations) {
+    const clause = compileQuotedRendererClause(env, functor, lhs, rhs);
+    if (clause === undefined) return undefined;
+    clauses.push(clause);
+  }
+  for (let i = 0; i < clauses.length; i++)
+    for (let j = i + 1; j < clauses.length; j++) {
+      const a: ScalarClauseCandidate = {
+        pats: [clauses[i]!.pat],
+        slots: new Map(),
+        positions: [],
+        body: emptyExpr,
+        mayNeedFreshSuffix: false,
+      };
+      const b: ScalarClauseCandidate = {
+        pats: [clauses[j]!.pat],
+        slots: new Map(),
+        positions: [],
+        body: emptyExpr,
+        mayNeedFreshSuffix: false,
+      };
+      if (!scalarClausesDisjoint(a, b)) return undefined;
+    }
+
+  const run = (
+    atom: Atom,
+    runtime: FunctionalRuntime,
+    world: St["world"],
+    entered = false,
+  ): Atom => {
+    if (!entered) {
+      const boundary = runtime.depth.enterBoundary(runtime.limit, EVALUATION_TRAMPOLINE_DEPTH);
+      if (boundary !== undefined)
+        throwEvaluationDepthBoundary(boundary, expr([sym(functor), atom]), {
+          counter: runtime.counterBase + runtime.counterDelta,
+          world,
+        });
+    }
+    try {
+      runtime.counterDelta += clauses.length;
+      for (const clause of clauses) {
+        const frame: Atom[] = [];
+        if (!matchSymPat(clause.pat, atom, frame)) continue;
+        if (clause.body.tag === "quote") {
+          runtime.counterDelta += 1;
+          return expr([sym("quote"), buildSymTpl(clause.body.template, frame, "")]);
+        }
+        frame.length = clause.body.slotCount;
+        for (const call of clause.body.calls) {
+          const rendered = run(frame[call.sourceSlot]!, runtime, world);
+          if (
+            rendered.kind !== "expr" ||
+            rendered.items.length !== 2 ||
+            rendered.items[0]!.kind !== "sym" ||
+            rendered.items[0]!.name !== "quote"
+          )
+            throw BAIL;
+          frame[call.resultSlot] = rendered.items[1]!;
+        }
+        // Standard let* applies once per list suffix and standard let once per binding.
+        runtime.counterDelta += clause.body.calls.length * 2 + 1;
+        runtime.counterDelta += 1;
+        return expr([sym("quote"), buildSymTpl(clause.body.template, frame, "")]);
+      }
+      throw BAIL;
+    } finally {
+      if (!entered) runtime.depth.leave();
+    }
+  };
+  return { run };
+}
+
+interface SynthesisPipeline {
+  readonly gen: NondetHolder;
+  readonly check: ScalarHolder;
+  readonly renderer: QuotedRenderer;
+  readonly genOp: string;
+  readonly checkOp: string;
+  readonly renderOp: string;
+  readonly start: Atom;
+  readonly resultTemplate: SymTpl;
+}
+
+function synthesisPipeline(
+  env: MinEnv,
+  functor: string,
+  compiled: CompiledFns,
+): SynthesisPipeline | undefined {
+  if (
+    env.sigs.has(functor) ||
+    !standardQuoteUnchanged(env) ||
+    (env.ruleIndex.get("if")?.length ?? 0) !== 2 ||
+    (env.ruleIndex.get("let")?.length ?? 0) !== 1 ||
+    !signaturePrefix(env, "if", ["Bool", "Atom", "Atom"], 4) ||
+    !signaturePrefix(env, "let", ["Atom", "%Undefined%", "Atom"], 4) ||
+    (env.ruleIndex.get("empty")?.length ?? 0) !== 0 ||
+    !env.gt.has("empty") ||
+    env.agt.has("empty")
+  )
+    return undefined;
+  const equations = env.ruleIndex.get(functor);
+  if (equations?.length !== 1) return undefined;
+  const [lhs, rhs] = equations[0]!;
+  if (
+    lhs.kind !== "expr" ||
+    lhs.items.length !== 3 ||
+    lhs.items[0]!.kind !== "sym" ||
+    lhs.items[0]!.name !== functor ||
+    lhs.items[1]!.kind !== "var" ||
+    lhs.items[2]!.kind !== "var" ||
+    lhs.items[1]!.name === lhs.items[2]!.name ||
+    rhs.kind !== "expr" ||
+    rhs.items.length !== 4 ||
+    rhs.items[0]!.kind !== "sym" ||
+    rhs.items[0]!.name !== "let" ||
+    rhs.items[1]!.kind !== "var" ||
+    rhs.items[2]!.kind !== "expr" ||
+    rhs.items[2]!.items.length !== 2 ||
+    rhs.items[2]!.items[0]!.kind !== "sym" ||
+    rhs.items[2]!.items[1]!.kind !== "var" ||
+    rhs.items[2]!.items[1]!.name !== lhs.items[2]!.name ||
+    rhs.items[3]!.kind !== "expr" ||
+    rhs.items[3]!.items.length !== 4 ||
+    rhs.items[3]!.items[0]!.kind !== "sym" ||
+    rhs.items[3]!.items[0]!.name !== "if" ||
+    !isEmptyCall(rhs.items[3]!.items[3]!)
+  )
+    return undefined;
+  const genOp = rhs.items[2]!.items[0]!.name;
+  const choiceVar = rhs.items[1]!.name;
+  const condition = rhs.items[3]!.items[1]!;
+  const accepted = rhs.items[3]!.items[2]!;
+  if (
+    condition.kind !== "expr" ||
+    condition.items.length !== 4 ||
+    condition.items[0]!.kind !== "sym" ||
+    condition.items[1]!.kind !== "var" ||
+    condition.items[1]!.name !== choiceVar ||
+    condition.items[2]!.kind !== "var" ||
+    condition.items[2]!.name !== lhs.items[1]!.name ||
+    !condition.items[3]!.ground ||
+    accepted.kind !== "expr" ||
+    accepted.items.length !== 4 ||
+    accepted.items[0]!.kind !== "sym" ||
+    accepted.items[0]!.name !== "let" ||
+    accepted.items[1]!.kind !== "expr" ||
+    accepted.items[1]!.items.length !== 2 ||
+    accepted.items[1]!.items[0]!.kind !== "sym" ||
+    accepted.items[1]!.items[0]!.name !== "quote" ||
+    accepted.items[1]!.items[1]!.kind !== "var" ||
+    accepted.items[2]!.kind !== "expr" ||
+    accepted.items[2]!.items.length !== 2 ||
+    accepted.items[2]!.items[0]!.kind !== "sym" ||
+    accepted.items[2]!.items[1]!.kind !== "var" ||
+    accepted.items[2]!.items[1]!.name !== choiceVar
+  )
+    return undefined;
+  const checkOp = condition.items[0]!.name;
+  const renderOp = accepted.items[2]!.items[0]!.name;
+  const gen = compiled.get(genOp);
+  const check = compiled.get(checkOp);
+  const renderer = compileQuotedRenderer(env, renderOp);
+  if (
+    gen?.kind !== "nondet" ||
+    gen.arity !== 1 ||
+    check?.kind !== "scalar" ||
+    check.arity !== 3 ||
+    renderer === undefined
+  )
+    return undefined;
+  const resultBody = quotedBody(accepted.items[3]!);
+  if (resultBody === undefined) return undefined;
+  const slots = new Map<string, number>([
+    [lhs.items[1]!.name, 0],
+    [lhs.items[2]!.name, 1],
+    [choiceVar, 2],
+    [accepted.items[1]!.items[1]!.name, 3],
+  ]);
+  if (slots.size !== 4 || hasVariableOutsideSlots(resultBody, slots)) return undefined;
+  return {
+    gen,
+    check,
+    renderer,
+    genOp,
+    checkOp,
+    renderOp,
+    start: condition.items[3]!,
+    resultTemplate: compileSymTpl(resultBody, slots),
+  };
+}
+
+/** Fuse the exact `let candidate <- gen; if check; render` pipeline after all three callees have compiled.
+ *  Candidate order remains the generator's order, and a finite work limit declines the atomic run so the
+ *  evaluator can cut at the original interpreted step. */
+function compileSynthesisPipeline(
+  env: MinEnv,
+  functor: string,
+  compiled: CompiledFns,
+): NondetHolder | undefined {
+  const pipeline = synthesisPipeline(env, functor, compiled);
+  if (pipeline === undefined) return undefined;
+  return {
+    kind: "nondet",
+    arity: 2,
+    clauseCount: 1,
+    preferDirectForModed: false,
+    run: (_env, partAtoms, st, ops, fuel) => {
+      if (
+        partAtoms.length !== 2 ||
+        partAtoms.some((atom) => !atom.ground) ||
+        st.world.selfRules.size !== 0 ||
+        st.world.removedStatic !== null
+      )
+        return undefined;
+      const runtime: FunctionalRuntime = {
+        depth: ops.evaluationDepth ?? new EvaluationDepth(),
+        limit: ops.maxStackDepth ?? 0,
+        counterBase: st.counter,
+        counterLimit:
+          st.world.maxSteps > 0 ? st.world.stepStart + st.world.maxSteps - st.counter : undefined,
+        counterDelta: 1,
+        freshSuffix: "",
+      };
+      const nested = <T>(op: string, args: readonly Atom[], run: () => T): T => {
+        if (ops.evaluationDepth === undefined) return run();
+        const boundary = runtime.depth.enterBoundary(runtime.limit, EVALUATION_TRAMPOLINE_DEPTH);
+        if (boundary !== undefined)
+          throwEvaluationDepthBoundary(boundary, expr([sym(op), ...args]), {
+            counter: runtime.counterBase + runtime.counterDelta,
+            world: st.world,
+          });
+        try {
+          return run();
+        } finally {
+          runtime.depth.leave();
+        }
+      };
+      try {
+        const generated = nested(pipeline.genOp, [partAtoms[1]!], () =>
+          pipeline.gen.run(
+            env,
+            [partAtoms[1]!],
+            {
+              counter: runtime.counterBase + runtime.counterDelta,
+              world: st.world,
+            },
+            ops,
+            fuel,
+          ),
+        );
+        if (
+          generated === undefined ||
+          generated.state !== undefined ||
+          generated.resultsFinal !== true
+        )
+          throw BAIL;
+        runtime.counterDelta += generated.counterDelta;
+        const results: CompiledAtomResult[] = [];
+        for (const generatedResult of generated.results) {
+          if (generatedResult.bnd.length !== 0) throw BAIL;
+          const candidate = generatedResult.atom;
+          runtime.counterDelta += 1;
+          const checked = nested(pipeline.checkOp, [candidate, partAtoms[0]!, pipeline.start], () =>
+            pipeline.check.run([candidate, partAtoms[0]!, pipeline.start], runtime, true),
+          );
+          const checkedAtom = frameValueToAtom(checked);
+          runtime.counterDelta += 2;
+          if (checkedAtom.kind !== "gnd" || checkedAtom.value.g !== "bool") throw BAIL;
+          if (!checkedAtom.value.b) continue;
+          const rendered = nested(pipeline.renderOp, [candidate], () =>
+            pipeline.renderer.run(candidate, runtime, st.world, true),
+          );
+          if (
+            rendered.kind !== "expr" ||
+            rendered.items.length !== 2 ||
+            rendered.items[0]!.kind !== "sym" ||
+            rendered.items[0]!.name !== "quote"
+          )
+            throw BAIL;
+          runtime.counterDelta += 1;
+          const frame = new Array<Atom>(4);
+          frame[0] = partAtoms[0]!;
+          frame[1] = partAtoms[1]!;
+          frame[2] = candidate;
+          frame[3] = rendered.items[1]!;
+          runtime.counterDelta += 1;
+          results.push({
+            atom: expr([sym("quote"), buildSymTpl(pipeline.resultTemplate, frame, "")]),
+            bnd: emptyBindings,
+          });
+        }
+        return { results, counterDelta: runtime.counterDelta, resultsFinal: true };
+      } catch (error) {
+        if (error === BAIL || error instanceof RangeError) return undefined;
+        throw error;
+      }
+    },
+  };
 }
 
 // ---------- nondeterministic let*-chain rewrites (the backward-chainer class) ----------
@@ -4038,6 +4855,16 @@ export function compileEnv(env: MinEnv): CompiledFns {
         const symbolic = compileSymbolic(env, f);
         if (symbolic !== undefined) compiled.set(f, symbolic);
       }
+      for (const f of env.ruleIndex.keys()) {
+        if (compiled.has(f)) continue;
+        const choiceUnion = compileChoiceUnion(env, f);
+        if (choiceUnion !== undefined) compiled.set(f, choiceUnion);
+      }
+      for (const f of env.ruleIndex.keys()) {
+        if (compiled.has(f)) continue;
+        const pipeline = compileSynthesisPipeline(env, f, compiled);
+        if (pipeline !== undefined) compiled.set(f, pipeline);
+      }
       compileImperative(env, compiled);
       // Nondeterministic searching functors: let*-chain match functors and the mutually-recursive
       // proof-size-bounded chainers. A functor pulls its call-graph closure into one group holder, so
@@ -4097,6 +4924,8 @@ export function runCompiled(
       depth: depth ?? new EvaluationDepth(),
       limit: depth === undefined ? 0 : st.world.maxStackDepth,
       counterBase: st.counter,
+      counterLimit:
+        st.world.maxSteps > 0 ? st.world.stepStart + st.world.maxSteps - st.counter : undefined,
       counterDelta: 0,
       freshSuffix: "",
     };

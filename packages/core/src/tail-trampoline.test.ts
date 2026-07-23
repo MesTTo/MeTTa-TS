@@ -253,16 +253,23 @@ describe("compiled tail-call nontermination differential", () => {
     }
   }
 
-  const terminatingCases: Array<IsolatedCase & { readonly name: string }> = [
+  const terminatingCases: Array<
+    IsolatedCase & {
+      readonly name: string;
+      readonly offOutcome: IsolatedOutcome["outcome"];
+    }
+  > = [
     {
       name: "deep single-rule count-down",
       rules: COUNTDOWN,
       query: "(count 10000)",
+      offOutcome: "result",
     },
     {
       name: "deep guarded multi-rule count-down",
       rules: GUARDED_MULTI_RULE_COUNTDOWN,
       query: "(count 6000)",
+      offOutcome: "stack-overflow-error",
     },
   ];
 
@@ -272,7 +279,10 @@ describe("compiled tail-call nontermination differential", () => {
       const off = await runIsolated(testCase, "off", 15_000);
       const interpreted = await runIsolated(testCase, "interpreted", 15_000);
       expect(on).toMatchObject({ outcome: "result", results: ["done"] });
-      expect(off).toMatchObject({ outcome: "stack-overflow-error" });
+      expect(off).toMatchObject({
+        outcome: testCase.offOutcome,
+        ...(testCase.offOutcome === "result" ? { results: ["done"] } : {}),
+      });
       expect(interpreted).toMatchObject({ outcome: "result", results: ["done"] });
     }, 45_000);
   }

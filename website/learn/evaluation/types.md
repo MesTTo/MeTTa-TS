@@ -114,6 +114,24 @@ Types are not only for functions. A constructor is just a function whose result 
 
 `S` wanted a `Nat` and got a `Number`, so building `(S 5)` is a type error the same way calling `(inc "a")` was.
 
+## Numeric type aliases
+
+Numbers have the single type `Number`, but signatures written in other MeTTa dialects often say `Int`, `Integer`, `Double`, or `Float` instead. MeTTaScript accepts those names as aliases of `Number`, in both directions: an `Int` parameter takes any number, and an `Int`-typed result feeds a `Number` parameter such as `+`.
+
+<MettaRunner>
+
+```metta
+(: inc (-> Int Int))
+(= (inc $x) (+ $x 1))
+
+!(inc 5)    ; 6
+!(inc 2.5)  ; 3.5
+```
+
+</MettaRunner>
+
+The aliases name one numeric family, not separate widths, so `(inc 2.5)` is fine. A type you define yourself, like `Nat` above, is not an alias: `(S 5)` stays a type error.
+
 ## Metatypes: the shape of an atom
 
 The types above are ones you declare. Underneath them, every atom also has one of four fixed *metatypes* that describe its shape rather than its meaning. `get-metatype` reports it:

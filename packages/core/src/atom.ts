@@ -485,6 +485,18 @@ export function collectSubstitutedVars(
 /** The empty expression `()` (LeaTTa `Atom.empty`), the success marker used by `assert*`. */
 export const emptyExpr: ExprAtom = expr([]);
 
+/** Type names the engine treats as one numeric family. `Number` is Hyperon's numeric type;
+ *  `Int`/`Integer`/`Double`/`Float` are annotations common in other MeTTa dialects, accepted as `Number`
+ *  aliases by the type checker (`matchType`) and the scalar compiler (`scalarDeclaredReturn`) so typed
+ *  numeric programs from those dialects run. Hyperon itself knows only `Number` and rejects the aliases. */
+export const NUMBER_FAMILY_TYPE_NAMES: ReadonlySet<string> = new Set([
+  "Number",
+  "Int",
+  "Integer",
+  "Double",
+  "Float",
+]);
+
 /** Is this atom an `(Error ...)` expression? */
 export function isErrorAtom(a: Atom): boolean {
   return (

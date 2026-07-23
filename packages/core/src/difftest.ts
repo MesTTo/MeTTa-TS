@@ -20,6 +20,16 @@ function renderResults(rs: QueryResult[]): string {
   return rs.map((r) => format(r.query) + " => " + r.results.map(format).join(" ")).join("\n");
 }
 
+function recursiveSpaceReader(space: string): string {
+  return `
+    (= (space-read $n $x)
+       (unify $n 0
+         (match ${space} (fact $x) hit)
+         (join (space-read (- $n 1) $x) (space-read (- $n 1) $x))))
+    (= (join hit hit) hit)
+  `;
+}
+
 /** Run every program through both functions; return one Divergence per program whose printed
  *  results differ (order and multiplicity included, because `format`-joining preserves both). */
 export async function differential(
@@ -53,6 +63,69 @@ export const ADVERSARIAL: string[] = [
   "(= (dbl $n) (+ $n $n))\n!(dbl 2.5)\n!(dbl 7)",
   "(= (ack $m $n) (if (== $m 0) (+ $n 1) (if (== $n 0) (ack (- $m 1) 1) (ack (- $m 1) (ack $m (- $n 1))))))\n!(ack 2 3)",
   "(= (g $n) (let $x (* $n 2) (let $y (+ $x 1) (* $x $y))))\n!(g 6)",
+  // Superpose argument policy: an ill-typed-call tuple is data (operators enumerate), a well-typed
+  // call still evaluates first, and a computed tuple splits its value.
+  "!(superpose (+ - *))",
+  "(= (t) (a b))\n!(superpose (t))",
+  "!(superpose (cdr-atom (0 1 2 3)))",
+  "(= (a b) c)\n!(superpose (a b))",
+  // Number-family aliasing: `Int`-signed functions accept `Number` values on both engines' paths, in
+  // the parameter direction and through a `Number`-parameter composition such as `+`.
+  "(: f (-> Int Int))\n(= (f $x) (+ $x 1))\n!(f 5)",
+  "(: f (-> Int Int))\n(= (f $x) (+ $x 1))\n!(f 3.5)",
+  "(: ev (-> Atom Atom Int))\n(= (ev (Lit $n) $env) $n)\n(= (ev (Add $a $b) $env) (+ (ev $a $env) (ev $b $env)))\n!(ev (Add (Lit 2) (Add (Lit 3) (Lit 4))) empty)",
+  // A constructor-bound application head dispatches grounded numeric operators natively. User-defined
+  // and unresolved symbols take the per-clause interpreter fallback instead.
+  "(= (var-ev (C $n)) $n)\n(= (var-ev (Bin $op $a $b)) ($op (var-ev $a) (var-ev $b)))\n!(var-ev (Bin + (C 2) (Bin * (C 3) (C 4))))",
+  "(= (join $a $b) (Pair $a $b))\n(= (var-ev (C $n)) $n)\n(= (var-ev (Bin $op $a $b)) ($op (var-ev $a) (var-ev $b)))\n!(var-ev (Bin join (C 2) (C 3)))",
+  "(= (var-ev (C $n)) $n)\n(= (var-ev (Bin $op $a $b)) ($op (var-ev $a) (var-ev $b)))\n!(var-ev (Bin unresolved-head (C 2) (C 3)))",
+  // A whole-branch scalar self-call is depth-neutral, while the same call nested under `+` remains
+  // depth-tracked and cuts at the default language bound.
+  "(= (count $n) (if (== $n 0) done (count (- $n 1))))\n!(count 500)",
+  "(= (sum $n) (if (== $n 0) 0 (+ 1 (sum (- $n 1)))))\n!(sum 500)",
+  `
+    (Evaluation (philosopher Plato))
+    (Evaluation (likes-to-wrestle Plato))
+    (Implication
+      (And (Evaluation (philosopher $x)) (Evaluation (likes-to-wrestle $x)))
+      (Evaluation (human $x)))
+    (Implication (Evaluation (human $x)) (Evaluation (mortal $x)))
+    (= (deduce (Evaluation ($p $x))) (match &self (Evaluation ($p $x)) T))
+    (= (deduce (Evaluation ($p $x)))
+       (match &self (Implication $premise (Evaluation ($p $x))) (deduce $premise)))
+    (= (deduce (And $a $b)) (And (deduce $a) (deduce $b)))
+    (= (And T T) T)
+    !(deduce (Evaluation (mortal Plato)))
+    !(deduce (Evaluation (mortal Plato)))
+  `,
+  `
+    ${recursiveSpaceReader("&self")}
+    !(space-read 2 added)
+    !(add-atom &self (fact added))
+    !(space-read 2 added)
+  `,
+  `
+    ${recursiveSpaceReader("&self")}
+    !(add-atom &self (fact removed))
+    !(space-read 2 removed)
+    !(remove-atom &self (fact removed))
+    !(space-read 2 removed)
+  `,
+  `
+    !(bind! &kb (new-space))
+    ${recursiveSpaceReader("&kb")}
+    !(space-read 2 named)
+    !(add-atom &kb (fact named))
+    !(space-read 2 named)
+  `,
+  `
+    ${recursiveSpaceReader("&self")}
+    (= (write-read $x)
+       (let $unit (add-atom &self (fact $x))
+         (space-read 2 $x)))
+    !(space-read 2 written)
+    !(write-read written)
+  `,
 ];
 
 // A tiny seeded PRNG so generated programs are deterministic across runs (no Math.random).

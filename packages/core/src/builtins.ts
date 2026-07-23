@@ -92,6 +92,15 @@ const rerr = (msg: string): ReduceResult => ({ tag: "runtimeError", msg });
 const ierr = (msg: string): ReduceResult => ({ tag: "incorrectArgument", msg });
 const nored = (): ReduceResult => ({ tag: "noReduce" });
 
+// The superpose/hyperpose non-expression-argument error, byte-identical to Hyperon 0.2.10:
+// `(Error (superpose c) superpose expects single expression as an argument)`.
+const superposeArgError = (op: string, args: readonly Atom[]): Atom =>
+  expr([
+    sym("Error"),
+    expr([sym(op), ...args]),
+    sym(op + " expects single expression as an argument"),
+  ]);
+
 // Line sink for println!/trace!: console.log is the natural equivalent (it appends the newline).
 // Overridable so embedders and tests can capture output instead of writing to the console.
 let outputSink: (line: string) => void = (line) => {
@@ -1222,18 +1231,18 @@ const stdEntries: Array<[string, GroundFn]> = [
     "superpose",
     (args) => {
       const e = exprArgs(args);
-      return e && e.length === 1
-        ? ok(...resultItems(e[0]!))
-        : ierr("superpose expects one expression");
+      if (e && e.length === 1) return ok(...resultItems(e[0]!));
+      // Hyperon 0.2.10's exact error atom: the message is a bare (space-containing) symbol, printed
+      // unquoted, and the erring call is reconstructed with the reduced argument.
+      return ok(superposeArgError("superpose", args));
     },
   ],
   [
     "hyperpose",
     (args) => {
       const e = exprArgs(args);
-      return e && e.length === 1
-        ? ok(...resultItems(e[0]!))
-        : ierr("hyperpose expects one expression");
+      if (e && e.length === 1) return ok(...resultItems(e[0]!));
+      return ok(superposeArgError("hyperpose", args));
     },
   ],
   [

@@ -23,6 +23,7 @@ import {
   internBuiltExpr,
   isErrorAtom,
   metaType,
+  NUMBER_FAMILY_TYPE_NAMES,
   sym,
   variable,
 } from "./atom";
@@ -106,8 +107,9 @@ import {
   isTablingImpureHead,
   keyWellFormed,
   MODED_IMPURE_OPS,
+  SPACE_READ_IMPURE_OPS,
 } from "./tabling";
-import { type ActiveTableEntry, TableSpace, type TableKey } from "./table-space";
+import { type ActiveTableEntry, TableSpace, type TableKey, type TableVersion } from "./table-space";
 import { Trail, unifyTrail } from "./trail";
 import { type Relation, wcoJoin, wcoJoinFold } from "./wcojoin";
 
@@ -658,10 +660,15 @@ export interface MinEnv {
    *  `pureFunctors` (only `empty`, which is genuinely pure, is treated more permissively); recomputed
    *  alongside it. */
   modedPureFunctors?: Set<string>;
+  /** Functor names whose only permitted atom-space dependency is `match`; their table keys include the
+   *  current space-content version. */
+  spaceReadPureFunctors?: Set<string>;
   /** Pure functors whose rule SCC has branching recursion, so ground tabling is likely useful. */
   tableWorth?: Set<string>;
   /** Pure functors whose rule SCC has branching recursion under the moded purity rules. */
   modedTableWorth?: Set<string>;
+  /** Space-read-pure functors whose rule SCC has branching recursion. */
+  spaceReadTableWorth?: Set<string>;
   /** Set when equations changed and the purity/profitability analysis must be refreshed before evaluation. */
   tablingDirty?: boolean | undefined;
   /** Memo for `getTypes` of ground atoms: a ground atom's type is a pure function of the env's type tables,
@@ -1036,12 +1043,14 @@ export function emptyEnv(gt: GroundingTable): MinEnv {
 
 const runtimePureCache = new Map<string, boolean>();
 const runtimeModedPureCache = new Map<string, boolean>();
+const runtimeSpaceReadPureCache = new Map<string, boolean>();
 const runtimeTableWorthCache = new Map<string, boolean>();
 
 /** Static load (`addAtomToEnv`) changed rules or grounded-operation registration changed dispatch. */
 function invalidateTabling(env: MinEnv): void {
   runtimePureCache.clear();
   runtimeModedPureCache.clear();
+  runtimeSpaceReadPureCache.clear();
   runtimeTableWorthCache.clear();
   if (env.compiled !== undefined) {
     env.compiled.clear();
@@ -1209,13 +1218,17 @@ function ensureTablingAnalysis(env: MinEnv): void {
     env.pureFunctors !== undefined &&
     env.tableWorth !== undefined &&
     env.modedPureFunctors !== undefined &&
-    env.modedTableWorth !== undefined
+    env.modedTableWorth !== undefined &&
+    env.spaceReadPureFunctors !== undefined &&
+    env.spaceReadTableWorth !== undefined
   )
     return;
   env.pureFunctors = analyzePurityRef(env);
   env.tableWorth = analyzeTableWorth(env, env.pureFunctors);
   env.modedPureFunctors = analyzePurityRef(env, MODED_IMPURE_OPS);
   env.modedTableWorth = analyzeTableWorth(env, env.modedPureFunctors);
+  env.spaceReadPureFunctors = analyzePurityRef(env, SPACE_READ_IMPURE_OPS);
+  env.spaceReadTableWorth = analyzeTableWorth(env, env.spaceReadPureFunctors);
   env.tablingDirty = false;
 }
 
@@ -1288,6 +1301,8 @@ function disableTabling(env: MinEnv): void {
     env.tableWorth = new Set();
     env.modedPureFunctors = new Set();
     env.modedTableWorth = new Set();
+    env.spaceReadPureFunctors = new Set();
+    env.spaceReadTableWorth = new Set();
     env.tablingDirty = false;
   }
 }
@@ -1622,6 +1637,9 @@ export interface World {
   // table keys and runtime purity caches must change when any runtime rule changes, not only the queried
   // functor's own rule array.
   selfRuleVersion: number;
+  // Monotone whole-world atom-space content version. Space-read table keys include this value, so any write
+  // to &self or a named space makes earlier completed answer bags unreachable.
+  spaceVersion: number;
   // Static atoms removed from `&self` in this world. Static program atoms live in `env`; this tombstone
   // keeps removal branch-local without mutating the shared env.
   removedStatic: AtomLog;
@@ -1645,6 +1663,13 @@ let runtimeRuleSetVersionCounter = 0;
 function nextRuntimeRuleSetVersion(): number {
   return ++runtimeRuleSetVersionCounter;
 }
+let spaceContentVersionCounter = 0;
+function nextSpaceContentVersion(): number {
+  return ++spaceContentVersionCounter;
+}
+function markSpaceMutation(w: World): void {
+  w.spaceVersion = nextSpaceContentVersion();
+}
 
 export const initSt = (): St => ({
   counter: 0,
@@ -1657,6 +1682,7 @@ export const initSt = (): St => ({
     selfRules: new Map(),
     selfVarRules: [],
     selfRuleVersion: 0,
+    spaceVersion: 0,
     removedStatic: emptyLog,
     removedStaticHeads: new Set(),
     removedStaticVarRules: false,
@@ -1675,6 +1701,7 @@ function cloneWorld(w: World): World {
     selfRules: new Map(w.selfRules),
     selfVarRules: w.selfVarRules,
     selfRuleVersion: w.selfRuleVersion,
+    spaceVersion: w.spaceVersion,
     removedStatic: w.removedStatic,
     removedStaticHeads: new Set(w.removedStaticHeads),
     removedStaticVarRules: w.removedStaticVarRules,
@@ -1749,6 +1776,7 @@ function mergeWorlds(base: World, branches: readonly World[]): World {
     selfRules: new Map(),
     selfVarRules: [],
     selfRuleVersion: nextRuntimeRuleSetVersion(),
+    spaceVersion: nextSpaceContentVersion(),
     removedStatic: staticRemovals.removedStatic,
     removedStaticHeads: staticRemovals.removedStaticHeads,
     removedStaticVarRules: staticRemovals.removedStaticVarRules,
@@ -2530,6 +2558,17 @@ function matchType(tb: Bindings, expected: Atom, actual: Atom): Bindings | undef
     atomEq(actual, sym("Atom"))
   )
     return tb;
+  // Number-family aliasing: `Int`/`Integer`/`Double`/`Float` annotations are interchangeable with
+  // `Number` in both directions, so an `Int`-signed function accepts a numeric literal (typed `Number`)
+  // and its result feeds a `Number` parameter such as `+`. A dialect superset: Hyperon knows only
+  // `Number` and raises `BadArgType` on the alias names. Both sides ground syms, so no bindings arise.
+  if (
+    expected.kind === "sym" &&
+    actual.kind === "sym" &&
+    NUMBER_FAMILY_TYPE_NAMES.has(expected.name) &&
+    NUMBER_FAMILY_TYPE_NAMES.has(actual.name)
+  )
+    return tb;
   return matchReduced(tb, expected, actual);
 }
 function typeCheckArgs(
@@ -2641,6 +2680,24 @@ export function checkApplication(
     ]);
   }
   return null;
+}
+
+/** The superpose/hyperpose argument policy. Hyperon 0.2.10 never evaluates the argument tuple: it splits
+ *  the raw expression and evaluates each ELEMENT as a result, so `(superpose (+ - *))` enumerates the
+ *  three operators as data. PeTTa instead evaluates the argument and splits the value, which computed
+ *  tuples rely on: `(superpose (cdr-atom (collapse (match …))))` must reduce before splitting. The engine
+ *  reconciles the two: an argument that is a well-typed call keeps the evaluate-then-split path, while a
+ *  tuple whose head cannot be applied (a type or arity error — operators carried as data) is enumerated
+ *  raw, matching Hyperon. Runtime errors from well-typed calls still evaluate and propagate as errors.
+ *  `hyperpose`'s concurrent path (`hyperposeBranchSources`) already forks the raw items, so this also
+ *  converges its sequential fallback with the parallel branches. `collapse-extract` (LeaTTa's bag
+ *  spread) is unaffected and always evaluates. */
+function isSuperposeDataTuple(env: MinEnv, w: World, op: string, arg: Atom): boolean {
+  if (op !== "superpose" && op !== "hyperpose") return false;
+  if (arg.kind !== "expr" || arg.items.length === 0) return false;
+  const head = arg.items[0]!;
+  if (head.kind !== "sym") return false;
+  return checkApplication(env, w, head.name, arg.items.slice(1)) !== null;
 }
 
 const STANDARD_FOLDL_LHS = "(foldl-atom $list $init $a $b $op)";
@@ -4000,7 +4057,8 @@ function* interpretStack1G(
       const snapshotWorld = st.world;
       const [pairs, st2] = yield* mettaEvalG(env, fuel, st, it.bnd, it2[1]!, depth, trampoline);
       const committed = pairs.length > 0 && pairs.some((p) => !isErrorAtom(p[0]));
-      const world = committed ? st2.world : snapshotWorld;
+      const world = committed ? cloneWorld(st2.world) : snapshotWorld;
+      if (committed) markSpaceMutation(world);
       return [pairs.map((p) => finItem(prev, p[0], it.bnd)), { counter: st2.counter, world }];
     }
     // TS-native concurrency (async-only; see docs/.../concurrency-primitives.md).
@@ -4150,6 +4208,7 @@ function* interpretStack1G(
       const name = "&space-" + String(id);
       const w = cloneWorld(st.world);
       w.spaces.set(name, emptyLog);
+      markSpaceMutation(w);
       return [[finItem(prev, sym(name), it.bnd)], { counter: id + 1, world: w }];
     }
     case "fork-space": {
@@ -4166,6 +4225,7 @@ function* interpretStack1G(
       const name = "&space-" + String(id);
       const w = cloneWorld(st.world);
       w.spaces.set(name, logFromArray(srcAtoms));
+      markSpaceMutation(w);
       return [[finItem(prev, sym(name), it.bnd)], { counter: id + 1, world: w }];
     }
     case "add-atom":
@@ -4225,6 +4285,7 @@ function* interpretStack1G(
       if (tok.kind === "sym") {
         const w = cloneWorld(st.world);
         w.tokens.set(tok.name, inst(env, it.bnd, it2[2]!));
+        markSpaceMutation(w);
         return [[finItem(prev, emptyExpr, it.bnd)], { counter: st.counter, world: w }];
       }
       return [[finItem(prev, errAtom(tok, "bind!: token must be a symbol"), it.bnd)], st];
@@ -4330,6 +4391,7 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
       selfRules,
       selfVarRules,
       selfRuleVersion: copiedRules ? nextRuntimeRuleSetVersion() : w0.selfRuleVersion,
+      spaceVersion: nextSpaceContentVersion(),
       removedStatic: w0.removedStatic,
       removedStaticHeads: w0.removedStaticHeads,
       removedStaticVarRules: w0.removedStaticVarRules,
@@ -4340,7 +4402,7 @@ function appendSpace(env: MinEnv, w0: World, name: string, atoms: Atom[]): World
   }
   const spaces = new Map(w0.spaces);
   spaces.set(name, logAppendAll(spaces.get(name) ?? emptyLog, atoms));
-  return { ...w0, spaces };
+  return { ...w0, spaces, spaceVersion: nextSpaceContentVersion() };
 }
 
 /** Append one module's transitive definition closure once to `name`. Mark before descending to break cycles. */
@@ -4376,6 +4438,7 @@ function reindexRuntimeSelfRules(w: World): void {
 
 function eraseSpace(env: MinEnv, w0: World, name: string, a: Atom): World {
   const w = cloneWorld(w0);
+  markSpaceMutation(w);
   const erase1 = (xs: readonly Atom[]): Atom[] => {
     const i = xs.findIndex((y) => atomEq(y, a));
     return i < 0 ? [...xs] : [...xs.slice(0, i), ...xs.slice(i + 1)];
@@ -4446,6 +4509,7 @@ function applyReduceEffects(
       case "bindToken": {
         const w = cloneWorld(next.world);
         w.tokens.set(effect.name, inst(env, b, effect.atom));
+        markSpaceMutation(w);
         next = { counter: next.counter, world: w };
         break;
       }
@@ -5958,11 +6022,34 @@ const runtimeFunctorPure = (env: MinEnv, w: World, op: string): boolean =>
   runtimeFunctorPureWith(env, w, op, IMPURE_OPS, runtimePureCache);
 const runtimeFunctorPureModed = (env: MinEnv, w: World, op: string): boolean =>
   runtimeFunctorPureWith(env, w, op, MODED_IMPURE_OPS, runtimeModedPureCache);
+const runtimeFunctorPureSpaceRead = (env: MinEnv, w: World, op: string): boolean =>
+  runtimeFunctorPureWith(env, w, op, SPACE_READ_IMPURE_OPS, runtimeSpaceReadPureCache);
 
-function runtimeFunctorTableWorth(env: MinEnv, w: World, op: string, moded: boolean): boolean {
-  const staticWorth = (moded ? env.modedTableWorth : env.tableWorth)?.has(op) ?? false;
+function functorHasSpaceReadOnlyPurity(env: MinEnv, world: World, op: string): boolean {
+  const runtimeRulesVisible = world.selfRules.size > 0 || world.selfVarRules.length > 0;
+  return runtimeRulesVisible
+    ? !runtimeFunctorPure(env, world, op) && runtimeFunctorPureSpaceRead(env, world, op)
+    : !(env.pureFunctors?.has(op) ?? false) && (env.spaceReadPureFunctors?.has(op) ?? false);
+}
+
+type RuntimeTableMode = "ground" | "moded" | "space-read";
+
+function runtimeFunctorTableWorth(
+  env: MinEnv,
+  w: World,
+  op: string,
+  mode: RuntimeTableMode,
+): boolean {
+  const staticWorth =
+    (mode === "moded"
+      ? env.modedTableWorth
+      : mode === "space-read"
+        ? env.spaceReadTableWorth
+        : env.tableWorth
+    )?.has(op) ?? false;
   if (w.selfRules.size === 0) return staticWorth;
-  const ck = (moded ? "m:" : "g:") + op + "@" + w.selfRuleVersion;
+  const ck =
+    (mode === "moded" ? "m:" : mode === "space-read" ? "s:" : "g:") + op + "@" + w.selfRuleVersion;
   const cached = runtimeTableWorthCache.get(ck);
   if (cached !== undefined) return cached;
   const targets = new Set([op]);
@@ -5988,23 +6075,86 @@ function groundTableVersionIfAdmissible(
   world: World,
   op: string,
   call: Atom,
-): number | undefined {
+): TableVersion | undefined {
   if (env.tableSpace === undefined || !call.ground || !keyWellFormed(call)) return undefined;
   const runtimeRulesVisible = world.selfRules.size > 0 || world.selfVarRules.length > 0;
   const runtimeVersion = runtimeRulesVisible ? world.selfRuleVersion : 0;
   if (runtimeRulesVisible) {
-    return runtimeFunctorPure(env, world, op) &&
-      runtimeFunctorTableWorth(env, world, op, false) &&
+    if (
+      runtimeFunctorPure(env, world, op) &&
+      runtimeFunctorTableWorth(env, world, op, "ground") &&
       !containsImpureHead(env, call, IMPURE_OPS)
-      ? runtimeVersion
+    )
+      return runtimeVersion;
+    return runtimeFunctorPureSpaceRead(env, world, op) &&
+      runtimeFunctorTableWorth(env, world, op, "space-read") &&
+      !containsImpureHead(env, call, SPACE_READ_IMPURE_OPS)
+      ? [runtimeVersion, world.spaceVersion]
       : undefined;
   }
-  return (env.pureFunctors?.has(op) ?? false) &&
+  if (
+    (env.pureFunctors?.has(op) ?? false) &&
     (env.tableWorth?.has(op) ?? false) &&
     !staticRuleSetChanged(world) &&
     !containsImpureHead(env, call, IMPURE_OPS)
-    ? runtimeVersion
+  )
+    return runtimeVersion;
+  return !staticRuleSetChanged(world) &&
+    (env.spaceReadPureFunctors?.has(op) ?? false) &&
+    (env.spaceReadTableWorth?.has(op) ?? false) &&
+    !containsImpureHead(env, call, SPACE_READ_IMPURE_OPS)
+    ? [runtimeVersion, world.spaceVersion]
     : undefined;
+}
+
+function groundTableKey(env: MinEnv, call: Atom, version: TableVersion): CompletedTableKey {
+  const distinct = distinctGroundEnabled(env);
+  const kind =
+    typeof version === "number"
+      ? distinct
+        ? "ground-distinct"
+        : "ground"
+      : distinct
+        ? "ground-space-read-distinct"
+        : "ground-space-read";
+  return env.tableSpace!.key(kind, call, version);
+}
+
+/** Replay a completed top-level space-read call before rebuilding the evaluator frame. The producer already
+ *  passed type checking and admission under the same rule and space versions. Restrict the shortcut to calls
+ *  whose arguments are already normal, so it skips no argument work or effects. */
+function tryReplayTopSpaceReadTable(
+  env: MinEnv,
+  state: St,
+  bindings: Bindings,
+  call: Atom,
+  depth: EvaluationDepth,
+): EvalRes | undefined {
+  if (
+    env.trace !== undefined ||
+    bindings.length !== 0 ||
+    !call.ground ||
+    call.kind !== "expr" ||
+    call.items.length === 0 ||
+    call.items.slice(1).some((arg) => !isNormalForm(env, state.world, arg))
+  )
+    return undefined;
+  const op = opOf(call);
+  if (op === undefined) return undefined;
+  const version = groundTableVersionIfAdmissible(env, state.world, op, call);
+  if (version === undefined || typeof version === "number") return undefined;
+  const completed = env.tableSpace!.getCompleted(groundTableKey(env, call, version));
+  if (completed === undefined) return undefined;
+
+  const tracked = isDepthTrackedCall(env, state.world, call);
+  if (tracked && !depth.tryEnter(state.world.maxStackDepth)) return undefined;
+  try {
+    if (!depth.canReplay(completed.depthSpan, state.world.maxStackDepth)) return undefined;
+    depth.replay(completed.depthSpan);
+    return [completed.results.map((result) => [result, bindings]), state];
+  } finally {
+    if (tracked) depth.leave();
+  }
 }
 
 const DISTINCT_RESOURCE_LIMIT = Symbol("distinct-resource-limit");
@@ -6914,9 +7064,12 @@ function* reduceCompiledResultsG(
       if (wApp.ground) env.evaluatedAtoms.add(wApp);
       out.push([wApp, partB]);
     } else if (
-      (opReturnsAtom || (impResult && isCompiledFinalResult(env, cur.world, r.atom))) &&
+      (opReturnsAtom ||
+        cr.resultsFinal === true ||
+        (impResult && isCompiledFinalResult(env, cur.world, r.atom))) &&
       !isEmbeddedOp(r.atom)
     ) {
+      if (cr.resultsFinal === true && r.atom.ground) env.evaluatedAtoms.add(r.atom);
       out.push([r.atom, pb]);
     } else if (opOf(r.atom) === "function") {
       const [more, st4] = yield* reduceCompiledResultG(
@@ -7281,7 +7434,7 @@ function* mettaEvalBodyG(
       const mask = LAZY_ARGS_OPS.has(op)
         ? args.map(() => false)
         : LEATTA_EVAL_ARGS_OPS.has(op)
-          ? args.map(() => true)
+          ? args.map((ae) => !isSuperposeDataTuple(env, lst.world, op, ae))
           : argMask(sig, args.length);
       // (1) type-directed argument evaluation, binding-threaded
       let partials: Array<[Atom[], Bindings]> = [[[], []]];
@@ -7481,6 +7634,23 @@ function* mettaEvalBodyG(
         }
         let modedTableAdmissible = false;
         let modedRuntimeVersion = 0;
+        let groundTableVersion =
+          tabling && wApp.ground && functorHasSpaceReadOnlyPurity(env, cur2.world, op)
+            ? groundTableVersionIfAdmissible(env, cur2.world, op, wApp)
+            : undefined;
+        let groundKey: CompletedTableKey | undefined;
+        if (groundTableVersion !== undefined) {
+          groundKey = groundTableKey(env, wApp, groundTableVersion);
+          const completed = env.tableSpace!.getCompleted(groundKey);
+          if (
+            completed !== undefined &&
+            depth.canReplay(completed.depthSpan, cur2.world.maxStackDepth)
+          ) {
+            depth.replay(completed.depthSpan);
+            for (const cachedResult of completed.results) out.push([cachedResult, partB]);
+            continue;
+          }
+        }
         if (env.tableSpace !== undefined && !wApp.ground && keyWellFormed(wApp)) {
           const runtimeRulesVisible =
             cur2.world.selfRules.size > 0 || cur2.world.selfVarRules.length > 0;
@@ -7488,7 +7658,7 @@ function* mettaEvalBodyG(
           if (runtimeRulesVisible) {
             modedTableAdmissible =
               runtimeFunctorPureModed(env, cur2.world, op) &&
-              runtimeFunctorTableWorth(env, cur2.world, op, true) &&
+              runtimeFunctorTableWorth(env, cur2.world, op, "moded") &&
               !containsImpureHead(env, wApp, MODED_IMPURE_OPS);
           } else {
             modedTableAdmissible =
@@ -7500,7 +7670,8 @@ function* mettaEvalBodyG(
         }
         // Compiled fast path. A nondeterministic group runs before a profitable moded table only when a
         // later recursive call consumes a clause-local answer field. Independent overlap such as relational
-        // Fibonacci stays table-first; dependent BFC joins avoid retaining their intermediate relation.
+        // Fibonacci stays table-first; dependent BFC joins avoid retaining their intermediate relation. A
+        // ground space-read call stays table-first so later queries can replay its versioned answer bag.
         const compiledHolder = env.compiled?.get(op);
         const preferCompiledModed =
           compiledHolder?.kind === "nondet" && compiledHolder.preferDirectForModed;
@@ -7567,6 +7738,7 @@ function* mettaEvalBodyG(
                       counter: cur2.counter + cr.counterDelta,
                       world: cur2.world,
                     };
+                  if (groundKey !== undefined) pendingKeys.push(groundKey);
                   la = nextAtom;
                   lbnd = emptyBindings;
                   lst = cur2;
@@ -7589,6 +7761,15 @@ function* mettaEvalBodyG(
               singleTailResult !== undefined,
             );
             cur2 = st4;
+            if (groundKey !== undefined) {
+              const cachePairs =
+                distinctGroundEnabled(env) && handled.every((pair) => pair[0].ground)
+                  ? dedupGroundPairs(handled)
+                  : handled;
+              const produced = cachePairs.map((pair) => pair[0]);
+              if (produced.every((atom) => atom.ground && !isEvaluationLimitAtom(atom)))
+                rememberGroundTable(env, groundKey, produced, depth.span(depthSpan));
+            }
             for (const h of handled) out.push(h);
             continue;
           }
@@ -7598,14 +7779,10 @@ function* mettaEvalBodyG(
         let eligible = false;
         let key: CompletedTableKey | undefined;
         if (tabling && wApp.ground) {
-          const runtimeVersion = groundTableVersionIfAdmissible(env, cur2.world, op, wApp);
-          if (runtimeVersion !== undefined) {
+          groundTableVersion ??= groundTableVersionIfAdmissible(env, cur2.world, op, wApp);
+          if (groundTableVersion !== undefined) {
             eligible = true;
-            key = env.tableSpace!.key(
-              distinctGroundEnabled(env) ? "ground-distinct" : "ground",
-              wApp,
-              runtimeVersion,
-            );
+            key = groundKey ?? groundTableKey(env, wApp, groundTableVersion);
           }
           if (eligible) {
             const completed = key === undefined ? undefined : env.tableSpace!.getCompleted(key);
@@ -8183,6 +8360,8 @@ function mettaEval(
   depth: EvaluationDepth = new EvaluationDepth(),
 ): [Array<[Atom, Bindings]>, St] {
   st.world.stepStart = st.counter;
+  const tabled = tryReplayTopSpaceReadTable(env, st, bnd, a, depth);
+  if (tabled !== undefined) return tabled;
   ensureCompiled(env, a);
   try {
     const direct = tryDirectTopMatch(env, fuel, st, bnd, a);
@@ -8211,6 +8390,8 @@ function mettaEvalAsyncInternal(
   beginQuery = true,
 ): Promise<[Array<[Atom, Bindings]>, St]> {
   if (beginQuery) st.world.stepStart = st.counter;
+  const tabled = tryReplayTopSpaceReadTable(env, st, bnd, a, depth);
+  if (tabled !== undefined) return Promise.resolve(tabled);
   ensureCompiled(env, a);
   const direct = tryDirectTopMatch(env, fuel, st, bnd, a);
   if (direct !== undefined) return Promise.resolve(direct);

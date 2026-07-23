@@ -12,7 +12,7 @@ import {
 import { stdTable } from "./builtins";
 import { parseAll } from "./parser";
 import { standardTokenizer, preludeAtoms, runProgram } from "./runner";
-import { analyzePurity, analyzeTableWorth, keyWellFormed } from "./tabling";
+import { analyzePurity, analyzeTableWorth, keyWellFormed, SPACE_READ_IMPURE_OPS } from "./tabling";
 import { expr, sym, gint, gfloat } from "./atom";
 import { format } from "./parser";
 import { TableSpace } from "./table-space";
@@ -136,11 +136,41 @@ describe("purity analysis", () => {
     expect(worth.has("fact")).toBe(false);
   });
 
+  it("admits match as a versioned space read but keeps get-atoms impure", () => {
+    const env = buildEnv(
+      [
+        ...preludeAtoms(),
+        ...atoms(
+          "(= (read $n) (unify $n 0 (match &self (p $x) $x) (pair (read (- $n 1)) (read (- $n 1)))))\n" +
+            "(= (read-all) (get-atoms &self))",
+        ),
+      ],
+      stdTable(),
+    );
+    const pure = analyzePurity(env);
+    const spaceReadPure = analyzePurity(env, SPACE_READ_IMPURE_OPS);
+    const spaceReadWorth = analyzeTableWorth(env, spaceReadPure);
+
+    expect(pure.has("read")).toBe(false);
+    expect(spaceReadPure.has("read")).toBe(true);
+    expect(spaceReadWorth.has("read")).toBe(true);
+    expect(spaceReadPure.has("read-all")).toBe(false);
+  });
+
   it("structural table keys are stable and keyWellFormed rejects floats", () => {
     const tables = new TableSpace();
     const call = expr([sym("fib"), gint(30)]);
     expect(tables.key("ground", call, 0).tokens).toEqual(tables.key("ground", call, 0).tokens);
     expect(tables.key("ground", call, 0).tokens).not.toEqual(tables.key("ground", call, 1).tokens);
+    expect(tables.key("ground-space-read", call, [2, 3]).tokens).toEqual(
+      tables.key("ground-space-read", call, [2, 3]).tokens,
+    );
+    expect(tables.key("ground-space-read", call, [2, 3]).tokens).not.toEqual(
+      tables.key("ground-space-read", call, [2, 4]).tokens,
+    );
+    expect(tables.key("ground-space-read", call, [2, 3]).tokens).not.toEqual(
+      tables.key("ground", call, 2).tokens,
+    );
     expect(keyWellFormed(call)).toBe(true);
     expect(keyWellFormed(expr([sym("g"), gfloat(1.5)]))).toBe(false);
   });
@@ -176,6 +206,43 @@ describe("tabling end to end", () => {
 });
 
 describe("tabling invalidation", () => {
+  it("does not remember space-read answer bags cut by depth or work bounds", () => {
+    const rules = `
+      (fact a)
+      (fact b)
+      (= (read $n)
+         (unify $n 0
+           (match &self (fact $x) $x)
+           (join (read (- $n 1)) (read (- $n 1)))))
+      (= (join $x $y) ($x $y))
+    `;
+    const cases: ReadonlyArray<readonly [key: string, low: number, high: number, reason: string]> =
+      [
+        ["max-stack-depth", 3, 100, "StackOverflow"],
+        ["mettascript-max-steps", 20, 100_000, "ResourceLimit"],
+      ];
+
+    for (const [key, low, high, reason] of cases) {
+      const results = runProgram(
+        `${rules}
+         !(pragma! ${key} ${low})
+         !(read 2)
+         !(pragma! ${key} ${high})
+         !(read 2)`,
+        100_000,
+        new Map(),
+        { tabling: true },
+      );
+      const cut = results[1]!.results.map(format);
+      const complete = results[3]!.results.map(format);
+
+      expect(cut.some((result) => result.includes(reason))).toBe(true);
+      expect(complete).toHaveLength(16);
+      expect(complete.some((result) => result.includes("Overflow"))).toBe(false);
+      expect(complete.some((result) => result.includes("ResourceLimit"))).toBe(false);
+    }
+  });
+
   it("runtime helper rule changes invalidate cached callers through the world rule version", () => {
     const src =
       "(= (fib $n) (if (< $n 2) (base) (+ (fib (- $n 1)) (fib (- $n 2)))))\n" +
@@ -226,8 +293,20 @@ describe("runtime-rule tabling (fibadd)", () => {
     expect(on[on.length - 1]!.results.map(format)).toEqual(["17711"]);
   });
 
-  it("an IMPURE runtime function (match over the space) is NOT tabled, so state changes show", () => {
-    // (cnt) reads the space, so tabling it would serve a stale count after a new (foo ...) is added.
+  it("versions a runtime-defined branching space reader across fact writes", () => {
+    bothMatch(
+      "!(add-atom &self (= (read $n $x) " +
+        "(unify $n 0 (match &self (fact $x) hit) " +
+        "(join (read (- $n 1) $x) (read (- $n 1) $x)))))\n" +
+        "!(add-atom &self (= (join hit hit) hit))\n" +
+        "!(read 2 runtime)\n" +
+        "!(add-atom &self (fact runtime))\n" +
+        "!(read 2 runtime)",
+    );
+  });
+
+  it("a linear runtime space reader is not worth tabling, so state changes show", () => {
+    // (cnt) reads the space but has no branching recursion, so the table-worth gate leaves it untabled.
     bothMatch(
       "!(add-atom &self (= (cnt) (foldall + (match &self (foo $x) 1) 0)))\n" +
         "!(add-atom &self (foo a))\n!(cnt)\n!(add-atom &self (foo b))\n!(cnt)",

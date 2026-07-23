@@ -119,6 +119,81 @@ describe("deterministic-core compiler", () => {
     ]);
   });
 
+  it("compiles synthesis generation and the choice-filter-render pipeline in exact order", () => {
+    const src = `
+(= (sq fib 1) 1)
+(= (sq fib 2) 1)
+(= (sq fib 3) 2)
+(= (sq fib 4) 3)
+(= (len fib) 4)
+(= (gen $d) (superpose (N (C 1) (C 2) (X 1) (X 2))))
+(= (gen $d)
+   (if (> $d 0)
+       (Bin (superpose (+ - *)) (gen (- $d 1)) (gen (- $d 1)))
+       (empty)))
+(= (ev N $s $n) $n)
+(= (ev (C $c) $s $n) $c)
+(= (ev (X $k) $s $n) (sq $s (- $n $k)))
+(= (ev (Bin $op $a $b) $s $n) ($op (ev $a $s $n) (ev $b $s $n)))
+(= (check $e $s $n)
+   (if (> $n (len $s))
+       True
+       (if (== (ev $e $s $n) (sq $s $n))
+           (check $e $s (+ $n 1))
+           False)))
+(= (render N) (quote n))
+(= (render (C $c)) (quote $c))
+(= (render (X $k)) (quote (x (- n $k))))
+(= (render (Bin $op $a $b))
+   (let* (((quote $ra) (render $a)) ((quote $rb) (render $b)))
+     (quote ($op $ra $rb))))
+(= (solve $s $d)
+   (let $e (gen $d)
+     (if (check $e $s 3)
+         (let (quote $body) (render $e)
+           (quote (= (x n) $body)))
+         (empty))))
+`;
+    const compiled = envWith(src);
+    compiled.compiled = compileEnv(compiled);
+    const interpreted = envWith(src);
+    expect(compiled.compiled.get("gen")?.kind).toBe("nondet");
+    expect(compiled.compiled.get("ev")?.kind).toBe("scalar");
+    expect(compiled.compiled.get("check")?.kind).toBe("scalar");
+    expect(compiled.compiled.get("solve")?.kind).toBe("nondet");
+
+    const genQuery = atoms("(gen 1)")[0]!;
+    const generated = evalQuery(compiled, genQuery);
+    expect(generated).toEqual(evalQuery(interpreted, genQuery));
+    expect(generated.results.slice(0, 7)).toEqual([
+      "N",
+      "(C 1)",
+      "(C 2)",
+      "(X 1)",
+      "(X 2)",
+      "(Bin + N N)",
+      "(Bin + N (C 1))",
+    ]);
+    expect(generated.results[30]).toBe("(Bin - N N)");
+    expect(generated.results[55]).toBe("(Bin * N N)");
+
+    const solveQuery = atoms("(solve fib 1)")[0]!;
+    expect(evalQuery(compiled, solveQuery)).toEqual(evalQuery(interpreted, solveQuery));
+  });
+
+  it("leaves a broader recursive choice union on the general path", () => {
+    const c = compileEnv(
+      envWith(`
+(= (gen $d) (superpose (N (C 1))))
+(= (gen $d)
+   (if (> $d 0)
+       (Bin (superpose (+ unknown *)) (gen (- $d 1)) (gen (- $d 1)))
+       (empty)))
+`),
+    );
+    expect(c.has("gen")).toBe(false);
+  });
+
   it("declines a nondeterministic group with a wrong-arity internal call", () => {
     const c = compileEnv(
       envWith(`

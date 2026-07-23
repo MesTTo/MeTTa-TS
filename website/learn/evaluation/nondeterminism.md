@@ -59,6 +59,19 @@ A nondeterministic value is just an expression with several results. `superpose`
 
 `(empty)` is the opposite of a result: it evaluates to *no* results, which is how you prune a branch. It is the same as a function having no matching rule.
 
+The tuple you superpose can hold operators as data. `(superpose (+ - *))` enumerates the three operators themselves, which is the heart of program synthesis: pick an operator nondeterministically, build a candidate expression with it, and test the candidate.
+
+<MettaRunner>
+
+```metta
+!(superpose (+ - *))                        ; +, - and *
+!(let $op (superpose (+ - *)) ($op 10 2))   ; 12, 8 and 20
+```
+
+</MettaRunner>
+
+A tuple like `(+ - *)` looks like a call, but applying `+` to two operators would be a type error, so it is treated as the data it is. A tuple that *is* a well-typed call evaluates first and its value is what gets split, so a computed tuple works the way you would expect: `(superpose (cdr-atom (1 2 3)))` gives `2` and `3`.
+
 Nondeterminism flows through other calls. If you feed a nondeterministic argument to a function, the function runs once per value:
 
 <MettaRunner>

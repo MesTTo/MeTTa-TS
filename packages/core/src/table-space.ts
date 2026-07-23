@@ -169,8 +169,16 @@ const DEFAULT_TABLE_BUDGET: TableBudget = {
 const DOMAIN_GROUND = -1;
 const DOMAIN_MODED = -2;
 const DOMAIN_GROUND_DISTINCT = -3;
+const DOMAIN_GROUND_SPACE_READ = -4;
+const DOMAIN_GROUND_SPACE_READ_DISTINCT = -5;
 
-export type TableKeyKind = "ground" | "ground-distinct" | "moded";
+export type TableKeyKind =
+  | "ground"
+  | "ground-distinct"
+  | "ground-space-read"
+  | "ground-space-read-distinct"
+  | "moded";
+export type TableVersion = number | readonly [ruleVersion: number, spaceVersion: number];
 
 export class TableSpace {
   interner = new Interner();
@@ -189,7 +197,7 @@ export class TableSpace {
 
   constructor(private readonly budget: TableBudget = DEFAULT_TABLE_BUDGET) {}
 
-  key(kind: TableKeyKind, call: Atom, runtimeVersion: number): EncodedAtomKey {
+  key(kind: TableKeyKind, call: Atom, version: TableVersion): EncodedAtomKey {
     this.maybeResetInterner();
     let encoded = encodeVariantKey(call, this.interner);
     if (this.interner.size > this.budget.maxInternerLeaves && this.activeCount === 0) {
@@ -201,9 +209,14 @@ export class TableSpace {
         ? DOMAIN_GROUND
         : kind === "ground-distinct"
           ? DOMAIN_GROUND_DISTINCT
-          : DOMAIN_MODED;
+          : kind === "ground-space-read"
+            ? DOMAIN_GROUND_SPACE_READ
+            : kind === "ground-space-read-distinct"
+              ? DOMAIN_GROUND_SPACE_READ_DISTINCT
+              : DOMAIN_MODED;
+    const versionTokens = typeof version === "number" ? [version] : version;
     return {
-      tokens: [domain, this.generation, runtimeVersion, ...encoded.tokens],
+      tokens: [domain, this.generation, ...versionTokens, ...encoded.tokens],
       generation: this.generation,
       varNames: encoded.varNames,
       canonicalMap: encoded.canonicalMap,

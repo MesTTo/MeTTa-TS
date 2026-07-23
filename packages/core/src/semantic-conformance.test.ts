@@ -102,3 +102,131 @@ describe("specialization", () => {
     expect(query(source)).toEqual(["3"]);
   });
 });
+
+describe("superpose argument policy (Hyperon-identical)", () => {
+  it("enumerates an ill-typed-call tuple as data: operators carried as data", () => {
+    // Hyperon 0.2.10: `[+, -, *]`. The tuple's head cannot be applied (`+` on two operators is a
+    // BadArgType), so the tuple is data and each element evaluates to itself.
+    expect(multiset(query("!(superpose (+ - *))"))).toEqual(multiset(["+", "-", "*"]));
+  });
+
+  it("evaluates the elements of a literal tuple", () => {
+    // Hyperon 0.2.10: `[3, 5]`.
+    expect(multiset(query("!(superpose ((+ 1 2) 5))"))).toEqual(multiset(["3", "5"]));
+  });
+
+  it("keeps an unreducible element inert", () => {
+    // Hyperon 0.2.10: `[(+ 1 zzz), 5]`.
+    expect(multiset(query("!(superpose ((+ 1 zzz) 5))"))).toEqual(multiset(["(+ 1 zzz)", "5"]));
+  });
+
+  it("returns the empty bag for the empty tuple", () => {
+    // Hyperon 0.2.10: `[]`.
+    expect(query("!(superpose ())")).toEqual([]);
+  });
+
+  it("rejects a literal non-expression argument with BadArgType", () => {
+    // Hyperon 0.2.10: `[(Error (superpose 5) (BadArgType 1 Expression Number))]`.
+    expect(query("!(superpose 5)")).toEqual([
+      "(Error (superpose 5) (BadArgType 1 Expression Number))",
+    ]);
+  });
+
+  it("propagates the error when a let binds the operator tuple", () => {
+    // Hyperon 0.2.10: let reduces the bound value first, so `(+ - *)` errors before superpose runs.
+    // Both engines: `[(Error (+ - *) (BadArgType 1 Number (-> Number Number Number)))]`.
+    expect(query("!(let $t (+ - *) (superpose $t))")).toEqual([
+      "(Error (+ - *) (BadArgType 1 Number (-> Number Number Number)))",
+    ]);
+  });
+
+  it("errors on a non-expression value with Hyperon's exact message symbol", () => {
+    // Hyperon 0.2.10: `[(Error (superpose c) superpose expects single expression as an argument)]` —
+    // the message is a bare space-containing symbol, printed unquoted.
+    const source = `
+      (= (a b) c)
+      !(let $t (a b) (superpose $t))`;
+    expect(query(source)).toEqual([
+      "(Error (superpose c) superpose expects single expression as an argument)",
+    ]);
+  });
+
+  it("splits a variable bound to a tuple value", () => {
+    // Hyperon 0.2.10: `[1, 2, 3]`.
+    const source = `
+      (= (mk) (1 2 3))
+      !(let $x (mk) (superpose $x))`;
+    expect(multiset(query(source))).toEqual(multiset(["1", "2", "3"]));
+  });
+
+  it("solves the program-synthesis benchmark", () => {
+    // Hyperon 0.2.10 returns exactly these two solutions (enumeration order unspecified): the fib
+    // recurrence in both argument orders. Exercises operators-as-data superpose, `$op` in head
+    // position, `empty` pruning, and the quote/let* render pipeline.
+    const source = `
+      (= (sq nat 1) 1) (= (sq nat 2) 2) (= (sq nat 3) 3) (= (sq nat 4) 4) (= (sq nat 5) 5)
+      (= (len nat) 5)
+      (= (sq fib 1) 1) (= (sq fib 2) 1) (= (sq fib 3) 2) (= (sq fib 4) 3) (= (sq fib 5) 5) (= (sq fib 6) 8)
+      (= (len fib) 6)
+      (= (gen $d) (superpose (N (C 1) (C 2) (X 1) (X 2))))
+      (= (gen $d)
+         (if (> $d 0)
+             (Bin (superpose (+ - *)) (gen (- $d 1)) (gen (- $d 1)))
+             (empty)))
+      (= (ev N $s $n) $n)
+      (= (ev (C $c) $s $n) $c)
+      (= (ev (X $k) $s $n) (sq $s (- $n $k)))
+      (= (ev (Bin $op $a $b) $s $n) ($op (ev $a $s $n) (ev $b $s $n)))
+      (= (check $e $s $n)
+         (if (> $n (len $s))
+             True
+             (if (== (ev $e $s $n) (sq $s $n))
+                 (check $e $s (+ $n 1))
+                 False)))
+      (= (render N) (quote n))
+      (= (render (C $c)) (quote $c))
+      (= (render (X $k)) (quote (x (- n $k))))
+      (= (render (Bin $op $a $b))
+         (let* (((quote $ra) (render $a)) ((quote $rb) (render $b)))
+           (quote ($op $ra $rb))))
+      (= (solve $s $d)
+         (let $e (gen $d)
+           (if (check $e $s 3)
+               (let (quote $body) (render $e)
+                 (quote (= (x n) $body)))
+               (empty))))
+      !(unique (solve fib 1))`;
+    expect(multiset(query(source))).toEqual(
+      multiset([
+        "(quote (= (x n) (+ (x (- n 1)) (x (- n 2)))))",
+        "(quote (= (x n) (+ (x (- n 2)) (x (- n 1)))))",
+      ]),
+    );
+  });
+});
+
+describe("superpose argument policy (deliberate dialect divergences)", () => {
+  // These three keep PeTTa's evaluate-then-split for a WELL-TYPED call argument, which computed
+  // tuples rely on (`(case (superpose (cdr-atom (collapse (match …)))) …)` in the corpus). Hyperon
+  // 0.2.10 never evaluates the argument and would return the raw split noted per case.
+
+  it("evaluates a well-typed nullary call before splitting", () => {
+    // Hyperon 0.2.10 returns `[t]` (raw split). PeTTa and this engine evaluate `(t)` first.
+    const source = `
+      (= (t) (a b))
+      !(superpose (t))`;
+    expect(multiset(query(source))).toEqual(multiset(["a", "b"]));
+  });
+
+  it("evaluates a computed tuple before splitting", () => {
+    // Hyperon 0.2.10 returns `[cdr-atom, (0 1 2 3)]` (raw split).
+    expect(multiset(query("!(superpose (cdr-atom (0 1 2 3)))"))).toEqual(multiset(["1", "2", "3"]));
+  });
+
+  it("flattens a collapsed bag through superpose", () => {
+    // Hyperon 0.2.10 returns `[collapse, 3, 2, 1]` (raw split with the stray head symbol).
+    expect(multiset(query("!(superpose (collapse (superpose (1 2 3))))"))).toEqual(
+      multiset(["1", "2", "3"]),
+    );
+  });
+});
