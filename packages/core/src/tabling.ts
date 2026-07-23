@@ -232,8 +232,17 @@ export function analyzeTableWorth(env: MinEnv, pureFunctors: ReadonlySet<string>
 /** A key is well-formed only if it contains no Float leaf (IEEE-754 breaks lawful equality, so a
  *  float-keyed table could merge or split keys differently from `match`). Mutable references never
  *  appear in a ground call, so the float check is the only one needed in P1. */
+// Iterative explicit-stack walk so a deep key term cannot overflow the host stack: a key is well-formed
+// unless some grounded leaf is a float, an order-independent check over the whole tree.
 export function keyWellFormed(a: Atom): boolean {
-  if (a.kind === "gnd") return a.value.g !== "float";
-  if (a.kind === "expr") return a.items.every(keyWellFormed);
+  const stack: Atom[] = [a];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (cur.kind === "gnd") {
+      if (cur.value.g === "float") return false;
+    } else if (cur.kind === "expr") {
+      for (const x of cur.items) stack.push(x);
+    }
+  }
   return true;
 }

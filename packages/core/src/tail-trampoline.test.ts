@@ -6,7 +6,10 @@ import { describe, expect, it } from "vitest";
 import fc from "fast-check";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { expr, gint, sym, type Atom } from "./atom";
+import { stdTable } from "./builtins";
 import { compiledEnvWith, evalQuery, parseOne } from "./compile-test-utils";
+import { emptyEnv, initSt, mettaEval } from "./eval";
 import { format } from "./parser";
 import { runProgram } from "./runner";
 
@@ -173,6 +176,17 @@ describe("compiled tail-call trampoline", () => {
       { numRuns: 100 },
     );
   }, 30_000);
+});
+
+describe("depth-neutral argument trampoline", () => {
+  it("evaluates a deep grounded-operation spine on the heap", () => {
+    let call: Atom = gint(1n);
+    for (let i = 0; i < 5000; i++) call = expr([sym("+"), gint(1n), call]);
+
+    const [pairs] = mettaEval(emptyEnv(stdTable()), 10_000_000, initSt(), [], call);
+
+    expect(pairs.map((pair) => format(pair[0]))).toEqual(["5001"]);
+  });
 });
 
 describe("compiled tail-call nontermination differential", () => {

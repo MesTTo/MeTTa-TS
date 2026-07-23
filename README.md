@@ -1,6 +1,6 @@
 # MeTTaScript
 
-MeTTaScript is a metagraph rewriting database, written in pure TypeScript. You store facts in a space, query them by pattern, and compute by writing rewrite rules over the same facts, all with the same pattern-matching mechanism.
+MeTTaScript is a metagraph database and reasoning engine, written in pure TypeScript. You store facts in a space, query them by pattern, derive new facts with rewrite rules, and let a query fan out to search every answer, all through one pattern-matching mechanism. Querying and computing are the same act of matching, so the library that holds your data also runs recursive inference and non-deterministic search over it.
 
 A metagraph is the most expressive of the graph data models. A graph joins two nodes with an edge, a hypergraph joins any number of nodes, and a metagraph lets links contain other links, so a fact can be about another fact: `(Believes Tom (parent Bob Ann))` is a statement whose subject is itself a statement. Rules live in the space as atoms too, so you compute by rewriting the data itself, and a program can query and rewrite its own rules.
 
@@ -324,6 +324,13 @@ The core list operations run in linear time. `size-atom`, `map-atom`,
 `filter-atom`, and `foldl-atom` over N elements are O(N) on a constant native
 stack, byte-identical to the prelude recursion up to variable renaming, and beat
 PeTTa 2.7x to 5.2x at N=100000.
+
+Deep recursion scales past the native stack. A deep reducible computation runs
+through a heap continuation instead of the host call stack, so a reduction tens
+of thousands of levels deep returns a value rather than a `StackOverflow`. The
+depth bound is a `max-stack-depth` limit you set, deterministic and independent
+of the V8 stack size, so the same program cuts at the same place in every
+runtime.
 
 The full per-program tables, memory figures, and the nondeterminism and
 bounded-backward-chaining benchmarks are in

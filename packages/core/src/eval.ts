@@ -453,41 +453,57 @@ function isDefinedHead(env: MinEnv, w: World, name: string): boolean {
 // head and reduces only if a subterm does. Caller restricts use to when no catch-all (`($x …)`) equation
 // exists, so a constructor head's `candidatesW` is empty and re-evaluating `t` is a pure no-op that advances
 // nothing — which is why the short-circuit can return `t` as-is, byte-identically.
+// Iterative (explicit-stack) term walk: a deep result term (e.g. the derivative of a deep product) would
+// otherwise recurse to the term's depth and overflow the host stack. Normal-form is an AND over every
+// subterm's head being an undefined symbol, so the visit order does not affect the result.
 function isNormalForm(env: MinEnv, w: World, t: Atom): boolean {
-  switch (t.kind) {
-    case "var":
-    case "gnd":
-      return true;
-    case "sym":
-      return !isDefinedHead(env, w, t.name);
-    case "expr": {
-      const its = t.items;
-      if (its.length === 0) return true;
-      const h = its[0]!;
-      if (h.kind !== "sym" || isDefinedHead(env, w, h.name)) return false;
-      for (let i = 1; i < its.length; i++) if (!isNormalForm(env, w, its[i]!)) return false;
-      return true;
+  const stack: Atom[] = [t];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    switch (cur.kind) {
+      case "var":
+      case "gnd":
+        break;
+      case "sym":
+        if (isDefinedHead(env, w, cur.name)) return false;
+        break;
+      case "expr": {
+        const its = cur.items;
+        if (its.length === 0) break;
+        const h = its[0]!;
+        if (h.kind !== "sym" || isDefinedHead(env, w, h.name)) return false;
+        for (let i = 1; i < its.length; i++) stack.push(its[i]!);
+        break;
+      }
     }
   }
+  return true;
 }
 
+// Iterative explicit-stack walk (a deep term must not overflow the host stack). Result is unchanged: every
+// expression node's head must be an undefined symbol and every subterm must itself hold, an order-independent
+// AND over the whole tree.
 function isNormalFormAssumingVars(env: MinEnv, w: World, t: Atom): boolean {
-  switch (t.kind) {
-    case "var":
-      return true;
-    case "sym":
-    case "gnd":
-      return isNormalForm(env, w, t);
-    case "expr": {
-      if (t.items.length === 0) return true;
-      const h = t.items[0]!;
-      return (
-        h.kind === "sym" &&
-        !isDefinedHead(env, w, h.name) &&
-        t.items.every((x) => isNormalFormAssumingVars(env, w, x))
-      );
+  const stack: Atom[] = [t];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    switch (cur.kind) {
+      case "var":
+        break;
+      case "sym":
+      case "gnd":
+        if (!isNormalForm(env, w, cur)) return false;
+        break;
+      case "expr": {
+        if (cur.items.length === 0) break;
+        const h = cur.items[0]!;
+        if (h.kind !== "sym" || isDefinedHead(env, w, h.name)) return false;
+        for (const x of cur.items) stack.push(x);
+        break;
+      }
     }
   }
+  return true;
 }
 
 function isCompiledFinalResult(env: MinEnv, w: World, t: Atom): boolean {
@@ -2427,9 +2443,15 @@ function getTypesUncached(env: MinEnv, a: Atom): Atom[] {
   const direct = env.exprTypes.filter((p) => atomEq(p[0], a));
   if (direct.length > 0) return direct.map((p) => p[1]);
   const f = a.items[0]!;
+  const fTypes = getTypes(env, f);
+  // argTs feeds only the arrow-type parameter match below. When the head has no function type the result is
+  // %Undefined% no matter what the arguments are, so skip the per-argument type walk. That walk is the
+  // recursive descent, so skipping it keeps type computation stack-safe on a deep constructor-rooted term
+  // (e.g. the derivative of a deep product): the walk stops at each constructor node instead of descending
+  // the whole tree. Byte-identical — the arrow loop below would have produced nothing here anyway.
+  if (!fTypes.some((t) => opOf(t) === "->" && t.kind === "expr")) return UNDEF_T;
   const args = a.items.slice(1);
   const argTs = args.map((x) => headOr(getTypes(env, x), UNDEF));
-  const fTypes = getTypes(env, f);
   const out: Atom[] = [];
   for (const t of fTypes) {
     if (opOf(t) === "->" && t.kind === "expr") {
@@ -7272,16 +7294,32 @@ function* mettaEvalBodyG(
           if (evalThis) {
             const tailArgument =
               depthLease.reuseLevel && ((op === "let" && i === 2) || (op === "let*" && i === 1));
-            const [ps, st2] = yield* mettaEvalG(
-              env,
-              fuel - 1,
-              cur,
-              accB,
-              ae,
-              depth,
-              trampoline,
-              tailArgument,
-            );
+            // A ground reducible expression can recurse through arbitrarily many evaluator frames before
+            // this application acquires a logical user-call depth lease. Constructor and grounded-op calls
+            // never acquire one at all. Start the existing heap driver at that semantic boundary; it carries
+            // the same EvaluationDepth object and reuse flag, so max-stack-depth accounting stays unchanged.
+            // Keep open calls on the recursive path: evaluating stored rule syntax such as
+            // `(iterate $i $n $state $step)` can expand forever at one tail-call depth when its guard sees an
+            // unbound variable, and the native path's StackOverflow result is observable.
+            const argument = ae.ground ? ae : inst(env, accB, ae);
+            const driveDepthNeutralArgument =
+              trampoline === undefined &&
+              argument.kind === "expr" &&
+              argument.ground &&
+              (!depthLease.entered || !isDepthTrackedCall(env, cur.world, lw)) &&
+              !isNormalForm(env, cur.world, argument);
+            const [ps, st2] = driveDepthNeutralArgument
+              ? yield* driveMettaEvalG({
+                  kind: EVAL_REQUEST,
+                  env,
+                  fuel: fuel - 1,
+                  state: cur,
+                  bindings: accB,
+                  atom: ae,
+                  depth,
+                  reuseDepthLevel: tailArgument,
+                })
+              : yield* mettaEvalG(env, fuel - 1, cur, accB, ae, depth, trampoline, tailArgument);
             cur = st2;
             for (const p of ps) {
               nextParts.push([[...accAtoms, p[0]], mergeRestrict(env, queryVars, accB, p[1])]);

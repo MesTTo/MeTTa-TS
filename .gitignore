@@ -21,6 +21,7 @@ isolate-*.log
 # Local scratch, notes, and screenshots (never committed)
 /ai-notes/
 /ai-tmp/
+/ai-debug/
 /ai-*.md
 /metta-interlingua/
 /scratch-review/

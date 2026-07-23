@@ -5,8 +5,8 @@ layout: home
 
 hero:
   name: MeTTaScript
-  text: A metagraph rewriting database in TypeScript
-  tagline: Store facts in a space, query them by pattern, and compute with rewrite rules. A pure-TypeScript library for the browser, Node, Deno, Bun, and edge. No native addons, no MeTTa knowledge required.
+  text: A metagraph database and reasoning engine in TypeScript
+  tagline: Store facts in a space, query them by pattern, derive more with rules, and let a query fan out to search every answer, all through one pattern-matching engine. Pure TypeScript for the browser, Node, Deno, Bun, and edge, and faster than DataScript on its own queries.
   image:
     src: /search.gif
     alt: A generate-and-test search played as a graph, where candidate answers fan out, are tested, and prune to the results
@@ -23,17 +23,21 @@ hero:
 
 features:
   - title: Use it from TypeScript
-    details: Store facts, query by pattern, and write rules with a typed eDSL, entirely in TypeScript. Query keys, arguments, and results cross the boundary as ordinary values. You never have to learn a new language.
-  - title: A more powerful data model
-    details: A metagraph, not a table. Atoms nest, so a fact can be about another fact, and rules and types live in the same space as the data. One pattern-matching mechanism both queries and computes.
+    details: Store facts, query by pattern, and write rules with a typed eDSL, entirely in TypeScript. Query keys, arguments, and results cross the boundary as ordinary values. You never have to learn a new language to start.
+  - title: A metagraph, not a table
+    details: Atoms nest, so a fact can be about another fact, and rules and types live in the same space as the data. Flat rows and RDF triples cannot nest that way. One pattern-matching mechanism both queries the space and computes over it.
+  - title: Rules, inference, and search
+    details: Write rules that derive new facts, chain them into recursive inference, and let a query fan out non-deterministically to explore every answer instead of one. Because rules are atoms too, a program can read and rewrite its own rules.
   - title: Faster than DataScript
-    details: On DataScript's own declarative workloads MeTTaScript wins every query at 120k records, up to 1349x, while building faster and holding less heap. See the use-cases page for the full comparison.
-  - title: Runs anywhere
-    details: One core ESM bundle, about 23 KB gzipped. No native addon, no required WASM, no Rust. Import it in a web page, a serverless handler, or an agent loop and go.
+    details: On DataScript's own declarative workloads MeTTaScript wins every query at 120k records, up to 1349x, while building faster and holding less heap. The use-cases page has the full comparison.
+  - title: Scales to deep computation
+    details: The evaluator runs deep reductions on a heap continuation, not the JavaScript call stack, so a computation tens of thousands of levels deep returns a result instead of overflowing. How deep it goes is bounded by memory and a language-level limit you set.
   - title: TypeScript-native interop
     details: Call your own TypeScript functions from inside rules, drop TypeScript objects straight into the space, and await real I/O. No FFI, same language end to end.
+  - title: Runs anywhere
+    details: One core ESM bundle, about 23 KB gzipped. No native addon, no required WASM, no Rust. Import it in a web page, a serverless handler, or an agent loop and go.
   - title: Immutable and concurrent
-    details: Keep immutable snapshots you can branch and roll back. Grounded operations can do I/O, and concurrency primitives (par, race, once, with-mutex) and transactions build on top.
-  - title: Part of the MeTTa ecosystem, if you want it
-    details: MeTTaScript implements MeTTa, the language from OpenCog Hyperon, and is validated 270/270 against Hyperon's oracle and the Lean-verified LeaTTa semantics. Use it as a plain library and never think about any of that.
+    details: Keep immutable snapshots you can branch and roll back. Grounded operations do real I/O, and concurrency primitives (par, race, once, with-mutex) and transactions build on top.
+  - title: Validated against the reference
+    details: MeTTaScript implements MeTTa, the language of OpenCog Hyperon, and matches Hyperon's Rust reference on 270/270 oracle tests and the Lean-verified LeaTTa semantics. The library you pick up in a minute and the exact reference semantics are the same engine.
 ---

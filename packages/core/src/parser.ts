@@ -199,8 +199,7 @@ export function parseAll(src: string, tk: Tokenizer): TopAtom[] {
 }
 
 /** Print an atom back to MeTTa source (inverse of parse for normalized input). */
-export function format(a: Atom): string {
-  if (isExpr(a)) return "(" + a.items.map(format).join(" ") + ")";
+function formatLeaf(a: Atom): string {
   if (isVar(a)) return "$" + a.name;
   if (isSym(a)) return a.name;
   if (isGnd(a)) {
@@ -223,4 +222,31 @@ export function format(a: Atom): string {
     }
   }
   return "?";
+}
+
+export function format(a: Atom): string {
+  if (!isExpr(a)) return formatLeaf(a);
+  // Explicit-stack post-order print so a deep term cannot overflow the host stack (`repr`/`println`/trace
+  // over a runtime-built term thousands deep). Byte-identical to the recursive form: an expression is
+  // `"(" + items.join(" ") + ")"`, so the token stream is `(`, item0, ` `, item1, …, ` `, itemN, `)`.
+  // Tokens are pushed in reverse so they pop in emit order.
+  const out: string[] = [];
+  const stack: (Atom | string)[] = [a];
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (typeof cur === "string") {
+      out.push(cur);
+    } else if (isExpr(cur)) {
+      const items = cur.items;
+      stack.push(")");
+      for (let i = items.length - 1; i >= 0; i--) {
+        stack.push(items[i]!);
+        if (i > 0) stack.push(" ");
+      }
+      stack.push("(");
+    } else {
+      out.push(formatLeaf(cur));
+    }
+  }
+  return out.join("");
 }

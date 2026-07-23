@@ -1,3 +1,32 @@
+# MeTTaScript 2.3.0
+
+Deep recursion now scales past the native stack. A reduction that nests tens of thousands of levels deep, a
+long grounded-operation spine or the result of a deeply recursive rule, runs on the engine's heap continuation
+instead of the JavaScript call stack, so it returns a value where it used to overflow. Every terminating
+program from 2.2.0 produces the same output, validated byte-identical across the full corpus, so upgrading is
+safe.
+
+## Deep computation on the heap continuation
+
+Before this release, a deeply nested reducible computation recursed to the term's depth through the evaluator
+and its term-walk predicates, and could exhaust the host stack before the language-level `max-stack-depth`
+bound applied. A reducible argument now hands off to the engine's heap-continuation driver at the depth-neutral
+boundary, where the current application has not taken a user-equation call lease or has tail-transferred into a
+constructor or grounded operation. The driver carries the same evaluation depth, bindings, state, and fuel, so
+`max-stack-depth` accounting is unchanged: recursion is still cut at exactly the limit you set, and that cut is
+deterministic and independent of the V8 stack size.
+
+The term walks a deep result drives are now iterative rather than recursive, byte-identical to before: the
+normal-form and type checks, structural equality (a fast recursive path with an iterative fallback), the
+table-key check, and the printer. A grounded-operation spine 50,000 levels deep returns its value, and the
+`differential`, `deterministic-depth`, and `tail-trampoline` suites confirm the behavior is unchanged.
+
+## Docs
+
+The website and README are repositioned around what the engine does: a metagraph database and reasoning engine
+you drive from TypeScript, with rules, recursive inference, and non-deterministic search, not only a query
+store. The TypeScript-first examples and the getting-started path are unchanged.
+
 # MeTTaScript 2.2.0
 
 Exposes the import resolver as a reusable, host-agnostic function. The transitive, cycle-safe import

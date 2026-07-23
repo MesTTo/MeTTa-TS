@@ -517,13 +517,46 @@ function hasNanGround(a: Atom): boolean {
   if (a.kind !== "expr") return false;
   const cached = exprHasNanCache.get(a);
   if (cached !== undefined) return cached;
-  const found = a.items.some(hasNanGround);
+  // Iterative DFS with short-circuit so a deep term cannot overflow the host stack. A cached subtree is
+  // used directly (true short-circuits, false is skipped); an uncached one has its children pushed. Only
+  // the queried root is memoised here — an intermediate node is re-derived on a future query, a caching
+  // detail, not a result change. Result is the same `NaN anywhere in the tree` test.
+  const stack: Atom[] = [a];
+  let found = false;
+  while (stack.length > 0) {
+    const cur = stack.pop()!;
+    if (cur.kind === "gnd") {
+      if (cur.value.g === "float" && Number.isNaN(cur.value.n)) {
+        found = true;
+        break;
+      }
+    } else if (cur.kind === "expr") {
+      const c = exprHasNanCache.get(cur);
+      if (c === true) {
+        found = true;
+        break;
+      }
+      if (c === undefined) for (const x of cur.items) stack.push(x);
+    }
+  }
   exprHasNanCache.set(a, found);
   return found;
 }
 
-/** Structural equality. Interned symbols short-circuit to reference identity. */
+/** Structural equality. Interned symbols short-circuit to reference identity. The recursive `atomEqRec`
+ *  is the fast, memoised common path (no per-call allocation); a term deep enough to exhaust the native
+ *  stack throws, and the catch re-runs the comparison iteratively (`atomEqIter`) from the now-unwound,
+ *  shallow stack. The wrapper adds one try/catch per top-level call — the recursion itself stays raw. */
 export function atomEq(a: Atom, b: Atom): boolean {
+  try {
+    return atomEqRec(a, b);
+  } catch (e) {
+    if (e instanceof RangeError && /call stack/i.test(e.message)) return atomEqIter(a, b);
+    throw e;
+  }
+}
+
+function atomEqRec(a: Atom, b: Atom): boolean {
   if (a === b) return !hasNanGround(a);
   if (a.kind !== b.kind) return false;
   switch (a.kind) {
@@ -543,7 +576,7 @@ export function atomEq(a: Atom, b: Atom): boolean {
       for (let i = 0; i < a.items.length; i++) {
         const ai = a.items[i] as Atom;
         const bii = bi[i] as Atom;
-        if (!atomEq(ai, bii)) {
+        if (!atomEqRec(ai, bii)) {
           result = false;
           break;
         }
@@ -553,4 +586,40 @@ export function atomEq(a: Atom, b: Atom): boolean {
       return result;
     }
   }
+}
+
+// Iterative structural equality: the deep-term fallback for `atomEq`. Reads the memo to skip a settled
+// subtree; short-circuits to false on the first mismatch, exactly like the recursive form.
+function atomEqIter(a: Atom, b: Atom): boolean {
+  const stack: [Atom, Atom][] = [[a, b]];
+  while (stack.length > 0) {
+    const [x, y] = stack.pop()!;
+    if (x === y) {
+      if (hasNanGround(x)) return false;
+      continue;
+    }
+    if (x.kind !== y.kind) return false;
+    switch (x.kind) {
+      case "sym":
+        return false;
+      case "var":
+        if (x.name !== (y as VarAtom).name) return false;
+        break;
+      case "gnd":
+        if (!groundEq(x.value, (y as GndAtom).value)) return false;
+        break;
+      case "expr": {
+        const yi = (y as ExprAtom).items;
+        if (x.items.length !== yi.length) return false;
+        const cached = eqCache.get(x)?.get(y);
+        if (cached !== undefined) {
+          if (!cached) return false;
+          break;
+        }
+        for (let i = 0; i < x.items.length; i++) stack.push([x.items[i] as Atom, yi[i] as Atom]);
+        break;
+      }
+    }
+  }
+  return true;
 }

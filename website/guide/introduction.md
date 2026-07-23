@@ -5,9 +5,9 @@ SPDX-License-Identifier: MIT
 
 # Introduction
 
-MeTTaScript is a metagraph rewriting database you use from TypeScript. You put facts into a space, query them by pattern, and compute by writing rewrite rules over the same facts. It is a pure-TypeScript library with no native addons and no required WASM, so it runs in the browser, Node, Deno, Bun, edge functions, and inside TypeScript AI agents.
+MeTTaScript is a metagraph database and reasoning engine you use from TypeScript. You put facts into a space, query them by pattern, derive new facts with rules, and let a query fan out to search every answer, all through one pattern-matching mechanism. It is a pure-TypeScript library with no native addons and no required WASM, so it runs in the browser, Node, Deno, Bun, edge functions, and inside TypeScript AI agents.
 
-You do not need to know the MeTTa language, OpenCog, or Hyperon to use it. Everything you store or query is an ordinary value you build from TypeScript, and the examples in these docs stay small.
+You do not need to know the MeTTa language, OpenCog, or Hyperon to start. Everything you store or query is an ordinary value you build from TypeScript, and the examples in these docs stay small. The reach goes past a query store, though: rules chain into recursive inference, a query can compute non-deterministically over every match instead of one, and rules are data a program can rewrite. The same library that holds your app's facts runs symbolic reasoning when you ask it to.
 
 ## Store facts, query them, join them
 
@@ -52,15 +52,15 @@ db.rule(reach(x), Match(edge(x, y), reach(y))); // then keep going
 db.evalJs(reach(A)); // ["B", "C"]
 ```
 
-Querying the space and computing with rules are the same act of pattern matching, and because rules are atoms too, a program can inspect and rewrite its own rules. Types are optional and gradual.
+Querying the space and computing with rules are the same act of pattern matching. That last query returned two answers, `B` and `C`, because a query fans out over every match rather than picking one, and that is how generate-and-test search falls straight out of the model. Because rules are atoms too, a program can inspect and rewrite its own rules, and types are optional and gradual.
 
 ## When to reach for it
 
-Use MeTTaScript where you would reach for an embeddable database that you query with logic rather than SQL: a local knowledge base in a web app, rules and inference in an agent, a graph you both query and transform in the same process. It covers the ground that [DataScript](/guide/use-cases) covers and adds nesting, rules, and types, and on DataScript's own declarative workloads it is faster. The [Use cases](/guide/use-cases) page compares it to DataScript and the other tools people use for this job.
+Use MeTTaScript where you would reach for an embeddable database that you query with logic rather than SQL: a local knowledge base in a web app, rules and inference in an agent, a graph you both query and transform in the same process. It covers the ground that [DataScript](/guide/use-cases) covers and adds nesting, rules, and types, and on DataScript's own declarative workloads it is faster. The [Use cases](/guide/use-cases) page compares it to DataScript and the other tools people use for this job. It also holds up when the work runs deep: recursive derivations run on a heap continuation rather than the JavaScript call stack, so a computation tens of thousands of levels deep returns a result instead of overflowing.
 
 ## Built on MeTTa
 
-MeTTaScript is a MeTTa engine. It implements the language from the OpenCog Hyperon project and follows its operational semantics, validated up to variable renaming against Hyperon's oracle corpus, so a program means here exactly what it means in the reference engine. It belongs to a family of implementations that share those semantics, each on a different host: Hyperon (Rust, the reference), MeTTaLog (SWI-Prolog), MORK (a Rust metagraph engine built for scale), JeTTa (the JVM), and PeTTa (Prolog). MeTTaScript is the pure-TypeScript one. You do not have to know any of this to use the library, but it is what the library is built on.
+MeTTaScript is a MeTTa engine. It implements the language from the OpenCog Hyperon project and follows its operational semantics, validated up to variable renaming against Hyperon's oracle corpus, so a program means here exactly what it means in the reference engine. It belongs to a family of implementations that share those semantics, each on a different host: Hyperon (Rust, the reference), MeTTaLog (SWI-Prolog), MORK (a Rust metagraph engine built for scale), JeTTa (the JVM), and PeTTa (Prolog). MeTTaScript is the pure-TypeScript one, and being pure TypeScript costs nothing in fidelity: it matches the Rust reference on 270 of 270 oracle programs and the Lean-verified LeaTTa semantics, while running ahead of DataScript and tau-prolog on their own workloads. You do not have to know any of this to use the library, but it is what the library is built on.
 
 ## Two ways to read these docs
 
