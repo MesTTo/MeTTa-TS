@@ -545,13 +545,16 @@ function hasNanGround(a: Atom): boolean {
 
 /** Structural equality. Interned symbols short-circuit to reference identity. The recursive `atomEqRec`
  *  is the fast, memoised common path (no per-call allocation); a term deep enough to exhaust the native
- *  stack throws, and the catch re-runs the comparison iteratively (`atomEqIter`) from the now-unwound,
- *  shallow stack. The wrapper adds one try/catch per top-level call — the recursion itself stays raw. */
+ *  stack throws, and the catch re-runs the comparison iteratively (`atomEqIter`) after its frames unwind.
+ *  The wrapper adds one try/catch per top-level call — the recursion itself stays raw. */
 export function atomEq(a: Atom, b: Atom): boolean {
   try {
     return atomEqRec(a, b);
   } catch (e) {
-    if (e instanceof RangeError && /call stack/i.test(e.message)) return atomEqIter(a, b);
+    // Do not inspect the message here. A caller can already have nearly exhausted the native stack, so
+    // compiling or running a RegExp can overflow before the iterative fallback starts. Any RangeError the
+    // complete iterative comparison encounters still propagates.
+    if (e instanceof RangeError) return atomEqIter(a, b);
     throw e;
   }
 }

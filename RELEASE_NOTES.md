@@ -1,3 +1,13 @@
+# MeTTaScript 2.3.1
+
+A patch fix for the native-stack recovery path added in 2.3.0. When a very deep structural comparison
+exhausts the JavaScript call stack, the engine recovers by re-running the comparison iteratively. That
+recovery matched the error message with a regular expression, and compiling the regex while the stack was
+still near its limit could itself overflow and surface a spurious `SyntaxError` instead of the correct
+`StackOverflow` result — reachable when a deep comparison runs from inside another deep recursion (a
+compiled grounded call). The recovery now runs on any range error without inspecting the message. Behavior
+is otherwise unchanged and byte-identical to 2.3.0.
+
 # MeTTaScript 2.3.0
 
 Deep recursion now scales past the native stack. A reduction that nests tens of thousands of levels deep, a
