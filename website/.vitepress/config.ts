@@ -82,7 +82,8 @@ const mettaLightTheme = withMettaTokenColors(githubLight, "metta-light", mettaLi
 const mettaDarkTheme = withMettaTokenColors(githubDark, "metta-dark", mettaDarkTokenColors);
 export default defineConfig({
   title: "MeTTaScript",
-  description: "MeTTaScript is a pure-TypeScript metagraph rewriting database.",
+  description:
+    "MeTTaScript is a metagraph database and reasoning engine in pure TypeScript: store facts, query by pattern, derive new facts with rules, and search non-deterministically.",
   // Served as a project page at https://mestto.github.io/MeTTaScript/.
   base: "/MeTTaScript/",
   cleanUrls: true,

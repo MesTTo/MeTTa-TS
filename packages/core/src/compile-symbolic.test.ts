@@ -47,7 +47,7 @@ describe("compiled symbolic constructor rewrites", () => {
 
   it("fromNat: recursive RHS with a grounded op, compiled == interpreted", () => {
     const env = compiledEnvWith(fromNat);
-    expect(env.compiled!.get("fromNat")?.kind).toBe("symbolic");
+    expect(env.compiled!.get("fromNat")?.kind).toBe("scalar");
     assertByteIdentical(fromNat, [
       "(fromNat Z)",
       "(fromNat (S Z))",

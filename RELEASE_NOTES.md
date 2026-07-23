@@ -1,3 +1,36 @@
+# MeTTaScript 2.4.0
+
+A native fast path for the functions that destructure data. A deterministic function that matches on its
+argument's constructor — an evaluator over an expression tree, a symbolic transformer like differentiation,
+an environment lookup — now compiles to a native switch on the constructor that returns its result
+directly, instead of rebuilding an intermediate atom at every step for the evaluator to re-reduce. Removing
+that per-step allocation is the win. Every terminating program produces the same output as 2.3.1, validated
+byte-identical across the full corpus, so upgrading is safe.
+
+## Native scalar dispatch
+
+When a function's clauses are mutually exclusive on their head constructor and its bodies stay within
+arithmetic, constructor construction, and recursive calls over the destructured children, the whole function
+compiles to native code: it dispatches on the argument's constructor, binds the children, evaluates the body
+with native arithmetic and direct recursive calls, and returns a bare value or a directly built atom — no
+result bag, no per-node atom allocation, no round trip back through the evaluator. Clauses outside that
+subset, non-ground calls, and any runtime rule change fall back to the interpreter, and the compiled and
+fallback clauses are proven pairwise exclusive so the direct return is sound.
+
+Integer, floating-point, atom-returning, and mixed-return functions are all covered, with `3` and `3.0` kept
+distinct and the interpreter's numeric coercion matched exactly. The compiled recursion shares the same
+evaluation-depth accounting as the interpreter, so a deep computation cuts at the `max-stack-depth` bound at
+exactly the same place with the same `StackOverflow`, and runs native the whole way through a raised bound.
+
+On an interpreter over a large expression tree the evaluation runs 3 to 5 times faster and holds 25 to 40
+percent less heap; a symbolic differentiation at a raised depth bound runs about 2.2 times faster with 40
+percent less peak memory. Output stays byte-identical in every case.
+
+## Docs
+
+The site description now matches the rest of the positioning: a metagraph database and reasoning engine you
+drive from TypeScript, not only a query store.
+
 # MeTTaScript 2.3.1
 
 A patch fix for the native-stack recovery path added in 2.3.0. When a very deep structural comparison

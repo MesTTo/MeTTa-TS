@@ -1,6 +1,6 @@
 {
   "name": "@metta-ts/edsl",
-  "version": "2.3.1",
+  "version": "2.4.0",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

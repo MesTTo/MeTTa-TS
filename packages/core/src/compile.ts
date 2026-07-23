@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-// Compile the pure, deterministic, integer/bool functional subset of MeTTa to native JS closures.
-// A single-equation pure function over ground int parameters whose body is arithmetic, comparison,
-// `if`, `unify`-as-equality, ground literals, parameters, and calls to other such functions becomes a
-// memoised native closure operating on unwrapped `IntVal`. It is byte-identical to the interpreter by
-// construction (it reuses the interpreter's own `addInt`/`intDiv`/... so promotion-to-bigint,
-// division-by-zero, and overflow match exactly) and bails to the interpreter for anything outside the
-// proven subset. The internal memo makes overlapping-subproblem recursion (fib) polynomial AND native.
+// Compile the pure, deterministic, value-returning subset of MeTTa to native JS closures.
+// Single-equation functions operate on exact IntVal or f64 values, tuples, and booleans. Proven-exclusive
+// constructor clauses can also carry ground atoms through native recursion, build atom results with nested
+// scalar calls already evaluated, and box primitive branches when clauses mix primitive and atom returns.
+// Integer operations reuse the interpreter's addInt/intDiv machinery; a FloatVal wrapper preserves the
+// distinction between 3 and 3.0. Anything outside the proven subset returns to the interpreter. The
+// internal memo makes overlapping-subproblem recursion such as fib polynomial and native.
 import {
   type Atom,
   type SymAtom,
@@ -16,6 +16,7 @@ import {
   atomEq,
   expr,
   gint,
+  gfloat,
   gbool,
   sym,
   variable,
@@ -41,7 +42,17 @@ import {
 import { addVarBinding, matchAtoms, matchAtomsScoped, merge } from "./match";
 import { instantiate } from "./instantiate";
 import { IMPURE_OPS } from "./tabling";
-import { type IntVal, addInt, subInt, mulInt, intDiv, intMod, isZero, cmpIntVal } from "./number";
+import {
+  type IntVal,
+  addInt,
+  subInt,
+  mulInt,
+  intDiv,
+  intMod,
+  isZero,
+  toF64,
+  cmpIntVal,
+} from "./number";
 import { callGrounded } from "./builtins";
 import { type MinEnv, type St } from "./eval";
 import {
@@ -77,8 +88,21 @@ function throwEvaluationDepthBoundary(
 class Tup {
   constructor(readonly v: readonly IntVal[]) {}
 }
-type FrameVal = IntVal | Tup;
-type Ty = "int" | "bool" | "sym" | `tuple${number}` | `symtuple${number}`;
+/** A boxed f64 inside the native frame. Integers remain bare `IntVal`; the wrapper keeps `3` distinct
+ *  from `3.0` even though both use a JavaScript number. */
+class FloatVal {
+  constructor(readonly n: number) {}
+}
+type FrameVal = IntVal | FloatVal | Tup | Atom;
+type Ty =
+  | "int"
+  | "float"
+  | "number"
+  | "bool"
+  | "atom"
+  | "sym"
+  | `tuple${number}`
+  | `symtuple${number}`;
 type Node = (frame: FrameVal[], runtime: FunctionalRuntime) => FrameVal | boolean;
 interface Compiled {
   readonly node: Node;
@@ -95,10 +119,23 @@ interface FunctionalHolder {
   paramTypes: Ty[];
   run: (vals: FrameVal[], runtime?: FunctionalRuntime, entered?: boolean) => FrameVal | boolean;
 }
+/** A deterministic constructor dispatch with at least one native value- or atom-returning clause. Clauses
+ *  outside the subset remain interpreter fallbacks, so exclusivity is proved over all clauses. */
+interface ScalarHolder {
+  kind: "scalar";
+  name: string;
+  arity: number;
+  retType: "number" | "atom";
+  paramTypes: Ty[];
+  clauseCount: number;
+  run: (vals: FrameVal[], runtime?: FunctionalRuntime, entered?: boolean) => FrameVal | boolean;
+}
 interface FunctionalRuntime {
   readonly depth: EvaluationDepth;
   readonly limit: number;
+  readonly counterBase: number;
   counterDelta: number;
+  freshSuffix: string;
 }
 interface CompiledAtomResult {
   readonly atom: Atom;
@@ -194,16 +231,20 @@ interface NondetHolder {
 }
 export type CompiledHolder =
   | FunctionalHolder
+  | ScalarHolder
   | RewriteHolder
   | SymbolicHolder
   | ImperativeHolder
   | NondetHolder;
 export type CompiledFns = Map<string, CompiledHolder>;
 type FunctionalFns = Map<string, FunctionalHolder>;
+type ValueHolder = FunctionalHolder | ScalarHolder;
+type ValueFns = ReadonlyMap<string, ValueHolder>;
 
 // A lexical scope: each in-scope variable maps to how its value is read out of the frame, plus its type.
 // Replaces the old flat `string[]` of int params so a tuple-pattern parameter's elements ($t/$i/$sum) can
-// resolve to element accessors on the tuple's frame slot. `len` is the current frame length (let appends).
+// resolve to element accessors on the tuple's frame slot. Constructor children use the same mechanism to
+// read an Atom through a positional path in an argument slot. `len` is the current frame length (let appends).
 interface Scope {
   vars: ReadonlyMap<string, { acc: (f: FrameVal[]) => FrameVal; type: Ty }>;
   len: number;
@@ -213,6 +254,11 @@ const ARITH: Record<string, (x: IntVal, y: IntVal) => IntVal> = {
   "+": addInt,
   "-": subInt,
   "*": mulInt,
+};
+const FLOAT_ARITH: Record<string, (x: number, y: number) => number> = {
+  "+": (x, y) => x + y,
+  "-": (x, y) => x - y,
+  "*": (x, y) => x * y,
 };
 // Symbol heads compileBody treats as operators (so a symbol-headed expr with one of these is a call, not a
 // tuple literal). A compiled function name (in `holders`) is also a call; everything else is a tuple.
@@ -234,38 +280,165 @@ const KNOWN_OPS = new Set([
 ]);
 
 const asIntNode = (c: Compiled): IntNode => c.node as IntNode;
+const asNumberNode = (c: Compiled): NumberNode => c.node as NumberNode;
 
 type IntNode = (f: FrameVal[], runtime: FunctionalRuntime) => IntVal;
+type NumberVal = IntVal | FloatVal;
+type NumberNode = (f: FrameVal[], runtime: FunctionalRuntime) => NumberVal;
 
-/** Compile the two operands of a binary integer operation to int-valued frame nodes, or `undefined` if
- *  either operand is not a compilable int (so the caller bails the whole function to the interpreter). */
+const isAtomFrameVal = (value: unknown): value is Atom =>
+  typeof value === "object" && value !== null && "kind" in value;
+
+const isNumberType = (type: Ty): boolean => type === "int" || type === "float" || type === "number";
+
+function frameValueToAtom(value: FrameVal | boolean): Atom {
+  if (typeof value === "boolean") return gbool(value);
+  if (isAtomFrameVal(value)) return value;
+  if (value instanceof FloatVal) return gfloat(value.n);
+  if (value instanceof Tup) return expr(value.v.map((n) => gint(n)));
+  return gint(value);
+}
+
+function numericValue(value: FrameVal | boolean): NumberVal {
+  if (typeof value === "number" || typeof value === "bigint") return value;
+  if (value instanceof FloatVal) return value;
+  if (isAtomFrameVal(value) && value.kind === "gnd") {
+    if (value.value.g === "int") return value.value.n;
+    if (value.value.g === "float") return new FloatVal(value.value.n);
+  }
+  throw BAIL;
+}
+
+/** Coerce an Atom or a dynamic number to an int at the use site. A float always declines this path. */
+function coerceCompiledInt(c: Compiled | undefined): Compiled | undefined {
+  if (c === undefined) return undefined;
+  if (c.type === "int") return c;
+  if (c.type !== "atom" && c.type !== "number") return undefined;
+  return {
+    node: (frame, runtime) => {
+      const value = numericValue(c.node(frame, runtime));
+      if (typeof value !== "object") return value;
+      throw BAIL;
+    },
+    type: "int",
+  };
+}
+
+/** Preserve int versus float while admitting either numeric Grounded kind from a constructor slot. */
+function coerceCompiledNumber(c: Compiled | undefined): Compiled | undefined {
+  if (c === undefined) return undefined;
+  if (isNumberType(c.type)) return c;
+  if (c.type !== "atom") return undefined;
+  return {
+    node: (frame, runtime) => numericValue(c.node(frame, runtime)),
+    type: "number",
+  };
+}
+
+function compileIntBody(a: Atom, scope: Scope, holders: ValueFns): Compiled | undefined {
+  return coerceCompiledInt(compileBody(a, scope, holders));
+}
+
+function compileNumberBody(a: Atom, scope: Scope, holders: ValueFns): Compiled | undefined {
+  return coerceCompiledNumber(compileBody(a, scope, holders));
+}
+
+function compileArgument(
+  a: Atom,
+  expected: Ty,
+  scope: Scope,
+  holders: ValueFns,
+): Compiled | undefined {
+  if (expected === "int") return compileIntBody(a, scope, holders);
+  if (expected === "number") return compileNumberBody(a, scope, holders);
+  return compileBody(a, scope, holders);
+}
+
+function coerceForReturn(c: Compiled | undefined, expected: Ty): Compiled | undefined {
+  if (c === undefined) return undefined;
+  if (expected === "atom") {
+    if (c.type === "atom") return c;
+    if (!isNumberType(c.type) && c.type !== "bool" && !c.type.startsWith("tuple")) return undefined;
+    return {
+      node: (frame, runtime) => frameValueToAtom(c.node(frame, runtime)),
+      type: "atom",
+    };
+  }
+  if (expected === "number") {
+    const number = coerceCompiledNumber(c);
+    return number === undefined ? undefined : { node: number.node, type: "number" };
+  }
+  if (expected === "int") return coerceCompiledInt(c);
+  return c.type === expected ? c : undefined;
+}
+
+function mergedType(a: Ty, b: Ty): Ty | undefined {
+  if (a === b) return a;
+  return isNumberType(a) && isNumberType(b) ? "number" : undefined;
+}
+
+/** Compile the two operands of a binary integer operation. */
 function binIntArgs(
   args: readonly Atom[],
   scope: Scope,
-  holders: FunctionalFns,
+  holders: ValueFns,
 ): [IntNode, IntNode] | undefined {
   if (args.length !== 2) return undefined;
-  const x = compileBody(args[0]!, scope, holders);
-  const y = compileBody(args[1]!, scope, holders);
-  if (!x || !y || x.type !== "int" || y.type !== "int") return undefined;
+  const x = compileIntBody(args[0]!, scope, holders);
+  const y = compileIntBody(args[1]!, scope, holders);
+  if (!x || !y) return undefined;
   return [asIntNode(x), asIntNode(y)];
+}
+
+function binNumberArgs(
+  args: readonly Atom[],
+  scope: Scope,
+  holders: ValueFns,
+): [NumberNode, NumberNode, Ty] | undefined {
+  if (args.length !== 2) return undefined;
+  const x = compileNumberBody(args[0]!, scope, holders);
+  const y = compileNumberBody(args[1]!, scope, holders);
+  if (x === undefined || y === undefined) return undefined;
+  return [asNumberNode(x), asNumberNode(y), mergedType(x.type, y.type)!];
+}
+
+function numberArithmetic(
+  x: NumberVal,
+  y: NumberVal,
+  intOp: (a: IntVal, b: IntVal) => IntVal,
+  floatOp: (a: number, b: number) => number,
+): NumberVal {
+  if (typeof x !== "object" && typeof y !== "object") return intOp(x, y);
+  const xf = typeof x === "object" ? x.n : toF64(x);
+  const yf = typeof y === "object" ? y.n : toF64(y);
+  return new FloatVal(floatOp(xf, yf));
+}
+
+function compareNumberValues(x: NumberVal, y: NumberVal): number {
+  if (typeof x !== "object" && typeof y !== "object") return cmpIntVal(x, y);
+  const xf = typeof x === "object" ? x.n : toF64(x);
+  const yf = typeof y === "object" ? y.n : toF64(y);
+  if (Number.isNaN(xf) || Number.isNaN(yf)) return Number.NaN;
+  return xf < yf ? -1 : xf > yf ? 1 : 0;
 }
 
 // Compile `(if cond then else)`. The condition is always a (bool) body; the branches are compiled by
 // `branch`: compileBody for a body-position if, or compileTail to keep the tail calls of a tail-position
-// if. Both branches must share a type, which becomes the result type.
+// if. Int and float branches merge to a dynamic number; other branches must share a type.
 function compileIf(
   cond: Atom,
   then_: Atom,
   els: Atom,
   scope: Scope,
-  holders: FunctionalFns,
+  holders: ValueFns,
   branch: (a: Atom) => Compiled | undefined,
 ): Compiled | undefined {
   const c = compileBody(cond, scope, holders);
   const t = branch(then_);
   const e = branch(els);
-  if (!c || !t || !e || c.type !== "bool" || t.type !== e.type) return undefined;
+  if (!c || !t || !e || c.type !== "bool") return undefined;
+  const type = mergedType(t.type, e.type);
+  if (type === undefined) return undefined;
   const cn = c.node as (f: FrameVal[], runtime: FunctionalRuntime) => boolean;
   const tn = t.node;
   const en = e.node;
@@ -275,12 +448,12 @@ function compileIf(
       runtime.counterDelta += 2;
       return condition ? tn(f, runtime) : en(f, runtime);
     },
-    type: t.type,
+    type,
   };
 }
 
 /** Compile a body atom to a typed node, or `undefined` if it falls outside the supported subset. */
-function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | undefined {
+function compileBody(a: Atom, scope: Scope, holders: ValueFns): Compiled | undefined {
   if (a.kind === "var") {
     const v = scope.vars.get(a.name);
     if (v === undefined) return undefined;
@@ -291,6 +464,10 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
     if (v.g === "int") {
       const k = v.n;
       return { node: () => k, type: "int" };
+    }
+    if (v.g === "float") {
+      const k = new FloatVal(v.n);
+      return { node: () => k, type: "float" };
     }
     if (v.g === "bool") {
       const b = v.b;
@@ -317,28 +494,43 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
   const args = a.items.slice(1);
 
   if (op === "+" || op === "-" || op === "*") {
-    const xy = binIntArgs(args, scope, holders);
+    const xy = binNumberArgs(args, scope, holders);
     if (!xy) return undefined;
-    const [xn, yn] = xy;
-    const f = ARITH[op]!;
-    return { node: (fr, runtime) => f(xn(fr, runtime), yn(fr, runtime)), type: "int" };
+    const [xn, yn, type] = xy;
+    return {
+      node: (fr, runtime) =>
+        numberArithmetic(xn(fr, runtime), yn(fr, runtime), ARITH[op]!, FLOAT_ARITH[op]!),
+      type,
+    };
   }
-  if (op === "/" || op === "%") {
+  if (op === "/") {
+    const xy = binNumberArgs(args, scope, holders);
+    if (!xy) return undefined;
+    const [xn, yn, type] = xy;
+    return {
+      node: (fr, runtime) => {
+        const divisor = yn(fr, runtime);
+        if (typeof divisor !== "object" && isZero(divisor)) throw BAIL;
+        return numberArithmetic(xn(fr, runtime), divisor, intDiv, (x, y) => x / y);
+      },
+      type,
+    };
+  }
+  if (op === "%") {
     const xy = binIntArgs(args, scope, holders);
     if (!xy) return undefined;
     const [xn, yn] = xy;
-    const div = op === "/" ? intDiv : intMod;
     return {
       node: (fr, runtime) => {
         const d = yn(fr, runtime);
         if (isZero(d)) throw BAIL; // interpreter builds the exact DivisionByZero error
-        return div(xn(fr, runtime), d);
+        return intMod(xn(fr, runtime), d);
       },
       type: "int",
     };
   }
   if (op === "<" || op === "<=" || op === ">" || op === ">=" || op === "==" || op === "!=") {
-    const xy = binIntArgs(args, scope, holders);
+    const xy = binNumberArgs(args, scope, holders);
     if (!xy) return undefined;
     const [xn, yn] = xy;
     const test =
@@ -354,7 +546,7 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
                 ? (c: number) => c === 0
                 : (c: number) => c !== 0;
     return {
-      node: (fr, runtime) => test(cmpIntVal(xn(fr, runtime), yn(fr, runtime))),
+      node: (fr, runtime) => test(compareNumberValues(xn(fr, runtime), yn(fr, runtime))),
       type: "bool",
     };
   }
@@ -365,46 +557,49 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
     );
   }
   if (op === "unify") {
-    // (unify <x> <ground-int-literal> <then> <else>) with no new binding -> an equality test.
+    // (unify <x> <ground-number-literal> <then> <else>) with no new binding becomes equality.
     if (args.length !== 4) return undefined;
     const pat = args[1]!;
-    if (!(pat.kind === "gnd" && pat.value.g === "int")) return undefined;
-    const patVal = pat.value.n;
-    const x = compileBody(args[0]!, scope, holders);
+    if (!(pat.kind === "gnd" && (pat.value.g === "int" || pat.value.g === "float")))
+      return undefined;
+    const patVal: NumberVal = pat.value.g === "int" ? pat.value.n : new FloatVal(pat.value.n);
+    const x = compileNumberBody(args[0]!, scope, holders);
     const t = compileBody(args[2]!, scope, holders);
     const e = compileBody(args[3]!, scope, holders);
-    if (!x || !t || !e || x.type !== "int" || t.type !== e.type) return undefined;
-    const xn = asIntNode(x);
+    if (!x || !t || !e) return undefined;
+    const type = mergedType(t.type, e.type);
+    if (type === undefined) return undefined;
+    const xn = asNumberNode(x);
     const tn = t.node;
     const en = e.node;
     return {
       node: (fr, runtime) =>
-        cmpIntVal(xn(fr, runtime), patVal) === 0 ? tn(fr, runtime) : en(fr, runtime),
-      type: t.type,
+        compareNumberValues(xn(fr, runtime), patVal) === 0 ? tn(fr, runtime) : en(fr, runtime),
+      type,
     };
   }
   if (op === "let") {
-    // (let <var> <int-value> <body>) binds the variable to the value, then evaluates the body.
+    // (let <var> <number-value> <body>) binds the variable, then evaluates the body.
     // In MeTTa `let` desugars to `(unify value var body Empty)`; a variable pattern always binds, so
-    // the body always runs with the variable bound to the (deterministic int) value.
+    // the body always runs with the deterministic numeric value.
     if (args.length !== 3 || args[0]!.kind !== "var") return undefined;
-    const val = compileBody(args[1]!, scope, holders);
-    if (!val || val.type !== "int") return undefined;
+    const val = compileNumberBody(args[1]!, scope, holders);
+    if (!val) return undefined;
     const idx = scope.len;
     const np: Scope = {
       vars: new Map(scope.vars).set((args[0] as { name: string }).name, {
         acc: (f) => f[idx]!,
-        type: "int",
+        type: val.type,
       }),
       len: scope.len + 1,
     };
     const body = compileBody(args[2]!, np, holders);
     if (!body) return undefined;
-    const vn = asIntNode(val);
+    const vn = val.node;
     const bn = body.node;
     return {
       node: (fr, runtime) => {
-        const next = [...fr, vn(fr, runtime)];
+        const next = [...fr, vn(fr, runtime) as FrameVal];
         runtime.counterDelta += 1;
         return bn(next, runtime);
       },
@@ -416,7 +611,7 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
   const h = holders.get(op);
   if (h !== undefined) {
     if (args.length !== h.arity) return undefined;
-    const cs = args.map((ar) => compileBody(ar, scope, holders));
+    const cs = args.map((ar, i) => compileArgument(ar, h.paramTypes[i]!, scope, holders));
     if (cs.some((c, i) => !c || c.type !== h.paramTypes[i])) return undefined;
     const ns = cs.map((c) => c!.node);
     // args are int/tuple (paramTypes never bool), so the mapped values are FrameVal.
@@ -438,33 +633,34 @@ function compileBody(a: Atom, scope: Scope, holders: FunctionalFns): Compiled | 
 function compileTail(
   a: Atom,
   scope: Scope,
-  holders: FunctionalFns,
+  holders: ValueFns,
   self: string,
+  expected?: Ty,
 ): Compiled | undefined {
   if (a.kind === "expr" && a.items.length > 0 && a.items[0]!.kind === "sym") {
     const op = (a.items[0] as { name: string }).name;
     if (op === "if" && a.items.length === 4) {
       return compileIf(a.items[1]!, a.items[2]!, a.items[3]!, scope, holders, (x) =>
-        compileTail(x, scope, holders, self),
+        compileTail(x, scope, holders, self, expected),
       );
     }
     if (op === "let" && a.items.length === 4 && a.items[1]!.kind === "var") {
-      const value = compileBody(a.items[2]!, scope, holders);
-      if (value === undefined || value.type !== "int") return undefined;
+      const value = compileNumberBody(a.items[2]!, scope, holders);
+      if (value === undefined) return undefined;
       const idx = scope.len;
       const nextScope: Scope = {
         vars: new Map(scope.vars).set(a.items[1]!.name, {
           acc: (frame) => frame[idx]!,
-          type: "int",
+          type: value.type,
         }),
         len: idx + 1,
       };
-      const body = compileTail(a.items[3]!, nextScope, holders, self);
+      const body = compileTail(a.items[3]!, nextScope, holders, self, expected);
       if (body === undefined) return undefined;
-      const valueNode = asIntNode(value);
+      const valueNode = value.node;
       return {
         node: (frame, runtime) => {
-          const next = [...frame, valueNode(frame, runtime)];
+          const next = [...frame, valueNode(frame, runtime) as FrameVal];
           runtime.counterDelta += 1;
           return body.node(next, runtime);
         },
@@ -474,7 +670,9 @@ function compileTail(
     if (op === self) {
       const h = holders.get(self);
       if (h !== undefined && a.items.length - 1 === h.arity) {
-        const cs = a.items.slice(1).map((x) => compileBody(x, scope, holders));
+        const cs = a.items
+          .slice(1)
+          .map((x, i) => compileArgument(x, h.paramTypes[i]!, scope, holders));
         if (!cs.some((c, i) => !c || c.type !== h.paramTypes[i])) {
           const ns = cs.map((c) => c!.node);
           return {
@@ -485,7 +683,8 @@ function compileTail(
       }
     }
   }
-  return compileBody(a, scope, holders);
+  const body = compileBody(a, scope, holders);
+  return expected === undefined ? body : coerceForReturn(body, expected);
 }
 
 const bailRun = (): FrameVal | boolean => {
@@ -512,10 +711,11 @@ function makeRun(
   arity: number,
   node: Node,
   memoize: boolean,
+  handoffDepth = EVALUATION_TRAMPOLINE_DEPTH,
 ): FunctionalHolder["run"] {
   // A tail-recursive body (compiled by compileTail) returns the next argument frame as an array; loop on it
   // instead of recursing. A non-tail-recursive body never returns an array, so the loop runs exactly once.
-  // (A tuple result is a `Tup`, not an array, so it is never mistaken for a tail-call frame.)
+  // (`Tup` and Atom results are objects, not arrays, so neither is mistaken for a tail-call frame.)
   const loop = (vals: FrameVal[], runtime: FunctionalRuntime): FrameVal | boolean => {
     let frame = vals;
     let first = true;
@@ -538,17 +738,25 @@ function makeRun(
     : undefined;
   // A tuple argument must be keyed by its contents, not `String(tup)` (which is "[object Object]" for every
   // tuple and so collapses distinct tuples in the same position to one (a stale memo hit). Numbers key as
-  // themselves; an int and a bigint of equal value share a key, which is a correct hit (same value).
-  const keyOf = (v: FrameVal): string =>
-    v instanceof Tup ? "(" + v.v.map(keyOf).join(" ") + ")" : String(v);
-  const atomOf = (value: FrameVal): Atom =>
-    value instanceof Tup ? expr(value.v.map((n) => gint(n))) : gint(value);
+  // themselves; an int and a bigint of equal value share a key, which is a correct hit (same value). Scalar
+  // Atom frames are never memoised; throwing here makes an accidental future use decline instead of aliasing
+  // distinct constructor inputs.
+  const keyOf = (v: FrameVal): string => {
+    if (isAtomFrameVal(v) || v instanceof FloatVal) throw BAIL;
+    return v instanceof Tup ? "(" + v.v.map(keyOf).join(" ") + ")" : String(v);
+  };
   return (vals, inherited, entered = false) => {
-    const runtime = inherited ?? { depth: new EvaluationDepth(), limit: 0, counterDelta: 0 };
+    const runtime = inherited ?? {
+      depth: new EvaluationDepth(),
+      limit: 0,
+      counterBase: 0,
+      counterDelta: 0,
+      freshSuffix: "",
+    };
     if (!entered) {
-      const boundary = runtime.depth.enterBoundary(runtime.limit, EVALUATION_TRAMPOLINE_DEPTH);
+      const boundary = runtime.depth.enterBoundary(runtime.limit, handoffDepth);
       if (boundary !== undefined)
-        throwEvaluationDepthBoundary(boundary, expr([sym(name), ...vals.map(atomOf)]));
+        throwEvaluationDepthBoundary(boundary, expr([sym(name), ...vals.map(frameValueToAtom)]));
     }
     try {
       runtime.counterDelta += 1;
@@ -672,7 +880,13 @@ function inferType(
 ): Ty | undefined {
   if (a.kind === "var") return varTypes.get(a.name);
   if (a.kind === "gnd")
-    return a.value.g === "int" ? "int" : a.value.g === "bool" ? "bool" : undefined;
+    return a.value.g === "int"
+      ? "int"
+      : a.value.g === "float"
+        ? "float"
+        : a.value.g === "bool"
+          ? "bool"
+          : undefined;
   if (a.kind !== "expr" || a.items.length === 0) return undefined;
   // A non-operator-headed expression is a tuple literal; its type is `tuple<n>` if every element is int.
   const hd = a.items[0]!;
@@ -681,19 +895,27 @@ function inferType(
       ? `tuple${a.items.length}`
       : undefined;
   const op = (hd as { name: string }).name;
-  if (op === "+" || op === "-" || op === "*" || op === "/" || op === "%") return "int";
+  if (op === "+" || op === "-" || op === "*" || op === "/") {
+    if (a.items.length !== 3) return undefined;
+    const left = inferType(a.items[1]!, varTypes, holders);
+    const right = inferType(a.items[2]!, varTypes, holders);
+    if (left !== undefined && !isNumberType(left)) return undefined;
+    if (right !== undefined && !isNumberType(right)) return undefined;
+    return mergedType(left ?? "int", right ?? "int");
+  }
+  if (op === "%") return "int";
   if (op === "<" || op === "<=" || op === ">" || op === ">=" || op === "==" || op === "!=")
     return "bool";
   if (op === "if" && a.items.length === 4) {
     const tt = inferType(a.items[2]!, varTypes, holders);
     const te = inferType(a.items[3]!, varTypes, holders);
-    if (tt !== undefined && te !== undefined) return tt === te ? tt : undefined;
+    if (tt !== undefined && te !== undefined) return mergedType(tt, te);
     return tt ?? te;
   }
   if (op === "unify" && a.items.length === 5) {
     const tt = inferType(a.items[3]!, varTypes, holders);
     const te = inferType(a.items[4]!, varTypes, holders);
-    if (tt !== undefined && te !== undefined) return tt === te ? tt : undefined;
+    if (tt !== undefined && te !== undefined) return mergedType(tt, te);
     return tt ?? te;
   }
   if (op === "let" && a.items.length === 4) return inferType(a.items[3]!, varTypes, holders); // body's type
@@ -930,13 +1152,14 @@ function compileSymTpl(a: Atom, slots: ReadonlyMap<string, number>): SymTpl {
   return { tag: "expr", items: a.items.map((it) => compileSymTpl(it, slots)) };
 }
 
-/** Match a compiled pattern against a ground argument, filling `slots`. */
-function matchSymPat(pat: SymPat, arg: Atom, slots: Atom[]): boolean {
+/** Match a compiled pattern against a ground argument. Symbolic rewrites pass `slots` to capture variables;
+ *  scalar dispatch omits it because clause scopes read constructor children directly from the input frame. */
+function matchSymPat(pat: SymPat, arg: Atom, slots?: Atom[]): boolean {
   switch (pat.tag) {
     case "sym":
       return arg.kind === "sym" && arg.name === pat.name;
     case "slot":
-      slots[pat.slot] = arg;
+      if (slots !== undefined) slots[pat.slot] = arg;
       return true;
     case "lit":
       return atomEq(arg, pat.atom);
@@ -1060,6 +1283,579 @@ function compileSymbolic(env: MinEnv, functor: string): SymbolicHolder | undefin
     return results.length === 0 ? undefined : { results, counterDelta: clauseCount };
   };
   return { kind: "symbolic", arity, clauseCount, run };
+}
+
+// ---------- deterministic scalar constructor dispatch ----------
+
+interface ScalarSlotPosition {
+  readonly arg: number;
+  readonly path: readonly number[];
+}
+
+interface ScalarClauseCandidate {
+  readonly pats: readonly SymPat[];
+  readonly slots: ReadonlyMap<string, number>;
+  readonly positions: readonly ScalarSlotPosition[];
+  readonly body: Atom;
+  readonly mayNeedFreshSuffix: boolean;
+}
+
+interface ScalarCandidate {
+  readonly arity: number;
+  readonly clauses: readonly ScalarClauseCandidate[];
+  readonly declaredReturn: "number" | undefined;
+}
+
+type ScalarDiscriminant =
+  | { readonly tag: "sym"; readonly name: string }
+  | { readonly tag: "lit"; readonly atom: Atom }
+  | { readonly tag: "ctor"; readonly name: string; readonly arity: number };
+
+/** A top-level pattern discriminant. A variable, an empty expression, or a non-symbol-headed expression is
+ *  unknown. Treating unknown as overlapping is conservative and keeps scalar dispatch sound. */
+function scalarDiscriminant(pat: SymPat): ScalarDiscriminant | undefined {
+  if (pat.tag === "sym") return { tag: "sym", name: pat.name };
+  if (pat.tag === "lit") return { tag: "lit", atom: pat.atom };
+  if (pat.tag !== "expr" || pat.items.length === 0 || pat.items[0]!.tag !== "sym") return undefined;
+  return { tag: "ctor", name: pat.items[0]!.name, arity: pat.items.length - 1 };
+}
+
+function scalarDiscriminantsEqual(a: ScalarDiscriminant, b: ScalarDiscriminant): boolean {
+  if (a.tag !== b.tag) return false;
+  if (a.tag === "lit" && b.tag === "lit") return atomEq(a.atom, b.atom);
+  if (a.tag === "sym" && b.tag === "sym") return a.name === b.name;
+  return a.tag === "ctor" && b.tag === "ctor" && a.name === b.name && a.arity === b.arity;
+}
+
+/** Two clause heads are disjoint when some argument position has concrete unequal discriminants. Deeper
+ *  differences under the same constructor do not prove disjointness in this first increment. */
+function scalarClausesDisjoint(a: ScalarClauseCandidate, b: ScalarClauseCandidate): boolean {
+  for (let i = 0; i < a.pats.length; i++) {
+    const ad = scalarDiscriminant(a.pats[i]!);
+    const bd = scalarDiscriminant(b.pats[i]!);
+    if (ad !== undefined && bd !== undefined && !scalarDiscriminantsEqual(ad, bd)) return true;
+  }
+  return false;
+}
+
+function collectScalarSlotPositions(
+  pat: SymPat,
+  arg: number,
+  path: readonly number[],
+  positions: ScalarSlotPosition[],
+): void {
+  if (pat.tag === "slot") {
+    positions[pat.slot] = { arg, path };
+    return;
+  }
+  if (pat.tag !== "expr") return;
+  for (let i = 0; i < pat.items.length; i++)
+    collectScalarSlotPositions(pat.items[i]!, arg, [...path, i], positions);
+}
+
+function hasVariableOutsideSlots(atom: Atom, slots: ReadonlyMap<string, number>): boolean {
+  if (atom.kind === "var") return !slots.has(atom.name);
+  return atom.kind === "expr" && atom.items.some((item) => hasVariableOutsideSlots(item, slots));
+}
+
+const scalarDeclaredReturn = (name: string): "number" | undefined =>
+  name === "Number" || name === "Int" || name === "Integer" || name === "Double" || name === "Float"
+    ? "number"
+    : undefined;
+
+/** Analyze every clause before compiling any body. A present signature must take Atom parameters and
+ *  return a numeric type; an untyped constructor function is inferred below. An explicit Atom return makes
+ *  its RHS final in the evaluator, so that class stays on the symbolic path. Left-linearity and pairwise
+ *  exclusivity cover native and fallback clauses together. */
+function scalarCandidate(env: MinEnv, functor: string): ScalarCandidate | undefined {
+  if (env.varRulesVar.length !== 0) return undefined;
+  const signature = env.sigs.get(functor);
+  let declaredArity: number | undefined;
+  let declaredReturn: "number" | undefined;
+  if (signature !== undefined) {
+    if (
+      signature.length === 0 ||
+      signature.slice(0, -1).some((type) => type.kind !== "sym" || type.name !== "Atom")
+    )
+      return undefined;
+    const returnType = signature[signature.length - 1]!;
+    if (returnType.kind !== "sym") return undefined;
+    declaredReturn = scalarDeclaredReturn(returnType.name);
+    if (declaredReturn === undefined) return undefined;
+    declaredArity = signature.length - 1;
+  }
+  const eqs = env.ruleIndex.get(functor);
+  if (eqs === undefined || eqs.length === 0) return undefined;
+  let arity: number | undefined;
+  const clauses: ScalarClauseCandidate[] = [];
+  for (const [lhs, body] of eqs) {
+    if (
+      lhs.kind !== "expr" ||
+      lhs.items.length === 0 ||
+      lhs.items[0]!.kind !== "sym" ||
+      lhs.items[0]!.name !== functor
+    )
+      return undefined;
+    const clauseArity = lhs.items.length - 1;
+    if (declaredArity !== undefined && clauseArity !== declaredArity) return undefined;
+    if (arity === undefined) arity = clauseArity;
+    else if (clauseArity !== arity) return undefined;
+    const slots = new Map<string, number>();
+    const pats: SymPat[] = [];
+    const positions: ScalarSlotPosition[] = [];
+    for (let i = 1; i < lhs.items.length; i++) {
+      const pat = compileSymPat(lhs.items[i]!, slots);
+      if (pat === undefined) return undefined;
+      pats.push(pat);
+      collectScalarSlotPositions(pat, i - 1, [], positions);
+    }
+    clauses.push({
+      pats,
+      slots,
+      positions,
+      body,
+      mayNeedFreshSuffix: hasVariableOutsideSlots(body, slots),
+    });
+  }
+  if (arity === undefined) return undefined;
+  for (let i = 0; i < clauses.length; i++)
+    for (let j = i + 1; j < clauses.length; j++)
+      if (!scalarClausesDisjoint(clauses[i]!, clauses[j]!)) return undefined;
+  return { arity, clauses, declaredReturn };
+}
+
+type ScalarReturnHint = "number" | "atom" | "unknown";
+
+function mergeScalarReturnHints(hints: readonly ScalarReturnHint[]): ScalarReturnHint {
+  if (hints.includes("atom")) return "atom";
+  if (hints.includes("number")) return "number";
+  return "unknown";
+}
+
+/** Classify only the outer result representation. Unknown LHS slots inherit the numeric family when any
+ *  sibling clause proves it, as in `ev`'s `$n` leaf; with no numeric anchor they remain atoms, as in lookup. */
+function scalarBodyReturnHint(
+  env: MinEnv,
+  atom: Atom,
+  clause: ScalarClauseCandidate,
+  scalarReturns: ReadonlyMap<string, "number" | "atom">,
+  functional: FunctionalFns,
+  scalarNames: ReadonlySet<string>,
+): ScalarReturnHint {
+  if (atom.kind === "var") return clause.slots.has(atom.name) ? "unknown" : "atom";
+  if (atom.kind === "gnd")
+    return atom.value.g === "int" || atom.value.g === "float" ? "number" : "atom";
+  if (atom.kind === "sym") return "atom";
+  if (atom.items.length === 0) return "atom";
+  const head = atom.items[0]!;
+  if (head.kind !== "sym") return "atom";
+  const op = head.name;
+  if (op === "+" || op === "-" || op === "*" || op === "/" || op === "%") return "number";
+  if (op === "if" && atom.items.length === 4)
+    return mergeScalarReturnHints([
+      scalarBodyReturnHint(env, atom.items[2]!, clause, scalarReturns, functional, scalarNames),
+      scalarBodyReturnHint(env, atom.items[3]!, clause, scalarReturns, functional, scalarNames),
+    ]);
+  if (op === "unify" && atom.items.length === 5)
+    return mergeScalarReturnHints([
+      scalarBodyReturnHint(env, atom.items[3]!, clause, scalarReturns, functional, scalarNames),
+      scalarBodyReturnHint(env, atom.items[4]!, clause, scalarReturns, functional, scalarNames),
+    ]);
+  if (op === "let" && atom.items.length === 4)
+    return scalarBodyReturnHint(
+      env,
+      atom.items[3]!,
+      clause,
+      scalarReturns,
+      functional,
+      scalarNames,
+    );
+  if (scalarNames.has(op)) return scalarReturns.get(op) ?? "unknown";
+  const functionalReturn = functional.get(op)?.retType;
+  if (functionalReturn !== undefined) return isNumberType(functionalReturn) ? "number" : "atom";
+  if (KNOWN_OPS.has(op) || env.ruleIndex.has(op) || env.gt.has(op) || env.agt.has(op))
+    return "unknown";
+  return "atom";
+}
+
+function inferScalarReturns(
+  env: MinEnv,
+  candidates: ReadonlyMap<string, ScalarCandidate>,
+  functional: FunctionalFns,
+): Map<string, "number" | "atom"> {
+  const returns = new Map<string, "number" | "atom">();
+  for (const [functor, candidate] of candidates)
+    if (candidate.declaredReturn !== undefined) returns.set(functor, candidate.declaredReturn);
+  const scalarNames = new Set(candidates.keys());
+  const propagate = (): void => {
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const [functor, candidate] of candidates) {
+        if (candidate.declaredReturn !== undefined) continue;
+        const hint = mergeScalarReturnHints(
+          candidate.clauses.map((clause) =>
+            scalarBodyReturnHint(env, clause.body, clause, returns, functional, scalarNames),
+          ),
+        );
+        const previous = returns.get(functor);
+        const next =
+          previous === "atom" || hint === "atom"
+            ? "atom"
+            : previous === "number" || hint === "number"
+              ? "number"
+              : undefined;
+        if (next !== undefined && next !== previous) {
+          returns.set(functor, next);
+          changed = true;
+        }
+      }
+    }
+  };
+  propagate();
+  // A direct slot/call-only function has no numeric evidence. Keeping its values as atoms is the
+  // representation-preserving choice. Propagate these final atom seeds back through callers so the result
+  // does not depend on candidate iteration order. The productivity pass still removes a cycle with no base.
+  for (const functor of candidates.keys()) if (!returns.has(functor)) returns.set(functor, "atom");
+  propagate();
+  return returns;
+}
+
+function hasScalarCallUnderConstructor(
+  env: MinEnv,
+  atom: Atom,
+  scalarNames: ReadonlySet<string>,
+  functional: FunctionalFns,
+  underConstructor = false,
+): boolean {
+  if (atom.kind !== "expr" || atom.items.length === 0) return false;
+  const head = atom.items[0]!;
+  const op = head.kind === "sym" ? head.name : undefined;
+  if (underConstructor && op !== undefined && scalarNames.has(op)) return true;
+  const isConstructor =
+    op === undefined ||
+    (!KNOWN_OPS.has(op) &&
+      !scalarNames.has(op) &&
+      !functional.has(op) &&
+      !env.ruleIndex.has(op) &&
+      !env.gt.has(op) &&
+      !env.agt.has(op));
+  return atom.items.some((item) =>
+    hasScalarCallUnderConstructor(
+      env,
+      item,
+      scalarNames,
+      functional,
+      underConstructor || isConstructor,
+    ),
+  );
+}
+
+/** Keep established one-step symbolic rewrites on their existing holder. Untyped scalar dispatch is useful
+ *  when clauses mix value and atom representations, or when a constructor contains a call that the scalar
+ *  path can execute while building the result. An explicit supported return type requests scalar semantics. */
+function scalarCandidateAddsNativeWork(
+  env: MinEnv,
+  candidate: ScalarCandidate,
+  returnType: "number" | "atom",
+  returns: ReadonlyMap<string, "number" | "atom">,
+  candidates: ReadonlyMap<string, ScalarCandidate>,
+  functional: FunctionalFns,
+): boolean {
+  if (candidate.declaredReturn !== undefined) return true;
+  if (returnType === "number") return true;
+  const scalarNames = new Set(candidates.keys());
+  const hints = candidate.clauses.map((clause) =>
+    scalarBodyReturnHint(env, clause.body, clause, returns, functional, scalarNames),
+  );
+  if (hints.includes("number") && hints.includes("atom")) return true;
+  if (
+    candidate.clauses.some(
+      (clause) => clause.body.kind === "var" && clause.slots.has(clause.body.name),
+    )
+  )
+    return true;
+  return candidate.clauses.some((clause) =>
+    hasScalarCallUnderConstructor(env, clause.body, scalarNames, functional),
+  );
+}
+
+function scalarSlot(frame: FrameVal[], position: ScalarSlotPosition): Atom {
+  let value = frame[position.arg];
+  if (!isAtomFrameVal(value)) throw BAIL;
+  for (const index of position.path) {
+    if (value.kind !== "expr") throw BAIL;
+    value = value.items[index];
+    if (value === undefined) throw BAIL;
+  }
+  return value;
+}
+
+function scalarScope(clause: ScalarClauseCandidate, arity: number): Scope {
+  const vars = new Map<string, { acc: (f: FrameVal[]) => FrameVal; type: Ty }>();
+  for (const [name, slot] of clause.slots) {
+    const position = clause.positions[slot]!;
+    vars.set(name, { acc: (frame) => scalarSlot(frame, position), type: "atom" });
+  }
+  return { vars, len: arity };
+}
+
+/** Build an atom result while executing supported nested value calls. Unresolved heads are constructors;
+ *  a known operation or rule that cannot compile declines the clause instead of surviving as a thunk. */
+function compileScalarAtom(
+  env: MinEnv,
+  atom: Atom,
+  scope: Scope,
+  holders: ValueFns,
+): Compiled | undefined {
+  if (atom.kind === "var") {
+    const bound = scope.vars.get(atom.name);
+    if (bound !== undefined) return coerceForReturn({ node: bound.acc, type: bound.type }, "atom");
+    const name = atom.name;
+    return {
+      node: (_frame, runtime) => {
+        if (runtime.freshSuffix.length === 0) throw BAIL;
+        return variable(name + runtime.freshSuffix);
+      },
+      type: "atom",
+    };
+  }
+  if (atom.kind !== "expr") return { node: () => atom, type: "atom" };
+
+  const value = coerceForReturn(compileBody(atom, scope, holders), "atom");
+  if (value !== undefined) return value;
+  if (atom.items.length === 0) return { node: () => atom, type: "atom" };
+  const head = atom.items[0]!;
+  const op = head.kind === "sym" ? head.name : undefined;
+
+  if (op === "if" && atom.items.length === 4) {
+    const condition = compileBody(atom.items[1]!, scope, holders);
+    const thenBranch = compileScalarAtom(env, atom.items[2]!, scope, holders);
+    const elseBranch = compileScalarAtom(env, atom.items[3]!, scope, holders);
+    if (
+      condition === undefined ||
+      condition.type !== "bool" ||
+      thenBranch === undefined ||
+      elseBranch === undefined
+    )
+      return undefined;
+    const conditionNode = condition.node as (
+      frame: FrameVal[],
+      runtime: FunctionalRuntime,
+    ) => boolean;
+    return {
+      node: (frame, runtime) => {
+        const selected = conditionNode(frame, runtime);
+        runtime.counterDelta += 2;
+        return (selected ? thenBranch : elseBranch).node(frame, runtime);
+      },
+      type: "atom",
+    };
+  }
+
+  if (op === "let" && atom.items.length === 4 && atom.items[1]!.kind === "var") {
+    const boundValue =
+      compileBody(atom.items[2]!, scope, holders) ??
+      compileScalarAtom(env, atom.items[2]!, scope, holders);
+    if (boundValue === undefined) return undefined;
+    const index = scope.len;
+    const nextScope: Scope = {
+      vars: new Map(scope.vars).set(atom.items[1]!.name, {
+        acc: (frame) => frame[index]!,
+        type: boundValue.type,
+      }),
+      len: index + 1,
+    };
+    const body = compileScalarAtom(env, atom.items[3]!, nextScope, holders);
+    if (body === undefined) return undefined;
+    return {
+      node: (frame, runtime) => {
+        const next = [...frame, boundValue.node(frame, runtime) as FrameVal];
+        runtime.counterDelta += 1;
+        return body.node(next, runtime);
+      },
+      type: "atom",
+    };
+  }
+
+  if (
+    op !== undefined &&
+    (KNOWN_OPS.has(op) ||
+      holders.has(op) ||
+      env.ruleIndex.has(op) ||
+      env.gt.has(op) ||
+      env.agt.has(op))
+  )
+    return undefined;
+
+  const items = atom.items.map((item) => compileScalarAtom(env, item, scope, holders));
+  if (items.some((item) => item === undefined)) return undefined;
+  const nodes = items.map((item) => item!.node);
+  return {
+    node: (frame, runtime) => expr(nodes.map((node) => frameValueToAtom(node(frame, runtime)))),
+    type: "atom",
+  };
+}
+
+function compileScalarClause(
+  env: MinEnv,
+  functor: string,
+  candidate: ScalarCandidate,
+  clause: ScalarClauseCandidate,
+  expected: "number" | "atom",
+  holders: ValueFns,
+): Compiled | undefined {
+  const scope = scalarScope(clause, candidate.arity);
+  if (expected === "number") return compileTail(clause.body, scope, holders, functor, "number");
+  return (
+    compileTail(clause.body, scope, holders, functor, "atom") ??
+    compileScalarAtom(env, clause.body, scope, holders)
+  );
+}
+
+function scalarDependencies(
+  atom: Atom,
+  scalarNames: ReadonlySet<string>,
+  dependencies: Set<string>,
+): void {
+  if (atom.kind !== "expr" || atom.items.length === 0) return;
+  const head = atom.items[0]!;
+  if (head.kind === "sym" && scalarNames.has(head.name)) dependencies.add(head.name);
+  for (const item of atom.items) scalarDependencies(item, scalarNames, dependencies);
+}
+
+/** Compile each proven-exclusive clause independently. Unsupported bodies stay in the matcher with no node;
+ *  selecting one throws BAIL and replays the root call through the evaluator. */
+function compileScalarHolders(
+  env: MinEnv,
+  pure: ReadonlySet<string>,
+  functional: FunctionalFns,
+): Map<string, ScalarHolder> {
+  const candidates = new Map<string, ScalarCandidate>();
+  for (const functor of pure) {
+    if (functional.has(functor)) continue;
+    const candidate = scalarCandidate(env, functor);
+    if (candidate !== undefined) candidates.set(functor, candidate);
+  }
+  const scalarReturns = inferScalarReturns(env, candidates, functional);
+
+  const holders = new Map<string, ScalarHolder>();
+  const values = new Map<string, ValueHolder>(functional);
+  for (const [functor, candidate] of candidates) {
+    const retType = scalarReturns.get(functor)!;
+    if (
+      !scalarCandidateAddsNativeWork(env, candidate, retType, scalarReturns, candidates, functional)
+    )
+      continue;
+    const holder: ScalarHolder = {
+      kind: "scalar",
+      name: functor,
+      arity: candidate.arity,
+      retType,
+      paramTypes: new Array<Ty>(candidate.arity).fill("atom"),
+      clauseCount: candidate.clauses.length,
+      run: bailRun,
+    };
+    holders.set(functor, holder);
+    values.set(functor, holder);
+  }
+
+  for (;;) {
+    let removed = false;
+    const plans = new Map<string, Array<Node | undefined>>();
+    const dependencies = new Map<string, Array<ReadonlySet<string>>>();
+    const scalarNames = new Set(holders.keys());
+    for (const [functor] of holders) {
+      const candidate = candidates.get(functor)!;
+      const expected = holders.get(functor)!.retType;
+      const nodes = candidate.clauses.map((clause) => {
+        const compiled = compileScalarClause(env, functor, candidate, clause, expected, values);
+        return compiled?.type === expected ? compiled.node : undefined;
+      });
+      dependencies.set(
+        functor,
+        candidate.clauses.map((clause) => {
+          const callees = new Set<string>();
+          scalarDependencies(clause.body, scalarNames, callees);
+          return callees;
+        }),
+      );
+      if (nodes.every((node) => node === undefined)) {
+        holders.delete(functor);
+        values.delete(functor);
+        removed = true;
+      } else plans.set(functor, nodes);
+    }
+    if (removed) continue;
+
+    // A recursive-only numeric fragment such as Greater's `(Greater (S $x) (S $y))` branch can compile
+    // syntactically but can never produce a native int when its True/False base clauses are fallbacks.
+    // Seed holders with a compiled clause that has no scalar dependencies, then propagate through
+    // productive sibling/self calls. A holder outside the fixpoint has no successful native return path,
+    // so leave the whole functor to the symbolic compiler.
+    const productive = new Set<string>();
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const [functor, nodes] of plans) {
+        if (productive.has(functor)) continue;
+        const clauseDependencies = dependencies.get(functor)!;
+        if (
+          nodes.some(
+            (node, i) =>
+              node !== undefined &&
+              [...clauseDependencies[i]!].every((callee) => productive.has(callee)),
+          )
+        ) {
+          productive.add(functor);
+          changed = true;
+        }
+      }
+    }
+    for (const functor of [...holders.keys()])
+      if (!productive.has(functor)) {
+        holders.delete(functor);
+        values.delete(functor);
+        removed = true;
+      }
+    if (removed) continue;
+
+    for (const [functor, holder] of holders) {
+      const candidate = candidates.get(functor)!;
+      const nodes = plans.get(functor)!;
+      const dispatch: Node = (frame, runtime) => {
+        for (let i = 0; i < candidate.arity; i++) {
+          const arg = frame[i];
+          if (!isAtomFrameVal(arg) || !arg.ground) throw BAIL;
+        }
+        const counterStart = runtime.counterDelta - 1;
+        runtime.counterDelta += candidate.clauses.length - 1;
+        for (let i = 0; i < candidate.clauses.length; i++) {
+          const clause = candidate.clauses[i]!;
+          let matches = true;
+          for (let j = 0; j < candidate.arity; j++)
+            if (!matchSymPat(clause.pats[j]!, frame[j] as Atom)) {
+              matches = false;
+              break;
+            }
+          if (!matches) continue;
+          const node = nodes[i];
+          if (node === undefined) throw BAIL;
+          if (!clause.mayNeedFreshSuffix) return node(frame, runtime);
+          const previousSuffix = runtime.freshSuffix;
+          runtime.freshSuffix = "#" + (runtime.counterBase + counterStart + i);
+          try {
+            return node(frame, runtime);
+          } finally {
+            runtime.freshSuffix = previousSuffix;
+          }
+        }
+        throw BAIL;
+      };
+      // Scalar frames are small enough to reach the language bound directly. The explicit logical
+      // depth check cuts first; a larger bound may still fall back on a native RangeError.
+      holder.run = makeRun(functor, candidate.arity, dispatch, false, 0);
+    }
+    return holders;
+  }
 }
 
 // ---------- nondeterministic let*-chain rewrites (the backward-chainer class) ----------
@@ -3231,6 +4027,7 @@ export function compileEnv(env: MinEnv): CompiledFns {
       for (const [f, { node, arity }] of result)
         holders.get(f)!.run = makeRun(f, arity, node, selfCallCount(cand.get(f)!.body, f) >= 2);
       const compiled: CompiledFns = new Map(holders);
+      for (const [f, h] of compileScalarHolders(env, pure, holders)) compiled.set(f, h);
       for (const f of pure) {
         if (compiled.has(f)) continue;
         const rewrite = compileRewrite(env, f);
@@ -3273,6 +4070,7 @@ export function runCompiled(
     depth !== undefined &&
     depth.current >= EVALUATION_TRAMPOLINE_DEPTH &&
     (h.kind === "functional" ||
+      h.kind === "scalar" ||
       h.kind === "imperative" ||
       (h.kind === "nondet" && !h.preferDirectForModed))
   )
@@ -3294,6 +4092,32 @@ export function runCompiled(
       ...(overflowState === undefined ? {} : { state: overflowState }),
     };
   };
+  const runValue = (holder: ValueHolder, vals: FrameVal[]): CompiledRunResult | undefined => {
+    const runtime = {
+      depth: depth ?? new EvaluationDepth(),
+      limit: depth === undefined ? 0 : st.world.maxStackDepth,
+      counterBase: st.counter,
+      counterDelta: 0,
+      freshSuffix: "",
+    };
+    try {
+      const r = holder.run(vals, runtime, true);
+      const atom = frameValueToAtom(r);
+      return {
+        results: [{ atom, bnd: emptyBindings }],
+        counterDelta: holder.kind === "scalar" ? runtime.counterDelta : 0,
+      };
+    } catch (e) {
+      if (e instanceof EvaluationDepthHandoff) return undefined;
+      if (e instanceof EvaluationDepthOverflow) return overflowResult(e, runtime.counterDelta);
+      if (e === BAIL || e instanceof RangeError) return undefined;
+      throw e;
+    }
+  };
+  if (h.kind === "scalar") {
+    if (partAtoms.some((atom) => !atom.ground)) return undefined;
+    return runValue(h, partAtoms as FrameVal[]);
+  }
   if (h.kind === "rewrite") return h.run(partAtoms);
   if (h.kind === "symbolic") return h.run(partAtoms, st.counter);
   if (h.kind === "nondet") {
@@ -3333,24 +4157,7 @@ export function runCompiled(
       vals.push(new Tup(a.items.map((x) => (x as { value: { n: IntVal } }).value.n)));
     else return undefined;
   }
-  const functionalRuntimeState =
-    depth === undefined ? undefined : { depth, limit: st.world.maxStackDepth, counterDelta: 0 };
-  try {
-    const r = h.run(vals, functionalRuntimeState, true);
-    const atom =
-      typeof r === "boolean"
-        ? gbool(r)
-        : r instanceof Tup
-          ? expr(r.v.map((n) => gint(n)))
-          : gint(r);
-    return { results: [{ atom, bnd: emptyBindings }], counterDelta: 0 };
-  } catch (e) {
-    if (e instanceof EvaluationDepthHandoff) return undefined;
-    if (e instanceof EvaluationDepthOverflow)
-      return overflowResult(e, functionalRuntimeState?.counterDelta ?? 0);
-    if (e === BAIL || e instanceof RangeError) return undefined;
-    throw e;
-  }
+  return runValue(h, vals);
 }
 
 export function runCompiledEffectCount(
